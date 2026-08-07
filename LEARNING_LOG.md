@@ -35,56 +35,20 @@ If a synchronous database driver (like standard `psycopg2`) is used inside an as
 
 ---
 
-## Day 2 — Signals & Process Death (2026-08-07)
-
-### 📊 Measured Numbers & Exit Codes
-
-- `SIGINT` (Abort Semantics)        : Job abandoned mid-step when Ctrl+C pressed.
-- `SIGINT` (Finish-Current Semantics): In-flight job finished completely before exit.
-- `docker stop` (SIGTERM - Graceful): **Exit Code 0** `[status: clean exit within 10s grace period]`
-- `docker kill` (SIGKILL - Force)   : **Exit Code 137** `[status: process killed immediately by OS, 0 cleanup]`
-- Grace Timeout Exceeded (>10s job) : **Exit Code 137** `[status: escalated from SIGTERM to SIGKILL after 10s]`
-- Unhandled PID 1 SIGTERM            : **Exit Code 137** `[status: Linux kernel drops unhandled signals for PID 1, causing Docker timeout escalation]`
-
----
-
-### 💡 What I Understood
-
-Today I explored POSIX signals (`SIGTERM` vs `SIGKILL`) and graceful process shutdown. `SIGTERM` (15) can be caught using signal handlers to set a shutdown flag, allowing the worker process to complete in-flight tasks before exiting cleanly with exit code 0.
-
-However, `SIGKILL` (9) is uncatchable by design. When an orchestrator or OS issues `SIGKILL` (or when a 10s `docker stop` grace period expires), the process is forcefully killed, producing exit code 137 ($128 + 9$) without running any signal handlers, cleanup routines, or `finally` blocks.
-
-If a worker is killed via `SIGKILL`, jobs in PostgreSQL remain stuck in `running` state indefinitely. This forms the architectural necessity for Week 2's **Lease Reclaimer / Reaper Engine** to detect timed-out stuck jobs and reset them back to `pending`.
-
-Furthermore, blocking calls delay signal handler execution because Python signal handlers execute on the main thread between CPython bytecode instructions. Thus, blocking code degrades both throughput and shutdown-ability.
-
----
-
-### 🚧 What Blocked Me
-
-Windows `Stop-Process` invokes `TerminateProcess` directly without delivering catchable `SIGTERM` signals. Using Docker containers was required to test POSIX `SIGTERM` (15) vs `SIGKILL` (9).
-
----
-
-### ❓ Question / Next Thought
-
-How will database connection pools react when a worker holding a connection gets `SIGKILL`'d mid-transaction? → *(Explored in Day 3)*
-
----
-
-
 ## Day 2 — Signals & Process Death (2026-08-08)
 
 ### 📊 Measured / Observed
 
 | Run | What I did | Handler registered? | Handler ran? | Job finished? | Exit code |
 |---|---|---|---|---|---|
-| 1 | `docker stop` (job shorter than grace) | Yes | Yes | Yes | **0** |
-| 2 | `docker kill` | Yes | No | No | **137** |
-| 3 | `docker stop`, handler commented out | No | No | No | **137** (not 143) |
-| 4 | `docker stop`, job 30s vs 10s grace | Yes | Yes | **No — died at step 23/30** | **137** |
+| 1 | `Ctrl+C` (SIGINT), abort semantics | Yes | Yes | No — abandoned mid-step | n/a (local run) |
+| 2 | `Ctrl+C` (SIGINT), finish-current semantics | Yes | Yes | Yes | n/a (local run) |
+| 3 | `docker stop`, job shorter than grace | Yes | Yes | Yes | **0** |
+| 4 | `docker kill` | Yes | No | No | **137** |
+| 5 | `docker stop`, handler commented out (PID 1) | No | No | No | **137** (not 143) |
+| 6 | `docker stop`, job 30s vs 10s grace | Yes | Yes | **No — died at step 23/30** | **137** |
 
-Run 4 log evidence — the signal arrived mid-job and the loop kept going:
+Run 6 log evidence — the signal arrived mid-job and the loop kept going:
 
 ```
 [JOB 2] Step 22/30...
@@ -103,9 +67,11 @@ Today I learned about graceful shutdown, and the difference between `SIGTERM` an
 
 **SIGKILL cannot be caught.** No handler runs, no cleanup, no `finally` block. The process just disappears mid-work.
 
-**The handler does not interrupt running code.** It only sets a flag and returns. My logs prove it — `Step 23/30` printed *after* the `[SIGNAL]` line. The loop kept working because nothing forced it to stop. This connects directly to Day 1: if the process is stuck inside a long blocking call, the shutdown request just sits there and waits. So blocking code doesn't only hurt throughput, it also delays my ability to shut down cleanly.
+**"Graceful" is a design choice, not one fixed behaviour.** I tested two variants of the same handler. In the abort variant, the shutdown flag was checked *inside* the job and the in-flight job was dropped halfway. In the finish-current variant, the flag was only checked *between* jobs, so the running job completed and no new job was picked up. Same signal, same handler — completely different durability outcome. For a job engine, finish-current is the correct semantic.
 
-**PID 1 inside a container has a special rule.** The first process in a container gets PID 1, and Linux protects it: if PID 1 has not registered its own handler, SIGTERM is **dropped entirely** instead of killing it. That is why Run 3 gave me `137` instead of `143` — the SIGTERM was never delivered, the process kept running, and Docker force-killed it after the grace period expired.
+**The handler does not interrupt running code.** It only sets a flag and returns. My logs prove it — `Step 23/30` printed *after* the `[SIGNAL]` line. The loop kept working because nothing forced it to stop. This connects directly to Day 1: if the process is stuck inside a long blocking call, the shutdown request just sits there and waits. Python delivers signal handlers on the main thread between bytecode instructions, so a handler can never preempt arbitrary code. So blocking code doesn't only hurt throughput, it also delays my ability to shut down cleanly.
+
+**PID 1 inside a container has a special rule.** The first process in a container gets PID 1, and Linux protects it: if PID 1 has not registered its own handler, SIGTERM is **dropped entirely** instead of killing it. That is why Run 5 gave me `137` instead of `143` — the SIGTERM was never delivered, the process kept running, and Docker force-killed it after the grace period expired. This also means graceful shutdown is a joint property of **code and deployment**, not code alone.
 
 **Exit codes tell me who ended the process.**
 - `0` → the process exited by itself, cleanly
@@ -113,17 +79,21 @@ Today I learned about graceful shutdown, and the difference between `SIGTERM` an
 
 The useful distinction is not the arithmetic, it is: *did the process choose to exit, or was it killed?*
 
-**The most important finding (Run 4):** if the graceful shutdown period is shorter than the job execution time, SIGTERM's benefit disappears. My handler ran, the flag was set, my code politely tried to finish the current job — and it was still force-killed at step 23 with the job half-done and no cleanup. So writing graceful shutdown code is not enough. It only works when **grace period ≥ max job duration**. Otherwise graceful shutdown is just a lie that looks good in the logs.
+**The most important finding (Run 6):** if the graceful shutdown period is shorter than the job execution time, SIGTERM's benefit disappears. My handler ran, the flag was set, my code politely tried to finish the current job — and it was still force-killed with the job half-done and no cleanup. So writing graceful shutdown code is not enough. It only works when **grace period ≥ max job duration**. Otherwise graceful shutdown is just a lie that looks good in the logs.
+
+**Why this forces Week 2's design:** if a worker is SIGKILL'd, the job row stays at `status = 'running'` forever, because the worker died before it could update it. This is the architectural reason a lease + reaper is needed — something outside the worker has to detect abandoned jobs and reset them to `pending`.
 
 ---
 
 ### 🚧 What Blocked Me / Unresolved
 
-**Run 4's exit code does not match my arithmetic.** The signal arrived after step 22, so the job needed about 7 more seconds to reach step 30. Docker's default grace period is 10 seconds, so the job should have finished at ~7s and exited with code `0`. Instead I got `137`, and the last log line is step 23 — meaning the process died 1-2 seconds after the signal, not 10.
+**Windows cannot deliver a catchable SIGTERM.** `Stop-Process` calls `TerminateProcess` directly, so my handler never ran and graceful vs forceful looked identical. Only `Ctrl+C` (SIGINT) is catchable locally. I had to use Docker containers to test real POSIX `SIGTERM` (`docker stop`) vs `SIGKILL` (`docker kill`) — which is closer to production anyway.
+
+**Run 6's exit code does not match my arithmetic.** The signal arrived after step 22, so the job needed about 7 more seconds to reach step 30. Docker's default grace period is 10 seconds, so the job should have finished at ~7s and exited with code `0`. Instead I got `137`, and the last log line is step 23 — meaning the process died 1-2 seconds after the signal, not 10.
 
 This cannot be explained by lost log buffering, because if the job had actually completed, the exit code would have been `0` regardless of missing log lines.
 
-I did not measure how long `docker stop` actually took, and that is exactly the measurement that would resolve this. **Open item:** re-run with timing and confirm what the effective grace period really was.
+I did not measure how long `docker stop` actually took, and that is exactly the measurement that would resolve this. **Open item:** re-run with `Measure-Command` and confirm what the effective grace period really was. Until then I should not claim the escalation happened at 10s — I have not verified it.
 
 ---
 
@@ -136,3 +106,5 @@ The roadmap question I need to answer, because Week 2's entire design is the ans
 What I can already reason: the job row would stay at `status = 'running'` forever, because the worker died before it could update the row. Nobody inside the dead process can fix it — so recovery has to come from **outside** the worker. That external thing needs a way to tell "this job is genuinely being worked on" apart from "the worker holding this job is dead", and the only evidence available is time.
 
 → To be designed in Week 2 (lease + reaper).
+
+Second question, which points at tomorrow: when a worker holding an open database connection gets `SIGKILL`'d mid-transaction, what happens to that connection and to the pool? → *(Explored in Day 3)*
