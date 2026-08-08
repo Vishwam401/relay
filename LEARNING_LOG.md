@@ -35,7 +35,7 @@ If a synchronous database driver (like standard `psycopg2`) is used inside an as
 
 ---
 
-## Day 2 — Signals & Process Death (2026-08-08)
+## Day 2 — Signals & Process Death (2026-08-07)
 
 ### 📊 Measured / Observed
 
@@ -108,3 +108,145 @@ What I can already reason: the job row would stay at `status = 'running'` foreve
 → To be designed in Week 2 (lease + reaper).
 
 Second question, which points at tomorrow: when a worker holding an open database connection gets `SIGKILL`'d mid-transaction, what happens to that connection and to the pool? → *(Explored in Day 3)*
+
+---
+
+## Day 3 — File Descriptors, Sockets & Connection Pools (2026-08-08)
+
+### 📊 Measured / Observed
+
+Setup for all runs: 10 concurrent requests, each executing `SELECT pg_sleep(1)` — so the real DB work per request is exactly 1 second. Only the pool config changed between runs.
+
+| Exp | `pool_size` | `max_overflow` | `pool_timeout` | Total time | Success | Failures |
+|---|---|---|---|---|---|---|
+| A | 2 | 0 | 30s | **5.25s** | 10 | 0 |
+| B | 2 | 0 | **1s** | **1.18s** | 2 | **8** |
+| C | 10 | 0 | 30s | **1.66s** | 10 | 0 |
+| D | — | — | — | *not recorded* | — | — |
+| E | — | — | — | *not recorded* | — | — |
+
+**Exp A — the staircase (this is the whole lesson in one shape):**
+
+```
+REQ 02: 1.15s   REQ 01: 1.17s    ← wave 1
+REQ 03: 2.17s   REQ 04: 2.17s    ← wave 2
+REQ 05: 3.18s   REQ 06: 3.18s    ← wave 3
+REQ 07: 4.19s   REQ 08: 4.19s    ← wave 4
+REQ 09: 5.20s   REQ 10: 5.20s    ← wave 5
+```
+
+Requests completed in pairs because only 2 connections existed. Each wave is **exactly +1.01s** over the previous one.
+
+**Exp B — exact error text (this is what shows up in production logs):**
+
+```
+QueuePool limit of size 2 overflow 0 reached, connection timed out, timeout 1.00
+(Background on this error at: https://sqlalche.me/e/20/3o7r)
+```
+
+**Exp C — all 10 requests ~1.62-1.65s**, even though no request waited for a connection.
+
+---
+
+### 💡 What I Understood
+
+**A TCP connection costs a file descriptor.** An fd is an OS-level resource — every open file, socket, or pipe gets one. A connection is a socket, so it consumes an fd whether or not a pool exists. The pool is not what consumes it.
+
+**There are three separate ceilings, at three different layers.** I initially thought "the limit is whatever pool_size I set" — that was wrong. It only looked true because `pool_size=2` happened to be the smallest ceiling in my setup.
+
+| Layer | Ceiling | Who sets it |
+|---|---|---|
+| My app | `pool_size` | Me (self-imposed) |
+| My process (OS) | fd limit (`ulimit -n`, often 1024) | OS / container config |
+| Postgres server | `max_connections` (default 100) | DB config |
+
+**Whichever is smallest breaks first.** This matters for Relay later: if I run 10 workers each with `pool_size=20`, that is 200 connections against a `max_connections` of 100. The pool would think everything is fine, and Postgres would refuse new connections with a completely different error: `FATAL: sorry, too many clients already`. Different layer, different error, different fix. So capacity planning means keeping `workers × pool_size` below `max_connections`.
+
+**Latency includes queue time, and that is what makes this deceptive.** REQ 10 reported **5.20s** latency, but its query was only 1 second. About **4.2s of that was spent waiting at the pool for a free connection**, and only ~1s was actual database work. From the client's side this looks like "the database is slow." From the database's side it was a 1-second job done on time.
+
+**The error came from SQLAlchemy, not from Postgres.** The `sqlalche.me` link in the error text proves it. Those 8 failed requests never reached Postgres at all — they asked the pool for a connection, the pool started its own 1-second stopwatch (`pool_timeout=1`), the stopwatch expired, and the pool itself raised the error. The whole thing happened inside my own process, in memory. Nothing went over the network.
+
+The practical consequence: **pool exhaustion is a client-side problem that is invisible to server-side monitoring.** During Exp B, Postgres would have shown normal CPU, an empty slow query log, a normal connection count, and nothing in its error log — while 80% of my requests were failing. This is exactly how people end up spending hours "optimising the database" when the database was never the problem.
+
+**Pool exhaustion has three possible behaviours, and the default is the dangerous one:**
+
+1. **Wait** — block until a connection frees up (Exp A: all 10 succeeded, just slowly)
+2. **Timeout** — wait a bounded time, then error (Exp B: `pool_timeout=1`)
+3. **Immediate error** — fail without waiting
+
+The default is **wait**, and waiting is what creates the "the DB feels slow" illusion. Timeout and fail-fast are things I have to configure deliberately.
+
+**Fail-fast makes the latency graph prettier while doing less work.** Exp B finished in 1.18s versus Exp A's 5.25s — it looks 4x faster. But it threw away 8 of 10 requests. Failed requests do not appear in latency percentiles, so a p50 metric alone would have reported this config as an improvement. **Latency must always be read together with error rate.**
+
+The deeper version of this tradeoff: the real question is not "wait or fail" but **"can the work be lost?"** With a retry mechanism (which Relay will have), fail-fast can be better, because a waiting request can blow up an upstream timeout anyway. Without retries, fail-fast means data loss.
+
+**Connections are created, not free — and that cost is why pools exist.** In Exp C every request took ~1.62s with zero pool waiting. The extra ~0.6s was **connection setup cost**: TCP handshake, authentication, and Postgres forking a separate backend process per connection. Exp C had to build 10 connections cold and at once. Exp A's first wave (1.15s / 1.17s) only had to build 2, so it paid only ~0.15s.
+
+The proof that pools work is in Exp A's later waves: each one is exactly ~1.01s apart, with no setup cost at all, because the same 2 connections were reused. **A pool pays the expensive setup once and then amortises it.**
+
+**The diagnostic I now have for "latency went up":** raise `pool_size` and observe.
+- Latency improves → the bottleneck was **pool exhaustion** (the event loop was fine, requests were queueing for connections)
+- Nothing changes → the bottleneck is **event loop blocking** (a sync driver freezing the thread, exactly like Day 1's `time.sleep`) — pool size is irrelevant one layer down
+
+My own data confirms the first branch: 2 → 10 connections took total time from 5.25s to 1.66s, so my bottleneck genuinely was the pool.
+
+**A crashed worker's connection: `idle in transaction`.** When a worker is `kill -9`'d locally, the OS closes its fds, Postgres notices immediately, and the transaction is rolled back — the connection disappears from `pg_stat_activity` right away. That fast cleanup happens *because* it was a clean local kill.
+
+Under a network partition there is no such signal. Postgres receives no FIN, no error, nothing. The connection sits in the **`idle in transaction`** state: open, transaction begun, no query running, client already dead.
+
+The danger is **not** data inconsistency — nothing was committed, so the data is fine. The danger is **blocking**:
+- The open transaction still holds its row locks, and locks are only released when the transaction ends
+- Any other transaction touching those rows blocks indefinitely
+- The connection slot stays occupied, which makes pool pressure worse
+
+The chain: *crashed worker → Postgres never learns it died → transaction stays open → row locks held → other workers block on those rows → part of the system looks frozen with no crash in any log.*
+
+For Relay this is direct: a worker that crashes holding a lock on a job row prevents other workers from claiming that row, and they get no explanation why.
+
+---
+
+### 🔗 The Connecting Insight (Day 2 + Day 3 are the same problem)
+
+- **Day 2:** how does a reaper know whether a worker is dead or just slow?
+- **Day 3:** how does Postgres know whether a client is dead or just thinking (`idle in transaction`)?
+
+Neither side can ever know the truth. No system can directly inspect another process's liveness — it can only observe signals, or the absence of them. So both problems get solved the same way:
+
+> **Set a deadline. If no proof of life arrives before it (heartbeat, lease renewal, activity), assume death and start reclaiming.**
+
+That is a guess, not a certainty, and it comes with a symmetric tradeoff:
+- **Short deadline** → false positives. A live worker gets declared dead — exactly what happened in my Day 2 Run 6, where the job was abandoned while the worker was still working.
+- **Long deadline** → slow detection. Real crashes leave locks and jobs stuck for longer.
+
+This is the same tradeoff that becomes **lease duration** in Week 2, and it is the core subject of DDIA Ch 8. In a distributed system, *"it is dead"* can never be proven — only *"it has not said anything for this long"* can be, and decisions have to be built on that.
+
+---
+
+### 🧠 Self-Check (where I was wrong)
+
+| Question | My answer | Correction |
+|---|---|---|
+| What does a TCP connection consume at OS level? | "the pool consumes it, limit = pool_size" | **An fd.** Pool is a self-imposed app-level limit; fd limit and `max_connections` are imposed limits underneath |
+| Who threw the Exp B error? | "Postgres, because of timeout" | **SQLAlchemy's pool.** Those requests never reached Postgres — hence invisible in DB monitoring |
+| Where did Exp C's extra 0.6s go? | didn't know | **Connection setup cost** (handshake + auth + Postgres backend process per connection) — and this is exactly why pools exist |
+| Danger of the stuck connection state? | "inconsistency later" | Data stays consistent; the danger is **held row locks blocking other transactions**. State name: **`idle in transaction`** |
+
+Answered correctly: the wait-vs-fail tradeoff and why error rate must accompany latency; the pool-size diagnostic for distinguishing pool exhaustion from event loop blocking; the three exhaustion behaviours (naming needed tightening).
+
+---
+
+### 🚧 What Blocked Me / Unresolved
+
+**Exp D not recorded.** I did not capture `SELECT count(*) FROM pg_stat_activity WHERE datname = 'relay';` during load, so I have not verified that the server-side connection count actually matches my configured `pool_size`. Client-side config and server-side reality should be confirmed to agree, not assumed. *(Tip for the re-run: raise `pg_sleep` to 5s so there is time to run the count.)*
+
+**Exp E not recorded.** I did not measure the sync-driver variant. The key row is sync driver at `pool_size=10` — if total time stays ~10s while the async version drops to ~1.6s, that proves the bottleneck moved from the pool to the event loop. Right now I understand this argument but have not measured it, so it is borrowed knowledge, not evidence.
+
+**Day 2's grace period question is still open.** I still have not measured how long `docker stop` actually took in Run 6, so I cannot explain why exit code was `137` when the arithmetic predicted `0`.
+
+---
+
+### ❓ Question / Next Thought
+
+If a `pool_timeout` error and a genuine Postgres `too many clients already` error both surface as "requests are failing," how would I tell them apart from logs alone — and what should Relay log at enqueue time so that this is unambiguous later?
+
+Also: since the default pool behaviour is to wait indefinitely, what should Relay's enqueue endpoint do when the pool is saturated — wait and risk the caller timing out, or fail fast with a 503 and let the caller retry? → *decision for Week 1/Week 4 (`DECISIONS.md`)*
