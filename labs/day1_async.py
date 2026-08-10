@@ -12,6 +12,8 @@ async def blocking_endpoint():
     return {"status" : "done"}
 
 
+
+
 @app.get("/nonblocking")
 async def nonblocking_endpoint():
     await asyncio.sleep(2)

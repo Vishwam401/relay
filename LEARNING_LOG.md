@@ -250,3 +250,134 @@ Answered correctly: the wait-vs-fail tradeoff and why error rate must accompany 
 If a `pool_timeout` error and a genuine Postgres `too many clients already` error both surface as "requests are failing," how would I tell them apart from logs alone — and what should Relay log at enqueue time so that this is unambiguous later?
 
 Also: since the default pool behaviour is to wait indefinitely, what should Relay's enqueue endpoint do when the pool is saturated — wait and risk the caller timing out, or fail fast with a 503 and let the caller retry? → *decision for Week 1/Week 4 (`DECISIONS.md`)*
+
+---
+
+## Day 4 — TCP & Timeouts (2026-08-08)
+
+### 📊 Measured / Observed
+
+> ⚠️ **These numbers are contaminated — read the caveat below before trusting them.**
+
+| Exp | Target | Timeout set | Time taken | Error type |
+|---|---|---|---|---|
+| A | `10.255.255.1` (blackhole IP) | `connect=1.0` | **1.707s** | `httpx.ConnectTimeout` |
+| B | `127.0.0.1:9999` (closed port) | `connect=1.0` | **2.244s** | `httpx.ConnectTimeout` |
+| C | `localhost:8000/blocking` (2s endpoint) | `read=0.5` | **2.172s** | `httpx.ReadTimeout` |
+
+**Error types were classified correctly** — connect failures and read failures are genuinely different exception classes, which was the main point of the experiment.
+
+**Caveat 1 — the measurement harness measured too much.** My `except` block sat *outside* the `async with httpx.AsyncClient(...)` block. So when the request raised, the exception first passed through `__aexit__` (which closes the connection pool and cancels pending sockets) and only *then* reached the `except` where I computed elapsed time. Every number above includes client teardown, not just the network operation.
+
+**Caveat 2 — Exp B did not reproduce the intended contrast.** The goal was to show that a closed port fails *fast* (RST → `ConnectError` in milliseconds) versus a blackhole failing *slow* (full timeout). Instead Exp B produced `ConnectTimeout` after 2.244s. I verified nothing was listening on port 9999, so an RST should have come back. Something is silently dropping the packet — likely Windows Firewall or security software. **So the fast-fail vs slow-fail distinction is understood conceptually but is NOT measured evidence on my machine.**
+
+**Caveat 3 — Exp C's timing is suspicious.** Read timeout was `0.5s` but abort happened at `2.172s`, which is almost exactly the server's `time.sleep(2)`. Hypothesis below; not yet verified.
+
+---
+
+### 💡 What I Understood
+
+**Connect timeout and read timeout are not two values of the same thing — they answer two different questions.**
+
+- **Connect timeout** asks *"can I reach this thing at all?"* Handshake duration depends only on network round-trips; it does not care what I asked for. So it is roughly **constant and predictable**. If it exceeds 1-2s, something is genuinely broken — host down, packets dropped, partition. It is an **infrastructure health signal**.
+- **Read timeout** asks *"is this taking longer than the work should take?"* It is **workload-dependent**. A slow read does not mean anything is broken; the server may legitimately be busy. A lightweight API and a 30s LLM call need completely different read timeouts.
+
+**And the timeout type determines whether a retry is safe.** This is the most important thing I learned today.
+
+| Failure | What actually happened | Retry safe? |
+|---|---|---|
+| Connect timeout / refused | Handshake never completed → **request never reached the server** → no side effect | ✅ Safe |
+| Read timeout / silent drop | Connection made, **request was delivered**, response lost. Server may have charged the card / sent the email | ❌ Dangerous — duplicate side effect |
+
+The line to remember: **"connect timeout = pahuncha nahi. read timeout = pata nahi."** And *"pata nahi"* is the real problem — it is precisely why idempotency keys exist. Week 3's entire dedup design is an answer to this ambiguity.
+
+**A per-phase timeout is not a total deadline — and this gap can hang a request forever.** If a server dribbles 1 byte every 0.4s and never finishes, a `read timeout` of 0.5s **never fires**, because the gap between any two bytes stays under the limit. The stopwatch keeps resetting. The request hangs indefinitely while I believe I have configured a timeout.
+
+The fix is a separate **overall deadline** for the whole request, independent of per-phase gaps. `read timeout` = maximum gap between chunks. Total deadline = maximum lifetime of the request. Both are needed. This will matter directly in Month 2 when an LLM provider hangs mid-stream.
+
+**Timeout budget: a child's total retry time must fit inside its caller's timeout.** With a 5s timeout and 3 attempts, worst case is 15s. If the parent service times out at 10s, the parent has already given up and shown the user an error by the time attempt 3 starts — so **attempt 3 has zero value** and only burns CPU and connections.
+
+**Refinement I need to remember:** the budget is not just `timeout × attempts`. Retries have **backoff gaps between them**. So the real total is `attempts × timeout + sum(backoff delays)`. A "3 × 3s = 9s fits in 10s" calculation is wrong the moment backoff is added — 1s and 2s backoffs push it to 12s, already over budget. Backoff must be counted when sizing retries. → relevant to Week 2's retry policy.
+
+**Why "slow" and "down" are inherently indistinguishable (Kurose Ch 3).** When a packet is lost, TCP **silently retransmits** it. The application layer is never told that a loss or retransmission happened — it only sees "data has not arrived yet, my timer is running."
+
+So consider two situations at t = 2s:
+- Packet was dropped, TCP is retransmitting, data will arrive at t = 3s (**slow**)
+- The server is dead and data will never arrive (**down**)
+
+From the application's point of view these look **identical** — both are just delay. There is no way to look inside the network and tell them apart. This is why a timeout is a **deadline guess, not a measurement**.
+
+**A timeout is a request, not a guarantee (hypothesis).** Exp C's abort at 2.17s instead of 0.5s suggests the timeout fired logically on time, but the **cancellation of the in-flight socket read was deferred** until the I/O operation actually completed — i.e. when the server finally responded at ~2s. On Windows, asyncio uses IOCP, and cancelling a pending overlapped operation is not instantaneous.
+
+If true, this is **structurally identical to Day 2**: there, the SIGTERM handler ran on time but could not preempt the running loop — it could only set a flag. Here, the timeout fires on time but cannot preempt in-flight I/O. Both are *requests to stop* whose actual effect depends on whether the runtime can interrupt what is currently executing.
+
+**Marked as hypothesis, not fact** — it needs the verification test below.
+
+**Slow failure is more dangerous than fast failure.** A `connection refused` is a gift: it arrives in milliseconds, tells me clearly that nothing happened, frees resources immediately, and is safe to retry. A silent drop is the enemy: it consumes the full timeout, holds a thread and a socket for that entire duration, leaves me unable to know whether the work happened, and makes retrying risky. Under load, many slow failures stacking up hold resources long enough to cascade into a wider outage.
+
+**Also learned:** `httpx` has a `pool` timeout alongside `connect`/`read`/`write` — the same concept as Day 3's SQLAlchemy `pool_timeout`. Same problem, different library.
+
+---
+
+### 🔗 Week 0 Synthesis (Days 2 + 3 + 4 are one problem)
+
+- **Day 2:** is the worker dead, or just slow?
+- **Day 3:** is the client dead, or just thinking (`idle in transaction`)?
+- **Day 4:** is the network down, or just slow?
+
+**The common structural problem:** a process cannot observe another process's or the network's true internal state. I cannot ask a remote worker "are you dead or just slow?" — because if it is dead, the question itself disappears into the void. There is no way to obtain certainty.
+
+**The common solution:** deadlines, in all their forms — timeouts, leases, heartbeats, TTLs.
+
+> *If no response or proof of life arrives within time T, assume death and begin cleanup or recovery.*
+
+- Day 2 → shutdown grace period, job lease
+- Day 3 → `pool_timeout`
+- Day 4 → connect / read / total timeouts
+
+**The tradeoff, which is unavoidable because the deadline is a guess:**
+
+- **Short deadline** → false positives. A live worker gets declared dead → duplicate execution, abandoned in-flight work. Exactly what happened in Day 2's Run 6.
+- **Long deadline** → slow detection. Dead workers keep holding row locks, dead sockets keep occupying pool slots, and the system degrades quietly.
+
+**The real lesson of Week 0:** system design here is not about finding a correct setting. It is about **choosing which risk to accept** — the risk of false-positive duplicate execution, or the risk of slow-failure resource starvation. This is exactly the decision that becomes "lease duration" in Week 2, and it is the subject of DDIA Ch 8.
+
+---
+
+### 🧠 Self-Check (honest split)
+
+**Answered myself, correctly:**
+- Connect vs read timeout — why connect should be short and read should match the workload *(framing needed tightening: I first said "only the value differs," then described a difference of kind)*
+- The measurement harness bug — that elapsed time included socket teardown because the stopwatch stopped after cleanup, not at the moment of failure
+- Which failure is more dangerous — silent drop, because the request may have been delivered and retrying risks duplicate side effects
+
+**Needed to be explained to me (re-test these later):**
+- The drip-server trap: why a per-phase read timeout never fires and why a total deadline is required
+- Timeout budget arithmetic and why the 3rd retry has zero value once the parent has given up
+- TCP retransmission as the reason "slow" and "down" are indistinguishable at the application layer
+- Deferred cancellation — that a timeout is a request, not a guarantee, and its parallel to SIGTERM non-preemption
+- The unified Day 2/3/4 pattern and its short-vs-long deadline tradeoff
+
+3 of 8 were my own. The 5 above are borrowed understanding right now and should be re-tested during weekend consolidation.
+
+---
+
+### 🚧 Unresolved / Follow-ups
+
+**Day 4's own follow-ups (all short):**
+1. **Fix the harness** — move the timing capture inside the `async with` block so it measures only the network operation, then re-run all three experiments for clean numbers.
+2. **Raw socket test on `127.0.0.1:9999`** — bypass httpx entirely and record the time and exact OS error. If a raw socket refuses instantly, the problem is in the httpx/anyio layer; if it also hangs, the OS or firewall is dropping the packet. This is the isolation step that resolves Exp B.
+3. **Change `/blocking` to `sleep(10)` and re-run Exp C with `read=0.5`.** If `ReadTimeout` arrives at ~10s, deferred cancellation is confirmed. If it arrives at ~0.5s, the 2.17s was just harness overhead. One run settles it.
+
+**Carried over and still open:**
+- **Day 3 Exp E** (sync driver vs async at both pool sizes) — not recorded. This is the most important gap; the concept is currently understood but not proven.
+- **Day 3 Exp D** (`pg_stat_activity` count during load) — not recorded.
+- **Day 2 grace period** (`Measure-Command { docker stop ... }`) — still unexplained why exit code was `137` when arithmetic predicted `0`.
+
+---
+
+### ❓ Question / Next Thought
+
+If a read timeout means "I cannot know whether the work happened," then Relay's retry logic can never be safe on its own — safety has to come from the *receiving* side being idempotent. So: should Relay's own `POST /jobs` endpoint require an idempotency key from the caller, or generate one itself? Requiring it pushes correctness onto the client; generating it internally cannot dedupe a client that retries after a read timeout, because the second request would look brand new.
+
+→ This is the real content of Week 3, and probably a `DECISIONS.md` entry (dedupe at enqueue vs at execute).
