@@ -381,3 +381,193 @@ If true, this is **structurally identical to Day 2**: there, the SIGTERM handler
 If a read timeout means "I cannot know whether the work happened," then Relay's retry logic can never be safe on its own — safety has to come from the *receiving* side being idempotent. So: should Relay's own `POST /jobs` endpoint require an idempotency key from the caller, or generate one itself? Requiring it pushes correctness onto the client; generating it internally cannot dedupe a client that retries after a read timeout, because the second request would look brand new.
 
 → This is the real content of Week 3, and probably a `DECISIONS.md` entry (dedupe at enqueue vs at execute).
+
+---
+
+## Day 5 — Postgres Transactions: Lost Update & Write Skew (2026-08-09)
+
+### 📊 Measured / Observed
+
+**Experiment 1 — Lost Update** (`counter` table, both transactions read 100 and write 101)
+
+| Variant | Final value | Expected | Error? |
+|---|---|---|---|
+| Plain `SELECT` (Read Committed) | **101** | 102 | **None — completely silent** |
+| `SELECT ... FOR UPDATE` | **102** ✅ | 102 | None (T2 **blocked** until T1 committed) |
+
+**Experiment 2 — Write Skew** (`doctors` table, business rule: at least one doctor on call)
+
+| Isolation level | Final `count(*) WHERE on_call` | Rule held? | Error? |
+|---|---|---|---|
+| **Read Committed** | **0** | ❌ Broken | **None — silent** |
+| **REPEATABLE READ** | **0** | ❌ Broken | **None — silent** |
+| **SERIALIZABLE** | rule held | ✅ | **Yes — T2 aborted** |
+| Read Committed + `FOR UPDATE` | **1** | ✅ | **None** (T2 blocked, then re-read) |
+
+Exact SERIALIZABLE error:
+
+```
+ERROR:  could not serialize access due to read/write dependencies among transactions
+DETAIL: Reason code: Canceled on identification as a pivot, during commit attempt.
+HINT:   The transaction might succeed if retried.
+SQLSTATE: 40001 (serialization_failure)
+```
+
+**Which transaction died:** T2 — the one that tried to commit **second**. T1 committed safely first.
+
+**Experiment 3 — Observing the block** (`pg_stat_activity` while T2 was blocked)
+
+| Transaction | Role | `state` | `wait_event_type` | `wait_event` |
+|---|---|---|---|---|
+| T2 (PID 61) | **victim**, frozen | `active` | `Lock` | `transactionid` |
+| T1 (PID 53) | **culprit**, holding lock | `idle in transaction` | `Client` | — |
+
+---
+
+### 💡 What I Understood
+
+**The core pattern: check-then-act is broken under concurrency.** Both experiments are the same shape — read something, decide based on it, write. The problem is that **the truth of the read expires** the moment I stop holding a lock on it. By the time I write, the premise of my decision may already be false. And the database will not tell me.
+
+**Why Exp 1 broke at Read Committed — the precise mechanism.** This is the exact line from DDIA that matters:
+
+> Read Committed uses a **separate snapshot for each query**; snapshot isolation uses the **same snapshot for the entire transaction**.
+
+So my `SELECT` saw 100, and my `UPDATE` wrote 101 based on a value that was already stale. The read and the write were looking at two different points in time.
+
+**Both silences had DIFFERENT root causes** — this is important and I got it half wrong:
+
+- **Exp 1:** the database **kept its promise**. Read Committed guarantees no dirty reads and no dirty writes. Both writes here were on **committed** data, so neither was a dirty write. The DB did exactly what it advertised — **my assumption about what it guaranteed was wrong**, the DB was not broken.
+- **Exp 2:** the database **never knew the rule existed**. There is no constraint on the `doctors` table. "At least one doctor on call" lives only in my application's `if` statement. Two transactions each flipped one boolean on their own row — perfectly legal SQL. There was nothing for Postgres to object to.
+
+Compressed: **Exp 1 = the promise was smaller than I assumed. Exp 2 = the rule was never in the database at all.**
+
+**MVCC's principle and its cost.** Snapshot isolation is implemented with multi-version concurrency control: several committed versions of a row exist side by side, `UPDATE` is internally a delete + create, and garbage collection cleans up later. The performance principle is **readers never block writers, and writers never block readers**. That is why REPEATABLE READ does **not** take read locks — and that is precisely why it could not save me in Exp 2.
+
+**Write skew is the general case; lost update is its special case.** DDIA's exact framing: write skew occurs when two transactions **read the same objects** and then **update some of those objects** — possibly *different* ones. When they happen to update the **same** object, you get lost update instead. So they are the same family, not two unrelated bugs.
+
+**Naming is a trap.** Snapshot isolation is called `repeatable read` in PostgreSQL and MySQL, `serializable` in Oracle, and DB2's "repeatable read" means actual serializability. DDIA's verdict: *"nobody really knows what repeatable read means."* Today confirmed the practical lesson — **do not trust the level's name, measure the behaviour.**
+
+---
+
+### 🔍 Four things hidden in my own results
+
+**1. The monitoring intuition is INVERTED.** In Exp 3, the transaction doing **nothing** (`idle in transaction`, waiting on `Client`) was the one causing the damage. The transaction that looked **busy** (`active`) was the frozen victim.
+
+`idle in transaction` + `wait_event_type = Client` means: *the database is waiting for the application to send its next command, while still holding locks.* On a dashboard, `active` reads as healthy and `idle` reads as harmless. **Both readings are backwards here.**
+
+Also: `wait_event = transactionid` shows how Postgres actually implements a row-lock wait — the waiter blocks on the **holder's transaction ID**, not on the row itself.
+
+**And by default Postgres will NOT kill an `idle in transaction` session.** Unless `idle_in_transaction_session_timeout` is configured, it can sit there indefinitely holding locks. This is exactly the Day 3 network-partition scenario made concrete: had T1's client died at that moment, T2 would have waited **forever**. I now have the diagnostic signature for it.
+
+**2. The word "pivot" in my error is SSI's actual algorithm.** In serializable snapshot isolation, a "pivot" is the transaction sitting in the middle of a dangerous dependency structure — it has both an incoming and an outgoing read-write dependency. Postgres aborts the pivot. So my error message is **literally the mechanism from DDIA's Figure 7-11** (the tripwire that notifies transactions in both directions) surfacing in production text.
+
+**3. SSI is first-committer-wins, and it is not fair.** T1 committed and survived; T2 arrived second and was killed. Under high contention the same transaction can lose **repeatedly**. This is why DDIA insists that read-write transactions under SSI must be **short** — a long transaction has more chances to collide, and it will usually be the one aborted.
+
+**4. `FOR UPDATE` did not enforce my rule — it only refreshed my read.** T2 blocked, then after T1 committed it re-read and got `count = 1`, and then **my own `if` statement** correctly refused the leave. The database never knew about the rule. With SERIALIZABLE, the **database itself** made the call and aborted. Two genuinely different mechanisms with the same outcome.
+
+---
+
+### ⚖️ `FOR UPDATE` vs `SERIALIZABLE` — the real tradeoff (→ future D-02)
+
+| | `SELECT ... FOR UPDATE` | `SERIALIZABLE` |
+|---|---|---|
+| **Mechanism** | Serializes the reads **upfront**; the second transaction **blocks** | Lets both run, **detects conflict at commit**, aborts one |
+| **Style** | **Pessimistic** | **Optimistic** |
+| **What I observed** | T2 froze → re-read → my `if` refused | T2 got `40001` |
+| **Retry logic needed?** | **No** | **Yes — mandatory** |
+| **Cost** | **Blocking**: latency, and queueing under contention | **Abort rate**: rises sharply with contention |
+| **Failure mode** | Forgetting the lock in **one** code path | Forgetting to handle retries |
+| **Who decides** | My application code | The database |
+
+The `HINT: The transaction might succeed if retried` is effectively a contract: **choosing SERIALIZABLE means committing to write retry logic.** And retry brings back Day 4's problem — is the retry safe, or does it duplicate a side effect?
+
+---
+
+### 👻 Phantoms — where `FOR UPDATE` cannot help at all
+
+A **phantom** is when one transaction's write changes the **result of another transaction's search query**.
+
+`FOR UPDATE` worked in the doctors example because **both rows existed** and both transactions read them. But consider: *"if no overlapping booking exists, insert one."* The query returns **zero rows**. What is there to lock? The conflicting row **does not exist yet** — the other transaction is about to create it. **You cannot lock a thing that isn't there.**
+
+Three ways out:
+1. **SERIALIZABLE** — let the DB detect and abort
+2. **Materializing conflicts** — pre-create lockable rows (e.g. every room × timeslot) purely to lock them. DDIA calls this a **"last resort"** and **"ugly"**, because concurrency control leaks into the data model
+3. **Unique constraint** — let the DB enforce the rule
+
+**When does a constraint actually work?** Username-claiming is solved by `UNIQUE(username)` because the invariant fits **one column of one row**. Doctors-on-call is *not* solved, because the invariant is an **aggregate across multiple rows** (`COUNT(*) >= 1`), which most databases cannot express as a constraint.
+
+> **Rule of thumb: a constraint works when the invariant fits inside a single row. When the invariant spans multiple rows (aggregate, "at least one", "sum must stay positive"), constraints cannot help — then it is SERIALIZABLE or materializing conflicts.**
+
+---
+
+### 🎯 Conclusion for Relay (today's most important output)
+
+> **Read Committed me mera code silently galat ho sakta hai. Isliye Relay me job claim `SELECT ... FOR UPDATE SKIP LOCKED` se karna padega, aur side effects ko `idempotency_key` pe unique constraint se protect karna padega — kyunki isolation level akela kaafi nahi hai.**
+
+**The two-worker scenario, analysed properly:**
+
+Two workers read the same `pending` job and both write `status = running`.
+
+- **(a) Which anomaly?** **Lost update** — same row, read-modify-write, one write clobbers the other. Figure 7-1's exact shape.
+- **(b) Is the row corrupted?** **No — the row is fine.** Both wrote the *same value* (`running`). The final row state is perfectly correct.
+- **(c) So where is the damage?** **Both workers went on to EXECUTE the job.** The email was sent twice. The payment was charged twice.
+
+> **The mechanism is a lost update, but the consequence is duplicate execution.** The row-level anomaly is only a symptom — the real damage happened **outside** the database, in the side effect. This is why looking only at DB state would never reveal the bug.
+
+**(d) Why `SKIP LOCKED` alone is not enough — the concrete scenario (from Day 2's Run 6):**
+
+1. Worker A claims the job correctly via `SKIP LOCKED`. Its claim transaction **commits** — so **the lock is released**.
+2. Worker A begins executing. The job runs longer than the lease.
+3. The **lease expires**. The reaper sees no heartbeat and returns the job to `pending`.
+4. Worker B claims it — and **B's claim is completely legal**.
+5. **Worker A is still alive and still running.**
+
+**One job, two executions, both legitimate.** `SKIP LOCKED` can do nothing here, because **no database lock is involved anymore** — A's transaction ended long ago.
+
+Day 2 already proved the underlying fact: **lease expiry does not stop the old worker.** That is the entire reason Week 3 exists.
+
+**So Relay needs two independent layers:**
+- **Week 1 — `SKIP LOCKED`:** prevents double **claim** (same moment, DB-level)
+- **Week 3 — idempotency key + unique constraint:** ensures that even after double **execution**, the side effect happens **exactly once**
+
+---
+
+### 🧠 Self-Check (honest — 2.5 / 10 self-answered)
+
+**Got right on my own:** the snapshot-isolation description; Exp 1's silence; the instinct that "different rows" is why REPEATABLE READ failed; the direction that `idle in transaction` is the dangerous state; and P3's prediction (REPEATABLE READ would not prevent write skew) — **which was fully correct**.
+
+**Four explicit errors to remember:**
+
+| I said | Correct |
+|---|---|
+| "Read Committed lost update fix karta hai" | **Wrong.** Read Committed prevents **dirty write**, not lost update. I measured `101` myself at Read Committed. |
+| "`FOR UPDATE` pe commit karne pe error aati hai" | **Wrong.** `FOR UPDATE` **blocks**; it never errored. The `40001` error came from **SERIALIZABLE**. I had two mechanisms merged into one. |
+| "REPEATABLE READ pehle lock kar deta hai" | **Wrong.** Snapshot isolation takes **no read locks** — that is its whole design (*readers never block writers*). |
+| "`idle in transaction` time aate hi kill ho jayega" | **Wrong.** Postgres does **not** kill it by default; it needs `idle_in_transaction_session_timeout`. |
+
+**Not attempted at all (Q6-Q10):** the meaning of "pivot" and the retry obligation; the `FOR UPDATE` vs `SERIALIZABLE` mechanism split; phantoms and why `FOR UPDATE` cannot attach a lock; why a unique constraint solves usernames but not doctors; and the full two-worker / two-layer analysis.
+
+**The pattern I should be honest about:** these five were explained to me **immediately before** the quiz, and still did not stick. Day 4 showed the same shape (3 of 8 self-answered). **My experiments and measurements are consistently strong; converting them into concepts in my own words is the weak link.** Everything in the table above is currently *recognisable* to me, not *recallable*. Weekend consolidation should re-test exactly these.
+
+---
+
+### 🚧 Unresolved / Follow-ups
+
+**New from today (2 minutes, high value):**
+- **Run Exp 1 at `REPEATABLE READ`.** DDIA states PostgreSQL's repeatable read **does automatically detect lost updates** (MySQL/InnoDB does not). So Exp 1 should raise `could not serialize access due to concurrent update` (`40001`) instead of silently producing `101`. My instinct that "an error should appear" was right — I just applied it to the wrong isolation level. **Untested so far.**
+
+**Carried over and still open:**
+- **Day 3 Exp E** (sync driver vs async at both pool sizes) — not recorded. Still the biggest gap; the concept has no evidence behind it.
+- **Day 3 Exp D** (`pg_stat_activity` count during pool load) — not recorded. *(Note: today I did use `pg_stat_activity` successfully, so the tooling is no longer the blocker.)*
+- **Day 4**: harness fix (timing captured outside `async with`), raw-socket test on `127.0.0.1:9999`, and `/blocking` at 10s to confirm or reject deferred cancellation.
+- **Day 2**: grace-period timing (`Measure-Command { docker stop ... }`) — exit code `137` still unexplained.
+
+---
+
+### ❓ Question / Next Thought
+
+If `SERIALIZABLE` hands me correctness for free but demands retry logic, and `FOR UPDATE SKIP LOCKED` demands no retries but requires me to never forget the lock — which does Relay's worker claim actually want? My instinct now says `SKIP LOCKED`, for a reason today made concrete: `SKIP LOCKED` does not just prevent the conflict, it lets the second worker **move on to a different job** instead of blocking or aborting. For a job queue, "skip and take the next one" is the behaviour I actually want, not "wait" and not "abort and retry".
+
+→ This is `D-02` in `DECISIONS.md`, to be written in Week 1 with the Cost field filled in.
+
+Second question, pointing at Week 3: if the damage from double execution happens **outside** the database (email, payment), then no isolation level can ever prevent it — isolation only governs database state. So the side effect must be made **idempotent at the point of execution**, not protected by the transaction. Where exactly does the dedup check belong — at enqueue, or at execute? *(DDIA's answer for the username case was a unique constraint; the equivalent for Relay is a unique `idempotency_key`, but the placement of the check is still an open decision.)*
