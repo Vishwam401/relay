@@ -1,6 +1,8 @@
 # LEARNING_LOG.md — Master Index
 
-Daily logs of concepts learned, experiment measurements, stuck points, and questions across all weeks of Relay's development.
+> [!IMPORTANT]
+> **Yeh sirf ek Short Master Index File hai.**
+> Har din aur hafte ke detailed operational logs, empirical measurements, code evidence, aur self-checks individual weekly log files mein hain (jaise [`docs/logs/WEEK_00.md`](file:///d:/PROJECTS/relay/docs/logs/WEEK_00.md)). Detailed log dekhne ke liye niche diye gaye links par click karein.
 
 ---
 
