@@ -8,6 +8,7 @@
 relay/
   docs/
     DECISIONS.md     # Architecture Decision Records (ADR)
+    LEARNING_LOG.md  # Master Index of learning logs
     POSTMORTEMS.md   # Incident postmortems
     PROBLEMS.md      # Interesting problem explorations
     logs/            # Modular weekly learning logs (WEEK_00.md...)
@@ -16,5 +17,4 @@ relay/
   tests/             # Integration and Property-based tests
   docker-compose.yml # Infrastructure setup (Postgres)
   requirements.txt   # Python dependencies
-  LEARNING_LOG.md    # Master Index of learning logs
 ```
