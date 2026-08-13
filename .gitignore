@@ -3,6 +3,12 @@
 venv/
 ENV/
 
+# Environment secrets & config
+.env
+.env.*
+*.env
+!.env.example
+
 # IDE / Tool configs
 .agents/
 .kiro/
@@ -15,11 +21,23 @@ __pycache__/
 *.pyo
 *.pyd
 .pytest_cache/
+.mypy_cache/
+.ruff_cache/
 .coverage
 htmlcov/
 *.egg-info/
 dist/
 build/
+
+# OS generated files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Logs & Database files
+*.log
+*.sqlite
+*.db
 
 # Weekly execution plans (personal working notes, not project history)
 docs/planning/
