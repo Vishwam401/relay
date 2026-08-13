@@ -4,6 +4,7 @@ venv/
 ENV/
 
 # IDE / Tool configs
+.agents/
 .kiro/
 .vscode/
 .idea/
@@ -19,3 +20,6 @@ htmlcov/
 *.egg-info/
 dist/
 build/
+
+# Weekly execution plans (personal working notes, not project history)
+docs/planning/

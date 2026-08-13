@@ -549,18 +549,88 @@ Day 2 already proved the underlying fact: **lease expiry does not stop the old w
 
 **The pattern I should be honest about:** these five were explained to me **immediately before** the quiz, and still did not stick. Day 4 showed the same shape (3 of 8 self-answered). **My experiments and measurements are consistently strong; converting them into concepts in my own words is the weak link.** Everything in the table above is currently *recognisable* to me, not *recallable*. Weekend consolidation should re-test exactly these.
 
+**Second quiz later the same day (3 questions) — actual score 2.5 / 3:**
+
+| Q | Topic | Result |
+|---|---|---|
+| 1 | `pool_size` raised, 0% improvement → diagnose the layer | ✅ Correct on my own |
+| 2a | Write skew at REPEATABLE READ — will Postgres error? | ✅ Correct ("no error") |
+| 2b | *Why* REPEATABLE READ misses write skew | ❌ **I answered "idk"** — it was explained to me |
+| 3 | Connect vs read timeout — which retry is safe | ✅ Correct on my own |
+
+> ⚠️ **This quiz was auto-scored "3/3 PERFECT" by the assistant that ran it. That scoring is false** — Q2b was not answered. Recording the real score here so future-me does not read a win that did not happen.
+>
+> Also worth noting for calibration: these 3 questions covered **easier and already-corrected ground** than the 10-question quiz above (where I scored 2.5/10). A high score on a re-tread is not evidence of mastery. **Q2b is the same gap as Q4 in the main quiz** — why row-level detection misses write skew — so it has now failed twice and belongs at the top of the weekend re-test list.
+
 ---
 
-### 🚧 Unresolved / Follow-ups
+### ✅ Follow-ups RESOLVED (same day, after the main experiments)
 
-**New from today (2 minutes, high value):**
-- **Run Exp 1 at `REPEATABLE READ`.** DDIA states PostgreSQL's repeatable read **does automatically detect lost updates** (MySQL/InnoDB does not). So Exp 1 should raise `could not serialize access due to concurrent update` (`40001`) instead of silently producing `101`. My instinct that "an error should appear" was right — I just applied it to the wrong isolation level. **Untested so far.**
+Four of the outstanding items got measured. These close real gaps.
 
-**Carried over and still open:**
-- **Day 3 Exp E** (sync driver vs async at both pool sizes) — not recorded. Still the biggest gap; the concept has no evidence behind it.
-- **Day 3 Exp D** (`pg_stat_activity` count during pool load) — not recorded. *(Note: today I did use `pg_stat_activity` successfully, so the tooling is no longer the blocker.)*
-- **Day 4**: harness fix (timing captured outside `async with`), raw-socket test on `127.0.0.1:9999`, and `/blocking` at 10s to confirm or reject deferred cancellation.
-- **Day 2**: grace-period timing (`Measure-Command { docker stop ... }`) — exit code `137` still unexplained.
+**R1 — Day 3 Exp E: sync driver vs async driver (the biggest gap, now closed)**
+
+| Driver | `pool_size` | Total time |
+|---|---|---|
+| async (asyncpg) | 2 | **5.25s** |
+| async (asyncpg) | 10 | **1.66s** |
+| sync (psycopg, blocking) | 2 | **10.02s** |
+| sync (psycopg, blocking) | 10 | **10.03s** |
+
+`10.02 → 10.03` is a **0% change**. This is the row the whole experiment existed for.
+
+**The diagnostic is now backed by my own evidence, not borrowed:**
+- Raising `pool_size` **improves** total time → the bottleneck was **pool exhaustion**
+- Raising `pool_size` changes **nothing** → the bottleneck is **event loop blocking** (sync driver or `time.sleep`), one layer below the pool
+
+A pool of 100 connections is worth nothing if the single event-loop thread is frozen on blocking I/O.
+
+**R2 — Lost update at `REPEATABLE READ`: my instinct was right**
+
+```
+ERROR: could not serialize access due to concurrent update
+SQLSTATE: 40001 (serialization_failure)
+```
+
+No silent `101`. PostgreSQL's repeatable read **does** automatically detect lost updates and aborts the offender — exactly as DDIA states, and unlike MySQL/InnoDB's repeatable read which allows them.
+
+So my original prediction instinct ("an error should appear") was correct; I had simply attached it to the wrong isolation level. At Read Committed: silent `101`. At Repeatable Read: `40001`.
+
+**R3 — Day 4 harness fix: the measurements were contaminated, confirmed**
+
+Moving the timing capture **inside** the `async with` block:
+
+| Exp | Before (contaminated) | After (clean) |
+|---|---|---|
+| A — blackhole IP, `connect=1.0` | 1.707s | **1.002s** |
+| B — closed port, `connect=1.0` | 2.244s | **1.006s** |
+
+Both now land exactly on the configured timeout. The earlier overshoot was the harness, not the network.
+
+**R4 — Deferred cancellation: REJECTED**
+
+With the server sleeping **10s** and `read=0.5`, the abort came at **0.505s** (`httpx.ReadTimeout`). If cancellation had been deferred until the server responded, this would have taken ~10s. It did not.
+
+**So the timeout does fire on schedule.** My Day 4 hypothesis (that cancellation of in-flight I/O was deferred) is **wrong** and should be treated as closed.
+
+**But the mechanism behind the original 2.172s needs a correction.** Calling it "just harness overhead" does not survive arithmetic: if teardown were a constant overhead it would also have appeared in this run, where it was only ~5ms — not ~1.67s.
+
+The likelier explanation: the timeout fired at 0.5s correctly, but `AsyncClient.__aexit__` (closing the pool) **waited for the server's response** before releasing the connection. That gives `0.5s (timeout) + ~1.5s (remainder of the server's 2s sleep, spent in teardown) ≈ 2.0s`, which fits the observed 2.172s.
+
+If true, the lesson is sharper than "overhead": **a timeout fires on time, but closing the client in the same scope can block on the very operation you just timed out of.** Worth knowing before wiring timeouts into Relay's provider calls.
+
+> ⚠️ **Caveat on R4's experiment design:** two variables changed at once — the harness *and* the server sleep (2s → 10s). So the deferred-cancellation verdict is solid, but the explanation for the original `2.172s` is inferred, not isolated.
+> **Clean test (2 min):** run the **old, unfixed** harness against the **10s** server. ~10s confirms teardown blocks on the server's response; ~0.5s means something else. One variable, one answer.
+
+---
+
+### 🚧 Still Unresolved
+
+- **Exp B's contrast never reproduced.** A raw socket to `127.0.0.1:9999` (nothing listening — verified) also timed out at **1.001s** with `TimeoutError: timed out` instead of returning `ConnectionRefusedError` instantly. Bypassing httpx entirely proved the library is **not** at fault — good isolation work — but the *original purpose* of Exp B is still unmet: I have **not** measured the fast-fail (RST → instant `ConnectError`) versus slow-fail (blackhole → full timeout) contrast.
+  **And the cause is not identified.** Something on this machine silently drops loopback packets to closed ports; whether that is Windows Firewall, an antivirus network filter, or Docker Desktop's networking is **unverified guesswork**. Note that loopback traffic normally *bypasses* Windows Firewall, which makes this behaviour unusual. On Linux or WSL the same test should return `ECONNREFUSED` in single-digit milliseconds — worth running there someday to finally get the contrast measured.
+- **Day 3 Exp D** (`pg_stat_activity` connection count during pool load) — still not recorded. *(Tooling is no longer a blocker: I used `pg_stat_activity` successfully in today's Exp 3.)*
+- **Day 2 grace period** (`Measure-Command { docker stop ... }`) — exit code `137` still unexplained.
+- **R4's clean isolating test** (old harness + 10s server) — see caveat above.
 
 ---
 
