@@ -1,8 +1,8 @@
 # LEARNING_LOG.md — Master Index
 
 > [!IMPORTANT]
-> **Yeh sirf ek Short Master Index File hai.**
-> Har din aur hafte ke detailed operational logs, empirical measurements, code evidence, aur self-checks individual weekly log files mein hain (jaise [`docs/logs/WEEK_00.md`](file:///d:/PROJECTS/relay/docs/logs/WEEK_00.md)). Detailed log dekhne ke liye niche diye gaye links par click karein.
+> **This is a concise Master Index File.**
+> Detailed daily operational logs, empirical measurements, code evidence, and self-checks for each week are maintained in individual log files (e.g. [`logs/WEEK_00.md`](file:///d:/PROJECTS/relay/docs/logs/WEEK_00.md)). Click on the week links below to view detailed logs.
 
 ---
 
