@@ -41,3 +41,6 @@ desktop.ini
 
 # Weekly execution plans (personal working notes, not project history)
 docs/planning/
+
+# Local chat handoffs
+*CHAT_HANDOFF*
