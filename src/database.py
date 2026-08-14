@@ -1,14 +1,11 @@
-"""
-Database configuration — single source of truth for DB URL and engine setup.
+from dotenv import load_dotenv
 
-URL format: postgresql+asyncpg://user:password@host:port/dbname
-Port is 5433 because docker-compose maps host 5433 → container 5432.
-"""
+load_dotenv()
 
+import os
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-DATABASE_URL = "postgresql+asyncpg://postgres:relay@localhost:5433/relay"
+DATABASE_URL = os.environ["DATABASE_URL"]
 
 engine = create_async_engine(DATABASE_URL, echo=True)
-
 async_session = async_sessionmaker(engine, expire_on_commit=False)

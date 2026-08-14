@@ -3,6 +3,7 @@ uvicorn
 sqlalchemy
 asyncpg
 psycopg[binary]
+python-dotenv
 alembic
 pytest
 pytest-asyncio
