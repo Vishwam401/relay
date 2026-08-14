@@ -29,4 +29,8 @@ Learning is failure-driven: intentionally stop workers/databases, exhaust pools,
 - Building Microservices and Database Internals are optional/on-demand.
 
 ## Start Here
-Read `CURRENT_WEEK.md`. First active phase is Week 0: async/blocking, signals, file descriptors/connections, TCP timeouts, and PostgreSQL transaction anomalies. Do not jump ahead until its Definition of Done passes.
+Read `CURRENT_WEEK.md` — it is a pointer to the active week's **plan** (`docs/planning/WEEK_NN.md`) and **log** (`docs/logs/WEEK_NN.md`). Those are always two separate files: the plan states intent, the log states measured outcome.
+
+**Current position:** Week 0 is complete (async/blocking, signals, file descriptors/connections, TCP timeouts, PostgreSQL transaction anomalies — all reproduced with measurements). Week 1 is active and Din 1 is done: the `jobs` table and its first migration exist, with every column decision recorded in `docs/DECISIONS.md` as `D-03`..`D-08`. Next is Din 2 (`POST /jobs`, `GET /jobs/{id}`).
+
+Do not jump ahead of the current day. Open items carried forward are listed at the bottom of `docs/LEARNING_LOG.md`.

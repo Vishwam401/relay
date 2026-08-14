@@ -1,6 +1,10 @@
-# Week 0 — Systems & Concurrency Foundations
+# WEEK 0 — Log: Systems & Concurrency Foundations
 
-Daily logs of concepts learned, experiment measurements, stuck points, and questions.
+**Layer: L0** · Daily log of measurements, concepts, stuck points, and self-checks.
+Plan: [`../planning/WEEK_00.md`](../planning/WEEK_00.md) · Decisions: [`../DECISIONS.md`](../DECISIONS.md)
+
+> This is the **log** — what actually happened, with measured numbers.
+> What was *intended* is in the plan linked above.
 
 ---
 

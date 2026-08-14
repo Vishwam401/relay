@@ -4,15 +4,7 @@ Weekly incident postmortems and external system failure analyses.
 
 ---
 
-## Incident 01 — Buttondown Database Connection Exhaustion
-
-- **What Broke:** New incoming HTTP requests failed to acquire database connections, causing cascading timeouts and 500 errors across the application.
-- **Root Cause:** Application hit configured database connection pool ceiling (`pool_size` + `max_overflow`). Connection queue timed out under sudden load spike.
-- **Key Takeaway:** Connection pool exhaustion looks like "Database is slow/down" to end-users, but the database engine itself is healthy — the application layer ran out of connection handles.
-- **Relay System Fix:** Configure explicit pool timeouts (`pool_timeout`), separate read/write pools, and monitor active connection metrics (`pg_stat_activity`).
-
-
-## Buttondown — Database Connection Exhaustion (Week 0, Day 3)
+## Incident 01 — Buttondown: Database Connection Exhaustion (Week 0, Day 3)
 
 **Source:** [Buttondown incident 0024](https://buttondown.com/blog/incident-0024)
 *Summary paraphrased; see source for the full writeup.*
