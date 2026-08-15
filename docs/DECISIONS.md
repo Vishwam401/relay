@@ -146,11 +146,62 @@ The reason usually given for `jsonb` — GIN indexing and querying inside the pa
 1. **Byte-exact input is not recoverable.** Key order and duplicate keys are lost. If a signed payload ever needs verification, re-serialising from `jsonb` will break the signature. Not a Relay requirement today — Relay does not sign payloads — but this permanently forecloses that option without a migration.
 2. **Insert is slightly more expensive** than `json` (parse + normalise rather than store text).
 3. **Large payloads carry a TOAST cost.** Values beyond roughly 2 KB are compressed and stored out-of-line. Precisely: a TOASTed value is **not** read unless the column is actually selected, and an `UPDATE` that does not modify the payload reuses the TOAST pointer rather than rewriting it. So the claim query is only affected if it selects `payload`. A Week 4 concern, not a Din 1 one.
-4. **No size limit is enforced yet.** Deliberate: the limit belongs at the API layer (reject before bytes are parsed and sent to the DB, returning a clean `413`/`422`) rather than as a DB `CHECK` that fires deep in the stack after the work is already done. Exact limit is Din 2's decision.
+4. **Payload size limit and `GET` response exclusion — resolved in Din 2.** Both ends of the pipeline constrain this one column, for different reasons. Full reasoning in the amendment below.
+
 
 **Rejected:**
 - **(a) `json`** — one strong use case exists: byte-exact preservation for cryptographic signature verification, audit/compliance requirements, or storing third-party signed webhook bodies. None apply to Relay.
 - **(c) `text` / `bytea`** — maximally opaque and cheapest to write, but discards free syntax validation and all future query ability for no benefit. Would only make sense if payloads were genuinely non-JSON binary.
+
+---
+
+### `[AMENDED — Din 2]` Cost #4 resolved: what bounds this column, on the way in and on the way out
+
+Cost #4 deferred two things to Din 2: the exact size limit, and where to enforce it. Recorded here rather than as a new `D-` number because both concern this same column.
+
+#### Ingress — the size limit
+
+**Chose:** a **256 KB payload budget**, enforced as a **266,240-byte bound on the whole request body**, in **HTTP middleware**, returning **`413`**.
+
+Two numbers, one check. The 4 KB difference is envelope: the JSON structure and the `type` field. Only 266,240 is enforced; 256 KB is the budget it derives from, not a second independent limit. That distinction is worth stating because the first implementation *did* have two independent checks — a middleware bound on the body and a Pydantic validator on the payload dict — and they disagreed, producing `413` for some oversized requests and `422` for others. There is now exactly one enforcement point, and the Pydantic validator has been removed.
+
+On the status code: RFC 9110 names 413 **`Content Too Large`**. The older `Request Entity Too Large` label is RFC 7231's; both constants exist in Starlette and both mean 413. The code uses the RFC 9110 name to match the RFC being cited.
+
+**Why 256 KB:** a job payload is *arguments to a function call*, not a data transfer. Anything genuinely large — files, images, exports — belongs in object storage with the payload carrying only a reference. Managed queues land in the same order of magnitude for the same reason (AWS SQS caps a message at 256 KB), which is corroboration rather than justification. **No measurement supports 256 KB specifically** — it is an order-of-magnitude judgement, and cheap to move either way.
+
+**Why middleware, and not a validator — this was found the hard way. `[MEASURED]`**
+
+The first implementation put the check inside the `create_job` handler body. FastAPI reads and parses the request body while resolving parameters, *before* the function body runs, so the check ran after the damage. Three ~306 KB requests separated the cases:
+
+| Request | Before the fix | After the fix |
+|---|---|---|
+| oversized, valid JSON | `413` | `413` |
+| oversized, `type: ""` | `422` `string_too_short` | **`413`** |
+| oversized, malformed JSON | `422` `json_invalid`, `loc: ["body", 306274]` | **`413`**, no `loc` |
+
+The `loc: ["body", 306274]` is the proof: the JSON parser had reached character 306,274, so the entire body was buffered and parse was attempted before any size check. The limit provided **no** memory or CPU protection, and the status code for an oversized body depended on whether the body happened to be valid. After the move, all three return `413` and the parser offset is gone — no parse is attempted.
+
+This is precisely the property Cost #4 asked for (*"reject before bytes are parsed"*), and it is only obtainable outside the handler: FastAPI reads the body before dependency resolution, so not even a `Depends` guard runs early enough.
+
+**Cost:**
+1. **The limit rests on a header the sender controls.** `Content-Length` is absent under `Transfer-Encoding: chunked` and optional in HTTP/2, and the check is skipped when the header is missing. The threat model is therefore *an honest client that made a mistake*, not an adversary. Recorded as `P-08` and deliberately unfixed in Week 1: closing it needs ASGI-level stream byte-counting, which is Week 4 hardening. `D-04`'s heuristic applies — tighten once real pain appears.
+2. **The database column stays unbounded.** This constrains one entry point, not the column. Din 4 and Din 5 insert directly via `psql`, entirely outside it. Same shape as `D-04` Cost #3, where `max_length=100` on `type` lives at the API layer and the DB `CHECK` is still unapplied.
+3. **The number is not derived from measurement.** If Week 4 finds real payloads clustering above it, the limit was wrong; far below, it was never load-bearing. Both are information; neither exists yet.
+
+**Rejected:**
+- **A Pydantic `field_validator` on serialised payload size** — measured above to run after parse, so it cannot prevent the cost that motivates the limit. It also had to re-serialise the payload with `json.dumps` purely to measure it, making the oversized path *more* expensive.
+- **A DB `CHECK` on `octet_length(payload)`** — would bound the column (which the API-layer choice does not), but only after the bytes crossed the network, were parsed, and reached Postgres. Worth reconsidering when non-API write paths start mattering.
+- **No limit at all** — tenable while the only client is the developer, but the failure mode is unusually bad. Week 0 Day 1 measured that CPU-bound synchronous work inside the event loop stalls every concurrent request (`6.04s vs 2.04s`), and a large `json.loads` is exactly that. One connection could stall the whole API process.
+
+#### Egress — `payload` is excluded from `GET /jobs/{id}`
+
+`GET /jobs/{id}` returns `{job_id, status}` and selects only those two columns at the SQL level. Two independent reasons, and it is worth keeping them separate because one of them turned out to be weaker than assumed:
+
+**(a) Avoids the TOAST read.** Cost #3 above established that a TOASTed value is not read unless the column is selected. `GET` is the polling endpoint, so this is the one query that runs repeatedly per job. **Correction to an earlier framing:** the saving is *only* the TOAST dereference. PostgreSQL is a row-store reading whole 8 KB heap pages, so `SELECT id, status` and `SELECT id, status, type, created_at` cost the same heap I/O — every non-TOASTed column is already in the tuple. Adding `type` or `created_at` to the response later is therefore close to free, and the reason for keeping the response minimal is **not** I/O.
+
+**(b) Narrows unauthenticated data exposure.** `D-03` chose sequential DB-generated ids, explicitly accepting that they are guessable, on the grounds that *"an unguessable id is obscurity, not security. The real fix is authorization."* That acceptance is cheap only while ids reveal nothing. Returning `payload` would turn a guessable id into a data read primitive over an endpoint with no auth — enumeration would yield whatever callers put in payloads. Excluding it **narrows the blast radius; it does not eliminate exposure**: `404` versus `200` still reveals which ids exist, and `status` still reveals what the system is doing. `D-03` Cost #3 already noted ids leak approximate job volume. The real fix remains authorization, which is out of scope for the month.
+
+The actual reason the response is minimal is neither of the above: **adding a response field is backward-compatible, removing one is a breaking change.** Under that asymmetry, minimal is the reversible starting point. `attempts` was excluded on top of that because it is always `0` in Week 1 — a field that cannot vary teaches a client nothing while creating a compatibility obligation.
 
 ---
 
@@ -373,6 +424,9 @@ Recording these so that "not yet decided" is never mistaken for "overlooked":
 | `max_attempts`, `next_run_at`, `last_error` | Week 2 | Semantics depend on the backoff strategy, which is not yet designed. See D-07 |
 | `updated_at` | Week 2 | No consumer exists yet; the reaper will justify it |
 | `dead_letter` status value | Week 2 | Add via the `NOT VALID` + `VALIDATE CONSTRAINT` pattern in D-06's Cost section |
-| Payload size limit and where to enforce it | Din 2 | Belongs at the API layer; exact limit is Din 2's question 3 |
-| `type` validation placement (API vs worker) | Din 2 | Settled today only that it does **not** belong in the DB. See Din 2 question 2 |
+| ~~Payload size limit and where to enforce it~~ | ~~Din 2~~ | ✅ **Resolved Din 2** — 266,240-byte body bound in HTTP middleware, `413`. See `D-05` Cost #4 amendment. Residual gap: `P-08` |
+| ~~`type` validation placement (API vs worker)~~ | ~~Din 2~~ | ✅ **Partially resolved Din 2** — API layer bounds shape (`min_length=1`, `max_length=100`, whitespace-only rejected). The real invariant — *a handler is registered for this type* — still cannot be checked until Din 3's handler registry exists, so `D-04`'s position is unchanged |
+| DB-level bound on `type` length | Week 4 | `D-04` Cost #3's `CHECK (length(type) <= 100)` is still unapplied. Din 2 bounded it at the API layer only, so `psql` inserts bypass it |
+| Stream-level body limit (`Content-Length`-independent) | Week 4 | `P-08`. Record the fix's own overshoot bound (limit + one chunk) when it lands |
+| Response fields `type` / `created_at` on `GET /jobs/{id}` | When a consumer needs them | Measured to be near-free (row-store; same heap page). Excluded only for response-surface reversibility, not cost |
 

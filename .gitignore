@@ -44,3 +44,7 @@ docs/planning/
 
 # Local chat handoffs
 *CHAT_HANDOFF*
+
+# Scratch files & test payloads
+large*.json
+
