@@ -39,12 +39,12 @@ desktop.ini
 *.sqlite
 *.db
 
-# Weekly execution plans (personal working notes, not project history)
+# Weekly execution plans & daily briefs/keys
 docs/planning/
+docs/daily/
 
 # Local chat handoffs
 *CHAT_HANDOFF*
 
 # Scratch files & test payloads
 large*.json
-
