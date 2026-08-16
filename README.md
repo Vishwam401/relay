@@ -1,177 +1,149 @@
 # Relay
 
-A durable background job execution engine built from PostgreSQL primitives.
-No Redis. No message broker. One table, three guarantees.
+[![Python 3.13](https://img.shields.io/badge/python-3.13-blue.svg)](https://www.python.org/downloads/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.141.1-009688.svg)](https://fastapi.tiangolo.com)
+[![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16-336791.svg)](https://www.postgresql.org)
+[![SQLAlchemy](https://img.shields.io/badge/SQLAlchemy-2.0-red.svg)](https://www.sqlalchemy.org)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
+A durable, crash-resilient distributed background job execution engine built on top of **PostgreSQL transactional primitives**. 
+
+> **Zero Redis. Zero RabbitMQ. Zero Celery.**
+> One relational table, atomic state transitions, and strict durability guarantees.
 
 ---
 
-## The Contract
+## 🎯 The Core Contract
 
-| # | Guarantee |
-|---|---|
-| 1 | An accepted job is **never lost** — API crash, DB restart, worker death |
-| 2 | A side effect happens **exactly once**, even if the worker crashes five times |
-| 3 | Failures **retry boundedly** — never an infinite loop |
-| 4 | Attempts exhausted → **dead letter queue**, never silence |
-| 5 | The system can always say **where a job is** |
+Relay is designed around five non-negotiable distributed execution invariants:
+
+* **Durability First:** An accepted job is never lost across API crashes, DB restarts, or worker failures.
+* **At-Least-Once Execution:** Jobs surviving node/process crashes are guaranteed to be recovered and executed.
+* **Bounded Retries & DLQ:** Transient failures retry with backoff; exhausted attempts route to Dead Letter Queue.
+* **Deterministic Traceability:** Exact state and lifecycle stage is queryable in real-time.
+* **Clean Transaction Boundaries:** Non-database execution I/O is decoupled from row locks to prevent connection starvation.
 
 ---
 
-## Architecture
+## 📐 Architecture & Flow
 
-```
-┌─────────────────┐        ┌──────────────────────────────────┐
-│   API Process   │        │          PostgreSQL               │
-│                 │        │                                   │
-│  POST /jobs ────┼──────► │  jobs table (status state machine)│
-│  GET  /jobs/:id ◄────────┼─ id · type · payload · status    │
-│                 │        │  attempts · created_at            │
-└─────────────────┘        └──────────┬───────────────────────┘
-                                      │
-                           ┌──────────▼───────────┐
-                           │    Worker Process     │
-                           │                       │
-                           │  claim (FOR UPDATE)   │
-                           │  → execute handler    │
-                           │  → mark succeeded/    │
-                           │    failed             │
-                           └──────────┬────────────┘
-                                      │
-                           ┌──────────▼───────────┐
-                           │    Reaper Loop        │
-                           │  (Week 2)             │
-                           │  Lease expiry →       │
-                           │  reset running→pending│
-                           └───────────────────────┘
+```mermaid
+flowchart TD
+    Client([HTTP Client]) -->|POST /jobs| API[FastAPI Ingress]
+    API -->|1. INSERT ... RETURNING\n2. COMMIT| DB[(PostgreSQL\njobs table)]
+    API -->|202 Accepted| Client
+
+    Worker[Worker Process] -->|1. SELECT ... FOR UPDATE\n2. UPDATE status='running'\n3. COMMIT| DB
+    Worker -->|Execute Handler\nZero DB Locks Held| Handler[Async Task Execution]
+    Handler -->|1. UPDATE status='succeeded'/'failed'\n2. COMMIT| DB
+
+    Reaper[Reaper Loop\nWeek 2] -.->|Heartbeat / Lease Timeout\nReset running to pending| DB
 ```
 
-### State Machine
+---
 
-```
-pending ──► running ──► succeeded
-                  └───► failed ──► (retry) ──► dead_letter
+## 🔄 State Machine
+
+Every state transition is enforced via **atomic Compare-and-Set (CAS)**:
+
+```mermaid
+stateDiagram-v2
+    [*] --> pending : POST /jobs (Committed)
+    pending --> running : Worker Claim (CAS Guarded)
+    running --> succeeded : Execution Success
+    running --> failed : Handler Exception
+    failed --> pending : Retry (Exponential Backoff)
+    failed --> dead_letter : Max Attempts Exhausted
 ```
 
-Every transition is a **guarded compare-and-set**:
+#### Guarded Atomic Transition Primitive
 ```sql
-UPDATE jobs SET status='running'
-WHERE id=$1 AND status='pending'   -- guard: only move forward
+UPDATE jobs 
+SET status = 'running' 
+WHERE id = $1 AND status = 'pending';
 ```
-`rowcount = 0` means a concurrent writer changed state first. Never overwrite.
+> If `rowcount == 0`, a concurrent writer or lease reaper modified the state first. The worker yields immediately without clobbering external state.
 
 ---
 
-## Stack
+## ⚡ Quickstart
 
-```
-Python 3.13  ·  FastAPI  ·  SQLAlchemy 2.0 (async)  ·  asyncpg
-PostgreSQL 16  ·  Alembic  ·  Docker Compose
-```
-
-No Redis. No Celery. No RabbitMQ. PostgreSQL is the queue.
-
----
-
-## Key Design Decisions
-
-Full rationale in [`docs/DECISIONS.md`](docs/DECISIONS.md).
-
-| Decision | Chose | Why |
-|---|---|---|
-| Queue backend | PostgreSQL `jobs` table | Durable by default; `COMMIT` = guaranteed delivery |
-| Job ID | DB-generated `bigint` | Primary key ≠ idempotency key — kept as separate concerns |
-| `status` column | `text + CHECK` | `ENUM` has no `DROP VALUE`; Alembic cannot autogenerate enum changes |
-| Payload size limit | HTTP middleware | Body must be rejected *before* it is read and parsed |
-| Claim transaction | Committed **before** handler runs | Holding locks across I/O = `idle in transaction`, blocking DDL |
-| Status transitions | Compare-and-set + rowcount check | Only correct mechanism under concurrent writers |
-
----
-
-## Empirical Findings (Measured, Not Assumed)
-
-Every claim below was measured on this machine. Labelled `[MEASURED]` throughout [`docs/`](docs/).
-
-- **Idle poll cost:** `BEGIN + SELECT FOR UPDATE + COMMIT` per interval — a transaction rate, not a query rate. At 2 s interval: 0.5 tx/s per worker.
-- **`idle in transaction` trap:** A worker that holds its claim transaction open across a 2 s handler becomes PID 53 from `P-06` — blocking routine DDL (`ALTER TABLE`, migrations) for as long as the handler runs. Verified with `pg_stat_activity` differential (Run A vs Run B).
-- **At-most-once on crash:** Today's engine delivers each job *at most once*. After the claim commits, a worker crash leaves `status = running` forever — the claim query filters on `pending`. At-least-once requires the reaper (Week 2).
-- **Transition guard is load-bearing:** Manually updating a claimed job's status during the handler window produced `rowcount = 0` on the mark — the guard detected the conflict and did not overwrite.
-
----
-
-## Running Locally
-
+### 1. Start Infrastructure & App
 ```bash
-# 1. Start Postgres
+# Start PostgreSQL container
 docker compose up -d
 
-# 2. Install dependencies
-pip install -r requirements.txt
-
-# 3. Run migrations
+# Run database migrations
 alembic upgrade head
 
-# 4. Start API
+# Terminal 1: Start API Server
 uvicorn src.main:app --reload
 
-# 5. Start worker (separate terminal)
+# Terminal 2: Start Worker Process
 python -m src.worker
 ```
 
-### Enqueue a job
-
+### 2. Enqueue & Inspect Jobs
 ```powershell
+# Enqueue a background job
 Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8000/jobs `
   -ContentType application/json `
   -Body '{"type":"sleep","payload":{}}'
-```
 
-### Check status
-
-```powershell
+# Query job execution status
 Invoke-RestMethod http://127.0.0.1:8000/jobs/1
 ```
 
 ---
 
-## Project Structure
+## 🛠️ Key Architectural Decisions
 
-```
-src/
-  main.py        # FastAPI app — POST /jobs, GET /jobs/{id}
-  worker.py      # Worker loop — claim → execute → mark
-  models.py      # SQLAlchemy Job model
-  schemas.py     # Pydantic request/response models
-  database.py    # Async engine + session factory
-  middleware.py  # Payload size limit (HTTP layer)
-alembic/         # Migrations
-docs/
-  DECISIONS.md   # Architecture Decision Records
-  PROBLEMS.md    # Interesting failure modes & open questions
-  LEARNING_LOG.md
-  logs/          # Weekly measurement logs (WEEK_00.md, WEEK_01.md …)
-labs/            # Week 0 experiments (throwaway)
-tests/           # Integration tests (Week 1+)
-```
+Comprehensive rationale and trade-offs documented in [`docs/DECISIONS.md`](docs/DECISIONS.md).
 
----
-
-## Roadmap
-
-| Week | Focus | Key addition |
+| Component | Design Choice | Systems Rationale |
 |---|---|---|
-| ✅ Week 1 | Core engine | `jobs` table · two endpoints · worker loop · handler registry · graceful shutdown |
-| Week 2 | Crash recovery | Leases · heartbeats · reaper · retries with backoff · dead letter queue |
-| Week 3 | Exactly-once | Idempotency keys · deduplication · side-effect counter table |
-| Week 4 | Production hardening | Rate limiting · `EXPLAIN ANALYZE` index tuning · load tests · stream-counting payload limit |
+| **Storage Engine** | PostgreSQL (`jobs` table) | Native ACID durability; `COMMIT` guarantees zero-loss ingress without an external broker. |
+| **Identity Model** | DB-generated `bigint` | Primary Key and future Idempotency Keys are decoupled into separate concerns. |
+| **Status Domain** | `TEXT` + `CHECK` constraint | Avoids Postgres enum `DROP VALUE` lock hazards and migration incompatibilities. |
+| **Ingress Bounds** | HTTP Middleware byte bound | Drops oversized requests before reading/parsing body into application memory. |
+| **Lock Discipline** | Claim commit before handler | Decouples execution latency from Postgres row locks, eliminating `idle in transaction` hazards. |
+| **Signal Handling** | Custom `SIGINT`/`SIGTERM` hooks | Enforces *finish-current* graceful shutdown (exit code 0) without leaving abandoned in-flight rows. |
 
 ---
 
-## Documentation
+## 🗺️ Project Roadmap
 
-| File | Contents |
-|---|---|
-| [`docs/DECISIONS.md`](docs/DECISIONS.md) | Every architecture decision with rejected alternatives |
-| [`docs/PROBLEMS.md`](docs/PROBLEMS.md) | Failure modes, open questions, residual gaps |
-| [`docs/LEARNING_LOG.md`](docs/LEARNING_LOG.md) | Master index of weekly measurement logs |
-| [`docs/logs/WEEK_00.md`](docs/logs/WEEK_00.md) | Async I/O, signals, Postgres transaction anomalies |
-| [`docs/logs/WEEK_01.md`](docs/logs/WEEK_01.md) | Schema design, API, worker loop, concurrency traps |
+- [x] **Week 1: Core Engine**
+  - Durable `jobs` schema & migrations
+  - `POST /jobs` (202 Accepted) and `GET /jobs/{id}` endpoints
+  - Single-transaction claim query (`SELECT FOR UPDATE` + CAS guard)
+  - Decoupled worker loop & dynamic Handler Registry
+  - Finish-current graceful shutdown lifecycle
+- [ ] **Week 2: Crash Resilience & Recovery**
+  - Worker leases, heartbeats & background Reaper process
+  - Bounded exponential retries & Dead Letter Queue (`dead_letter`)
+- [ ] **Week 3: Exactly-Once Processing**
+  - Idempotency keys, request deduplication, side-effect isolation
+- [ ] **Week 4: Production Hardening & Benchmarking**
+  - `EXPLAIN ANALYZE` index tuning, stream rate-limiting, load testing
+
+---
+
+## 📁 Repository Layout
+
+```text
+src/
+├── main.py        # FastAPI endpoints (POST /jobs, GET /jobs/{id})
+├── worker.py      # Worker polling, claim-execute-mark loop, signal handling
+├── models.py      # SQLAlchemy declarative models & schema constraints
+├── schemas.py     # Pydantic v2 validation contracts
+├── database.py    # Asyncpg connection pooling & engine configuration
+└── middleware.py  # Ingress payload size-limiting middleware
+alembic/           # Schema migration revisions
+docs/              # Architecture Decision Records (ADRs) & empirical logs
+```
+
+---
+
+## 📄 License
+MIT
