@@ -39,9 +39,10 @@ desktop.ini
 *.sqlite
 *.db
 
-# Weekly execution plans & daily briefs/keys
+# Weekly execution plans, daily briefs/keys & reading summaries
 docs/planning/
 docs/daily/
+docs/ddia_summaries/
 
 # Local chat handoffs
 *CHAT_HANDOFF*
