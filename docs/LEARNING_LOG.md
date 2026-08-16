@@ -24,7 +24,7 @@ Keeping them apart is what makes *"did the original goal get met?"* answerable l
 | Week | Title / Focus | Plan | Log | Status |
 |---|---|---|---|---|
 | **Week 0** | Systems & Concurrency Foundations (Days 1–5) | [plan](planning/WEEK_00.md) | [**log**](logs/WEEK_00.md) | ✅ Complete |
-| **Week 1** | Job Engine & DB-backed Queue (`SKIP LOCKED`) | [plan](planning/WEEK_01.md) | [**log**](logs/WEEK_01.md) | 🔄 Din 1 done |
+| **Week 1** | Job Engine & DB-backed Queue (`SKIP LOCKED`) | [plan](planning/WEEK_01.md) | [**log**](logs/WEEK_01.md) | 🔄 Din 1–3 done |
 | **Week 2** | Durability, Leases & Reaper Design | not written | — | ⏳ Upcoming |
 | **Week 3** | Idempotency & Deduplication Engine | not written | — | ⏳ Upcoming |
 | **Week 4** | Rate Limiting, Backoff & Production Hardening | not written | — | ⏳ Upcoming |
@@ -36,7 +36,7 @@ Keeping them apart is what makes *"did the original goal get met?"* answerable l
 | File | Contents |
 |---|---|
 | [`DECISIONS.md`](DECISIONS.md) | Architecture decisions. `D-03`..`D-08` = `jobs` schema. `D-01`, `D-02` reserved for Week 1 Din 6 |
-| [`PROBLEMS.md`](PROBLEMS.md) | Problem explorations, `P-01`..`P-06` |
+| [`PROBLEMS.md`](PROBLEMS.md) | Problem explorations, `P-01`..`P-10` |
 | [`POSTMORTEMS.md`](POSTMORTEMS.md) | Others' incidents. **1 entry** — Week 0 DoD wants 2, Cloudflare still open |
 
 ---
@@ -55,3 +55,8 @@ Kept here so nothing quietly disappears between weeks.
 | `ACCESS EXCLUSIVE` lock-queue hazard | Week 1 Din 1 (`D-07`) | Inference only — not measured |
 | Age of the abandoned transactions | Week 1 Din 1 (`P-06`) | Upper bound inferred, not measured |
 | `idle_in_transaction_session_timeout` decision | Week 1 Din 1 (`P-06`) | Belongs with pool sizing, Week 4 |
+| `ACCESS EXCLUSIVE` hazard — measurement **attempted and failed** | Week 1 Din 3 | Lock granted because no live `idle in transaction` session existed at that moment. Test procedure now known |
+| C6 shutdown numbers — exit code, elapsed time (mid-job and idle) | Week 1 Din 3 | Run by the user, **not recorded**. `P-10`'s idle claim is inference from code |
+| `ORDER BY created_at` has no tiebreak | Week 1 Din 3 | **Blocks Din 4's central question.** Settle before seeding ten jobs |
+| `signal.SIGBREAK` unregistered in the worker | Week 1 Din 3 | Only `SIGINT` live on Windows; `SIGTERM` correct for Docker but undeliverable natively |
+| DDIA Ch 7 second pass (pp. 233–251) | Week 1 Din 1/3 | **Deliberate slip** to Din 5, not an omission |

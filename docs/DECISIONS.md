@@ -20,6 +20,13 @@ Rejected: (x) because <concrete reason, ideally measured>
 
 Both depend on measurements that do not exist yet. Writing them now would mean guessing the Cost field.
 
+**Raw material collected so far — `D-01`'s Cost field** (Din 3, `[MEASURED]`, one idle worker, `POLL_INTERVAL_SECONDS = 2.0`, this machine):
+
+- The idle poll is **a transaction per poll**, not a bare `SELECT`: `BEGIN` → `SELECT … FOR UPDATE` → `COMMIT` in the SQL echo, repeating forever. That is **0.5 tx/s per idle worker** at a 2 s interval, each one a `Seq Scan`. The statement is reported `cached`, so it is not re-planned; the poll is read-only, so it writes no WAL.
+- Load scales with **worker count × 1/interval**, not with job count — an idle fleet is not free.
+- The interval simultaneously bounds **enqueue-to-start latency** and, because the loop sleeps it in a single `await`, **shutdown latency**. Full write-up: `P-10`.
+- Still missing before `D-01` can be written: Din 4's throughput comparison, and the claim query's behaviour at a queue depth where `Seq Scan` stops being appropriate (`P-03`, Week 4).
+
 ---
 
 # Schema decisions (Week 1, Din 1)
@@ -118,6 +125,15 @@ This is the sharp contrast with `status` (D-06): a bad `status` value makes a ro
 - **(d) lookup table + FK** — adds a table and a per-write FK check for a set that will change constantly, and still cannot see the handler registry. Becomes genuinely attractive only when per-type *metadata* is needed (per-type timeout, retry policy, enabled flag) — at which point validation is a free side effect rather than the goal.
 
 **Revisit when:** Week 4 needs per-type configuration. Then (d) arrives naturally and brings validation with it.
+
+**Amendment — Din 3, the bill for this decision arrived, and it was cheaper than the Cost section predicted.** Din 3 built the handler registry, so the invariant this entry said the database could not see now exists somewhere concrete. An unregistered type was enqueued and the worker's behaviour was **measured**: job `23`, `type = 'does_not_exist'` → claimed once, marked `failed` once, then the worker went back to polling. No hot loop, no crash, no other job affected.
+
+Cost #1 above ("typos reach the database … visible and contained") is therefore confirmed rather than assumed. Two refinements the original entry did not state:
+
+1. **The chosen handling — claim it, then mark `failed` — consumes the claim.** That is deliberate (the alternative, leaving it claimable, means writing `running → pending`, which is Week 2's reaper's transition, and it re-encounters the row every poll). The cost is specific: a **deployment ordering mistake**, where the worker rolls out before its handler is registered, becomes permanent for those rows rather than self-healing. With Week 2's retries it will burn every attempt and land in the DLQ for a reason that has nothing to do with the job.
+2. **So the mitigation is operational, not schema-level:** deploy handler registration before, or with, the workers that consume the type. Nothing in the database can enforce that ordering — which is the same conclusion this entry started from, now arriving from the deployment side rather than the validation side.
+
+This does not change the decision. It is what *"the invariant lives in the application"* actually costs, priced.
 
 ---
 
@@ -425,7 +441,10 @@ Recording these so that "not yet decided" is never mistaken for "overlooked":
 | `updated_at` | Week 2 | No consumer exists yet; the reaper will justify it |
 | `dead_letter` status value | Week 2 | Add via the `NOT VALID` + `VALIDATE CONSTRAINT` pattern in D-06's Cost section |
 | ~~Payload size limit and where to enforce it~~ | ~~Din 2~~ | ✅ **Resolved Din 2** — 266,240-byte body bound in HTTP middleware, `413`. See `D-05` Cost #4 amendment. Residual gap: `P-08` |
-| ~~`type` validation placement (API vs worker)~~ | ~~Din 2~~ | ✅ **Partially resolved Din 2** — API layer bounds shape (`min_length=1`, `max_length=100`, whitespace-only rejected). The real invariant — *a handler is registered for this type* — still cannot be checked until Din 3's handler registry exists, so `D-04`'s position is unchanged |
+| ~~`type` validation placement (API vs worker)~~ | ~~Din 2–3~~ | ✅ **Resolved Din 3** — API bounds shape; the real invariant (*a handler is registered*) is now checked by the worker's registry at claim time. Measured: unregistered type → claimed once, `failed` once, no hot loop. `D-04`'s position unchanged; its priced cost is the deploy-ordering hazard in the Din 3 amendment |
+| Shutdown observation latency vs poll interval | Week 2 | `P-10`. The loop sleeps the interval in one `await`, so the shutdown flag is seen up to a full interval late. Fix is slicing the sleep or waiting on an `asyncio.Event`; safe at 2 s inside Docker's 10 s grace, so deferred with the rest of shutdown hardening |
+| `ORDER BY (created_at, id)` tiebreak on the claim query | **Din 4, before seeding** | `now()` is per-transaction (measured Din 3 `K2`), so a single-statement bulk insert gives identical `created_at` and "which job did that worker get?" becomes unfalsifiable — which is precisely Din 4's question |
+| `signal.SIGBREAK` registration in the worker | Week 2 | Only `SIGINT` is live on Windows today; `SIGTERM` is registered and correct for Docker but undeliverable natively. Decides whether `Ctrl+Break` is graceful or fatal |
 | DB-level bound on `type` length | Week 4 | `D-04` Cost #3's `CHECK (length(type) <= 100)` is still unapplied. Din 2 bounded it at the API layer only, so `psql` inserts bypass it |
 | Stream-level body limit (`Content-Length`-independent) | Week 4 | `P-08`. Record the fix's own overshoot bound (limit + one chunk) when it lands |
 | Response fields `type` / `created_at` on `GET /jobs/{id}` | When a consumer needs them | Measured to be near-free (row-store; same heap page). Excluded only for response-surface reversibility, not cost |

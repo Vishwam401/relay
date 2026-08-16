@@ -10,11 +10,26 @@
 | 📋 **Plan — aaj kya karna hai** | [`../planning/WEEK_01.md`](../planning/WEEK_01.md) |
 | 📓 **Log — kya hua, measured numbers** | [`../logs/WEEK_01.md`](../logs/WEEK_01.md) |
 
-**Progress:** Din 1–2 complete (schema + migration; both API endpoints). Next: **Din 3 — worker loop (`claim → execute → mark`)**.
+**Progress:** Din 1–3 complete (schema + migration; both API endpoints; worker loop `claim → execute → mark`). Next: **Din 4 — two workers, one job: build the instrument, then break the queue**.
 
-> **Before Din 3:** the `RabbitMQ acknowledgements` reading from Din 2 is still outstanding
-> (`ack` before vs after work, why `auto-ack` is dangerous, `nack` / `requeue`). It compares
-> directly against when the worker marks `running` versus `succeeded`, so it is worth doing first.
+| Din 4 files | |
+|---|---|
+| 📄 **Open this** | [`../daily/DIN_04_BRIEF.md`](../daily/DIN_04_BRIEF.md) — 6 steps, prediction questions, differential verification, scope guard |
+| 🔒 **Sealed** | [`../daily/DIN_04_KEY.md`](../daily/DIN_04_KEY.md) — one section per step, opened only *after* that step has been run |
+| 📁 Done | [`../daily/DIN_03_BRIEF.md`](../daily/DIN_03_BRIEF.md) · [`../daily/DIN_03_KEY.md`](../daily/DIN_03_KEY.md) |
+
+> **Two Din 3 findings that Din 4 depends on:**
+> - `LockRows` sits **below** `Limit` in the claim plan `[MEASURED]`, so a row is locked before `Limit`
+>   is satisfied. That is the mechanism behind Din 4's central question.
+> - `ORDER BY created_at` has **no tiebreak**, and `now()` is per-transaction. **Settle this before
+>   seeding Din 4's ten jobs**, or "which job did the second worker get?" becomes unfalsifiable.
+>
+> **Bench note `[MEASURED 2026-08-16]`:** `jobs` holds **27 rows — 21 `succeeded`, 6 `failed`, 0
+> `running`, 0 `pending`**, `attempts = 0` everywhere, `max(id) = 27`. Bench is clean; record this as
+> Din 4's starting count.
+>
+> **Din 4 adds one table (`job_executions`, via a migration) and one query change (`SKIP LOCKED`, in
+> Step 5).** Nothing else — lease, reaper, retry and `attempts` increments are all still Week 2.
 
 
 ---
@@ -40,7 +55,7 @@ One rule, so nothing gets misfiled again:
 | Week | Plan | Log | Status |
 |---|---|---|---|
 | Week 0 | [`planning/WEEK_00.md`](../planning/WEEK_00.md) | [`logs/WEEK_00.md`](../logs/WEEK_00.md) | ✅ Complete (1 open item: `POSTMORTEMS.md` entry #2) |
-| **Week 1** | [`planning/WEEK_01.md`](../planning/WEEK_01.md) | [`logs/WEEK_01.md`](../logs/WEEK_01.md) | 🔄 **Din 1–2 done** |
+| **Week 1** | [`planning/WEEK_01.md`](../planning/WEEK_01.md) | [`logs/WEEK_01.md`](../logs/WEEK_01.md) | 🔄 **Din 1–3 done** |
 | Week 2 | not written | — | ⏳ Durability, leases, reaper |
 | Week 3 | not written | — | ⏳ Idempotency, dedup |
 | Week 4 | not written | — | ⏳ Rate limiting, backoff, hardening |
@@ -64,4 +79,4 @@ One rule, so nothing gets misfiled again:
 | [`../DECISIONS.md`](../DECISIONS.md) | Architecture decisions. `D-03`..`D-08` = schema. `D-01`, `D-02` reserved for Week 1 Din 6 |
 | [`../LEARNING_LOG.md`](../LEARNING_LOG.md) | Master index into the weekly logs |
 | [`../POSTMORTEMS.md`](../POSTMORTEMS.md) | Others' incidents. 1 entry so far; Week 0 DoD wants 2 |
-| [`../PROBLEMS.md`](../PROBLEMS.md) | Problem explorations. `P-01`..`P-08` |
+| [`../PROBLEMS.md`](../PROBLEMS.md) | Problem explorations. `P-01`..`P-10` (`P-09` at-most-once inversion, `P-10` poll interval prices three things) |
