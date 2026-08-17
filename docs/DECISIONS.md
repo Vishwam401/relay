@@ -27,6 +27,18 @@ Both depend on measurements that do not exist yet. Writing them now would mean g
 - The interval simultaneously bounds **enqueue-to-start latency** and, because the loop sleeps it in a single `await`, **shutdown latency**. Full write-up: `P-10`.
 - Still missing before `D-01` can be written: Din 4's throughput comparison, and the claim query's behaviour at a queue depth where `Seq Scan` stops being appropriate (`P-03`, Week 4).
 
+**Raw material collected on Din 4 — and one gap that got bigger, not smaller.**
+
+`D-01`'s Cost field gains one measured number: an idle fleet's cost is **3 idle Postgres connections and ~2 tx/s for zero work**, measured on four forgotten workers (`P-13`, log `M9`; connections to `relay` dropped 4 → 1 when they were killed). That is the same claim Din 3 made per-worker, now observed at fleet scale by accident.
+
+`D-02`'s Cost field is **still not writable**, and Din 4 is the reason it looked writable when it was not. What Din 4 gives it:
+
+- **Measured, and it is the useful half:** `SKIP LOCKED` does not prevent duplicate execution — `FOR UPDATE` plus the compare-and-set guard already did that, including two workers claiming different rows **6 ms apart** with no duplicate. What `SKIP LOCKED` removes is a worker sitting in `Lock`/`transactionid` in front of a row someone else holds: with a 6 s lock held on the oldest pending row, the `skip_locked` worker started real work **1.25 s in**, while the plain `FOR UPDATE` worker had waited the full 6 s. Cost: the skipped row is deferred to a later poll, so best-effort FIFO (`P-05`) gets more approximate.
+- **Not measured, and previously believed measured:** the throughput comparison. Both of Din 4's "two worker" runs had a staggered second worker (10 s late, then 23 s late), so the 7/3 and 8/2 splits and the elapsed times are start-time artifacts, not strategy results (`P-12`). One clean run with a **proven overlap window** is still owed before `D-02` can state a Cost.
+- `SERIALIZABLE` was never run, so the third option in `D-02`'s title has no data at all.
+
+**Numbering note, so the next collision does not happen:** `D-09`..`D-20` are already claimed by `roadmap/BACKEND_ROADMAP_PART2.md` (Months 2–4), and `D-01`/`D-02` are reserved above. New Week 1 decisions therefore continue from **`D-21`**.
+
 ---
 
 # Schema decisions (Week 1, Din 1)
@@ -428,6 +440,46 @@ Secondary benefit: the default cannot be forgotten, so manual `psql` inserts dur
 
 ---
 
+## D-21: `job_executions` is an append-only instrument table, written *before* the handler runs, in its own transaction, with no foreign key and no index
+
+*(Week 1, Din 4. Numbered `D-21` because `D-09`..`D-20` belong to the Month 2–4 roadmap — see the numbering note at the top of this file.)*
+
+**Problem:** Relay's contract says a job's side effects must not be duplicated. Din 4 had to test that, and `jobs` alone **cannot** answer the question: `status` is a single column that gets overwritten, so `succeeded` looks identical whether one worker ran the job or five did. An `UPDATE` destroys the evidence of the previous writer by design. So the day needed a place where a second execution cannot erase the first one's record.
+
+**Options:**
+- (a) Append-only table, one row per execution, `(job_id, worker_id, executed_at)`
+- (b) An `executions integer` counter column on `jobs`, incremented per run
+- (c) The execution row written in the **same** transaction as the terminal `succeeded`/`failed` mark
+- (d) (a) plus `FOREIGN KEY (job_id) REFERENCES jobs(id)` and an index on `job_id`
+
+**Chose:** (a), with three specific placement decisions that matter more than the schema:
+
+1. **Written after the claim commits, before `await handler(payload)`.** So the row means *"a handler was entered for this job"*.
+2. **Written in its own session and its own transaction** (`record_execution()`), not inside the claim transaction and not inside the mark transaction.
+3. **No foreign key, no index on `job_id`.**
+
+**Why (1) — the ordering is the whole design.** A row written at *mark* time is evidence of completion, and a worker killed mid-handler leaves no trace at all — exactly the case Din 5 exists to observe. A row written at *claim* time would be evidence of intent, and would count jobs that never reached a handler. Writing it immediately before dispatch is the only position where the row means "work started", which is what a duplicate-execution test needs: two rows mean the handler ran twice, whatever `jobs` says.
+
+**Why (2) — evidence must not share a fate with the thing it is evidence about.** If the execution row is written in the same transaction as the terminal mark, then a failed mark rolls back the proof that the job ran (`P-11`'s starting point, and Din 4's own Step 1 prediction question). Committing separately means the two records can disagree — and that disagreement is the diagnostic. `job_executions` says the handler ran; `jobs` says `running`; the truthful reading is *"it ran and nobody recorded how it ended"*, which is precisely Week 2's problem.
+
+**Why (3) — measured to cost nothing yet, and both parts are reversible.** At 58 jobs and 30 execution rows the duplicate query (`GROUP BY job_id HAVING count(*) > 1`) is a sequential scan over a table of tens of rows. Adding an index today would be `P-03`'s mistake in miniature: freezing a guess before the data shape exists. The FK is a real decision rather than an omission, argued below.
+
+**Cost — all four of these are measured, not theoretical:**
+
+1. **It records handler dispatch, not claims.** `[MEASURED]` A job with an unregistered `type` is claimed, marked `failed`, and leaves **no** row (job `58`); a job whose handler raises leaves one (job `57`, `type = boom`). So "claimed" and "executed" are different populations, and only the second is instrumented. Consequence: the table cannot detect a job that was claimed and lost before dispatch.
+2. **`count(*) > 1` is a duplicate test only while retries do not exist.** Week 2's retry legitimately produces several rows for one job. The test expires the moment retries land, and the fix is another column (attempt number, or a claim id), not another query. Tracked as `P-11`.
+3. **No FK means orphan rows are accepted.** `[MEASURED]` `INSERT INTO job_executions (job_id, worker_id) VALUES (999999, 'probe-orphan')` succeeded. The instrument can therefore assert an execution of a job that never existed, and nothing catches a typo'd `job_id` in a manual probe. *(Probe row deleted; it consumed `id = 31`.)*
+4. **A crash between the claim commit and the execution row's commit under-counts.** `[INFERRED from code]` The gap is milliseconds wide and has not been reproduced deliberately, but in it a job is `running` with no execution row — the mirror image of Cost 1.
+
+**Rejected:**
+- **(b) counter column on `jobs`** — an `UPDATE` again, so it inherits the exact problem it was meant to solve: it cannot say *which* worker ran the job, or *when*, and a lost update loses the count silently. It also cannot support Din 4's actual use: `executed_at` is what made it possible to reconstruct a finished experiment's timeline and discover that the two workers barely overlapped (`P-12`). A counter would have hidden that permanently.
+- **(c) same transaction as the terminal mark** — kills the evidence exactly when it is most needed (mark fails, DB restarts, worker dies after the handler). Also makes the killed-mid-handler case indistinguishable from the never-started case, which is Din 5's entire subject.
+- **(d) FK + index — deferred, not dismissed.** The FK would buy referential honesty (Cost 3), and its price is a specific Week 4 conflict: deleting `jobs` rows older than 30 days then either fails on the FK, or needs `ON DELETE CASCADE`, which **deletes the execution history** — i.e. the audit trail disappears with the audited row, and an audit trail that vanishes with its subject is not much of an audit trail. The third option, `ON DELETE SET NULL`, needs a nullable `job_id` and turns the row into an orphan by design. That is a real decision with three unattractive branches, and it needs Week 4's retention policy to exist first. Recorded as deferred below.
+
+**Revisit when:** Week 2 adds retries (Cost 2 forces an attempt/claim identifier), or Week 4 defines job retention (forces the FK/cascade question), or the duplicate query gets slow enough to measure (then index `job_id`, with `EXPLAIN ANALYZE`, alongside `P-03`).
+
+---
+
 ## What was deliberately NOT decided today
 
 Recording these so that "not yet decided" is never mistaken for "overlooked":
@@ -443,7 +495,10 @@ Recording these so that "not yet decided" is never mistaken for "overlooked":
 | ~~Payload size limit and where to enforce it~~ | ~~Din 2~~ | ✅ **Resolved Din 2** — 266,240-byte body bound in HTTP middleware, `413`. See `D-05` Cost #4 amendment. Residual gap: `P-08` |
 | ~~`type` validation placement (API vs worker)~~ | ~~Din 2–3~~ | ✅ **Resolved Din 3** — API bounds shape; the real invariant (*a handler is registered*) is now checked by the worker's registry at claim time. Measured: unregistered type → claimed once, `failed` once, no hot loop. `D-04`'s position unchanged; its priced cost is the deploy-ordering hazard in the Din 3 amendment |
 | Shutdown observation latency vs poll interval | Week 2 | `P-10`. The loop sleeps the interval in one `await`, so the shutdown flag is seen up to a full interval late. Fix is slicing the sleep or waiting on an `asyncio.Event`; safe at 2 s inside Docker's 10 s grace, so deferred with the rest of shutdown hardening |
-| `ORDER BY (created_at, id)` tiebreak on the claim query | **Din 4, before seeding** | `now()` is per-transaction (measured Din 3 `K2`), so a single-statement bulk insert gives identical `created_at` and "which job did that worker get?" becomes unfalsifiable — which is precisely Din 4's question |
+| ~~`ORDER BY (created_at, id)` tiebreak on the claim query~~ | ~~Din 4, before seeding~~ | ✅ **Resolved Din 4, Step 0** — claim query now orders by `(created_at, id)`. It was load-bearing: the ten seeded jobs did share one `created_at`, and the reconstruction in the Din 4 log (`M4`) is only possible because job order was deterministic |
+| FK `job_executions.job_id → jobs(id)`, and an index on `job_id` | Week 4 (retention), or when the duplicate query gets slow | `D-21`. FK's three branches are all unattractive until a retention policy exists: plain FK blocks the delete, `CASCADE` deletes the audit trail with its subject, `SET NULL` orphans by design. Index deferred for `P-03`'s reason — measure, do not guess |
+| An attempt number / claim id on `job_executions` | Week 2, with retries | `P-11`. `count(*) > 1` stops meaning "duplicate" the moment a retry legitimately writes a second row |
+| A claim timestamp on `jobs` (`claimed_at` / `lease_expires_at`) | Week 2 | Din 4 made the gap concrete: a stuck `running` row carries no answer to *"how long has this been running?"* — `created_at` is enqueue time, not claim time. Do not add it before Din 5 has looked at a real stuck job |
 | `signal.SIGBREAK` registration in the worker | Week 2 | Only `SIGINT` is live on Windows today; `SIGTERM` is registered and correct for Docker but undeliverable natively. Decides whether `Ctrl+Break` is graceful or fatal |
 | DB-level bound on `type` length | Week 4 | `D-04` Cost #3's `CHECK (length(type) <= 100)` is still unapplied. Din 2 bounded it at the API layer only, so `psql` inserts bypass it |
 | Stream-level body limit (`Content-Length`-independent) | Week 4 | `P-08`. Record the fix's own overshoot bound (limit + one chunk) when it lands |
