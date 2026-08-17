@@ -1,5 +1,4 @@
 from datetime import datetime
-
 from sqlalchemy import (
     BigInteger,
     CheckConstraint,
@@ -62,8 +61,28 @@ class Job(Base):
         ),
     )
 
-    def __repr__(self) -> str:
-        return (
-            f"<Job(id={self.id}, type={self.type!r}, "
-            f"status={self.status!r}, attempts={self.attempts})>"
-        )
+
+class JobExecution(Base):
+    __tablename__ = "job_executions"
+
+    id: Mapped[int] = mapped_column(
+        BigInteger,
+        primary_key=True,
+        autoincrement=True,
+    )
+
+    job_id: Mapped[int] = mapped_column(
+        BigInteger,
+        nullable=False,
+    )
+
+    worker_id: Mapped[str] = mapped_column(
+        Text,
+        nullable=False,
+    )
+
+    executed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )

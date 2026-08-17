@@ -4,9 +4,9 @@ import signal
 import sys
 from collections.abc import Callable, Coroutine
 from typing import Any
-from sqlalchemy import select, update
+from sqlalchemy import insert, select, update
 from src.database import async_session
-from src.models import Job
+from src.models import Job, JobExecution
 
 POLL_INTERVAL_SECONDS = 2.0
 WORKER_ID = f"worker-{os.getpid()}"
@@ -36,6 +36,17 @@ REGISTRY: dict[str, Callable[[dict], Coroutine[Any, Any, None]]] = {
 }
 
 
+async def record_execution(job_id: int, worker_id: str) -> None:
+    async with async_session() as session:
+        async with session.begin():
+            await session.execute(
+                insert(JobExecution).values(
+                    job_id=job_id,
+                    worker_id=worker_id,
+                )
+            )
+
+
 async def run_worker() -> None:
     print(f"[{WORKER_ID}] Starting worker process (PID: {os.getpid()})...")
 
@@ -54,7 +65,7 @@ async def run_worker() -> None:
                     .where(Job.status == "pending")
                     .order_by(Job.created_at, Job.id)
                     .limit(1)
-                    .with_for_update()
+                    .with_for_update(skip_locked=True)
                 )
                 result = await session.execute(claim_query)
                 job = result.first()
@@ -91,6 +102,7 @@ async def run_worker() -> None:
         else:
             try:
                 print(f"[{WORKER_ID}] Executing job {job_id} (type={job_type})...")
+                await record_execution(job_id, WORKER_ID)
                 await handler(payload)
                 print(f"[{WORKER_ID}] Finished execution for job {job_id}.")
                 new_status = "succeeded"
