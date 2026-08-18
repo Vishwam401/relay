@@ -30,9 +30,16 @@ async def handle_boom(payload: dict) -> None:
     raise RuntimeError("Simulated handler failure: BOOM!")
 
 
+async def handle_slow(payload: dict) -> None:
+    print(f"[{WORKER_ID}] [SLOW HANDLER] Work started...")
+    await asyncio.sleep(8.0)
+    print(f"[{WORKER_ID}] [SLOW HANDLER] Work completed.")
+
+
 REGISTRY: dict[str, Callable[[dict], Coroutine[Any, Any, None]]] = {
     "sleep": handle_sleep,
     "boom": handle_boom,
+    "slow": handle_slow,
 }
 
 

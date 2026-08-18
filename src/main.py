@@ -8,7 +8,7 @@ from src.schemas import JobCreate, JobResponse
 
 app = FastAPI(title="Relay API")
 
-# Register Ingress Middleware
+
 app.middleware("http")(limit_payload_size)
 
 
