@@ -37,7 +37,27 @@ Both depend on measurements that do not exist yet. Writing them now would mean g
 - **Not measured, and previously believed measured:** the throughput comparison. Both of Din 4's "two worker" runs had a staggered second worker (10 s late, then 23 s late), so the 7/3 and 8/2 splits and the elapsed times are start-time artifacts, not strategy results (`P-12`). One clean run with a **proven overlap window** is still owed before `D-02` can state a Cost.
 - `SERIALIZABLE` was never run, so the third option in `D-02`'s title has no data at all.
 
+**Raw material collected on Din 5 — `D-01` gains its strongest Cost item, and `D-02` loses a justification it was going to use.**
+
+`D-01`'s Cost field gains one item that is about **correctness, not load**, and it is the biggest one yet. Every cost previously listed for Postgres-as-queue is a throughput or bloat argument: polling, MVCC churn, vacuum pressure, shared blast radius. Din 5 measured a different kind of cost. A worker was `kill -9`'d 3 s into an 8 s handler; the job's row stayed `running` with `attempts = 0`, its execution row present, and the completion evidence gone. Three stuck-count readings over five minutes were identical, and a **fresh, visibly-polling worker ignored the row** — because the claim query says `WHERE status = 'pending'` and the row is not in that set. `[MEASURED]`
+
+Stated as `D-01`'s Cost, in the terms that actually decide it:
+
+> A message broker gives crash recovery away for free — an unacknowledged message is redelivered when the consumer dies, because that is what a consumer ack *is*. Postgres has no equivalent, so the same event leaves a row that nothing in the system will ever look at again. **The trade is therefore not "free outbox pattern in exchange for polling overhead". It is "free outbox pattern in exchange for writing the redelivery mechanism yourself"** — and Week 2 is that invoice. Cite job 63.
+
+That reframes the entry. The transactional-enqueue argument is still the right reason to choose Postgres, but the honest Cost is a **component you now own**, not a performance penalty. Related, and it belongs in the same field: Din 5 also measured that graceful shutdown latency is bounded by the slowest handler and Relay bounds nothing (`P-15`), so the stuck row is reachable from the *graceful* path too whenever a handler outlives the supervisor's grace period. The cost is not conditional on anyone using `kill -9`.
+
+`D-02`'s Cost field is **closer to writable, and one line the plan suggested must not be used.**
+
+- **The clean overlap run finally exists.** `[MEASURED]` Three workers from one command, first claims within **12.6 ms**; one killed mid-round; the surviving two drained 8 jobs **4/4** in **32.2 s** against a predicted 32 s, with **0 duplicates** over all 9 jobs and 15/15 execution rows reconciling exactly. This is what `P-12` said was owed, and it is now paid — for `SKIP LOCKED`.
+- **Contention was far more severe than the 12.6 ms suggests, and that strengthens the safety claim.** The two survivors locked into **convoy** and claimed **4 µs apart** on repeated rounds, with two or more workers executing concurrently for ≈ 32 s of the ≈ 32 s run (`P-14`). So "0 duplicates" here is a result under near-worst-case contention, not under a lucky schedule.
+- **What made the 4 µs claims safe is still `[INFERRED]`.** `SKIP LOCKED` steering the second worker to the next row, or the compare-and-set guard returning `rowcount = 0`, are both consistent with the data; worker stdout was not captured, and `rowcount = 0` has still never been observed in this project. `D-02` may claim *the claim path is safe at 4 µs separation*. It may **not** yet claim *`SKIP LOCKED` is why*.
+- **Do not write "Din 4 C1 me measured — blocking se throughput gira."** The Week 1 plan suggests exactly that line as `D-02`'s Rejected reason for plain `FOR UPDATE`, and `P-12` disqualified the number behind it. Din 4's **valid** measurement is about *lock wait*, not throughput: with a 6 s lock held on the oldest pending row, the `skip_locked` worker began real work **1.25 s** in while the plain `FOR UPDATE` worker waited the full 6 s. That is a strong, honest Rejected reason. The throughput version has no evidence behind it in either direction.
+- **Still no data at all** for `SERIALIZABLE`, for advisory locks, or for option (c) `UPDATE ... WHERE status='pending' RETURNING *`. Option (c) is the notable gap: it would claim atomically with **no explicit lock**, the plan explicitly asks whether it would also work, and it is a two-`psql`-session experiment nobody has run.
+
 **Numbering note, so the next collision does not happen:** `D-09`..`D-20` are already claimed by `roadmap/BACKEND_ROADMAP_PART2.md` (Months 2–4), and `D-01`/`D-02` are reserved above. New Week 1 decisions therefore continue from **`D-21`**.
+
+**Correction to the Week 1 plan's numbering, before it causes the third collision.** `planning/WEEK_01.md` says Week 2's lease entries will be *"D-03/D-04"*. Those numbers are **taken** — `D-03`..`D-08` are the Din 1 schema decisions. Week 2 continues from **`D-22`**. Grep this file before assigning any number.
 
 ---
 
