@@ -11,14 +11,22 @@ Rejected: (x) because <concrete reason, ideally measured>
 ```
 
 ---
-## Reserved numbers
+## `D-01` and `D-02` — written on Din 6. This section is now the evidence trail, not a placeholder.
 
-`D-01` and `D-02` are deliberately left open — they are scheduled for Week 1, Din 6:
+Both entries are complete and live below, after the numbering note. **The per-day raw material is kept
+rather than deleted**, because it is the only record of *which* argument entered each entry on which
+day, and of two claims that were removed after being believed for several days. In six months the
+entries alone cannot answer "was this measured or assumed?" — this trail can.
 
-- **D-01:** Postgres as queue vs Redis vs RabbitMQ *(needs Din 3's polling loop and Din 4's throughput numbers to fill the Cost field)*
-- **D-02:** `FOR UPDATE SKIP LOCKED` vs `SERIALIZABLE` for worker claim *(needs Din 4's measured duplicate-execution and total-time comparison)*
+- **D-01:** Postgres as queue vs Redis vs RabbitMQ — written Din 6. Headline argument (transactional
+  enqueue) finally **measured** on Din 6 Step 1; strongest Cost item **measured** on Din 5.
+- **D-02:** `FOR UPDATE SKIP LOCKED` vs the four alternatives for the worker claim — written Din 6.
+  Option (c) had **zero** evidence of any kind until Din 6 Step 6 ran it.
 
-Both depend on measurements that do not exist yet. Writing them now would mean guessing the Cost field.
+The original note here read: *"Both depend on measurements that do not exist yet. Writing them now
+would mean guessing the Cost field."* That held for five days and was correct — Din 4 and Din 5 each
+removed a claim the entries were going to lean on (`P-12`, and the throughput line the Week 1 plan
+itself suggested).
 
 **Raw material collected so far — `D-01`'s Cost field** (Din 3, `[MEASURED]`, one idle worker, `POLL_INTERVAL_SECONDS = 2.0`, this machine):
 
@@ -58,6 +66,371 @@ That reframes the entry. The transactional-enqueue argument is still the right r
 **Numbering note, so the next collision does not happen:** `D-09`..`D-20` are already claimed by `roadmap/BACKEND_ROADMAP_PART2.md` (Months 2–4), and `D-01`/`D-02` are reserved above. New Week 1 decisions therefore continue from **`D-21`**.
 
 **Correction to the Week 1 plan's numbering, before it causes the third collision.** `planning/WEEK_01.md` says Week 2's lease entries will be *"D-03/D-04"*. Those numbers are **taken** — `D-03`..`D-08` are the Din 1 schema decisions. Week 2 continues from **`D-22`**. Grep this file before assigning any number.
+
+---
+
+# The two Week 1 architecture decisions (Din 6)
+
+> **Provenance convention used in these two entries.** Every `Cost` and `Rejected` line ends in a tag:
+> `[MEASURED]` (measured by me, on this machine, number in `logs/WEEK_01.md`), `[MEASURED-R]` (measured
+> by the reviewer — usable as evidence about the system, **not** as a number I can defend without
+> re-running it), `[INFERRED]` (reasoned from mechanism or documentation, not observed), or
+> `[NO EVIDENCE]` (stated as judgement, and labelled as such).
+>
+> **Two claims that are deliberately absent**, because both were believed and neither survives:
+> 1. **Any throughput comparison between claim strategies.** It does not exist. Both Din 4 two-worker
+>    runs had a staggered second worker, so the splits and elapsed times are start-time artifacts
+>    (`P-12`). The Week 1 plan suggests *"blocking se throughput gira"* as `D-02`'s Rejected reason for
+>    plain `FOR UPDATE`; that line is not used here.
+> 2. **`SKIP LOCKED` prevents duplicate execution.** It does not. The row lock plus the compare-and-set
+>    guard do. `SKIP LOCKED` removes **waiting**. Din 4 measured two workers claiming different rows
+>    6 ms apart with no duplicate and no `SKIP LOCKED` at all.
+
+---
+
+## D-01: Postgres is Relay's queue, not Redis and not RabbitMQ
+
+**Problem:** Relay's contract #1 says *an accepted job is never silently lost.* A job is almost never
+the only thing that happens at accept time — something in the business domain happened too (an order
+was placed, a document was uploaded), and the job exists to finish that work. So the real problem is
+not "where do I store queued work?" It is:
+
+> **How do I make the business write and the enqueue succeed or fail together?**
+
+Any answer that puts the queue in a different system than the business data cannot make that
+guarantee, because two systems cannot share one transaction.
+
+**Options:**
+- (a) **Postgres** — the `jobs` table *is* the queue, workers poll it directly
+- (b) **Redis** (list / stream) — in-memory, optional AOF persistence
+- (c) **RabbitMQ** — a real broker with consumer acknowledgements and redelivery
+- (d) **Classic outbox** — Postgres outbox table + a separate publisher process + a broker
+
+**Chose:** (a).
+
+**The decisive reason, and it is now measured rather than asserted.** Din 6 Step 1 ran three cases in
+one `psql` session against a `TEMP` `orders_probe` table. `[MEASURED]`
+
+| Case | Shape | Result |
+|---|---|---|
+| **A** — order + job in **one** transaction, committed | what Relay does | `orders = 1`, `jobs = 1`. Both present |
+| **B** — order + job in one transaction, `ROLLBACK` before commit | crash *inside* the transaction | order count **unchanged**. No job. **Clean** |
+| **C** — order committed, then the process dies **before** the enqueue | what Redis or RabbitMQ forces | order count **incremented**, `jobs = 0` |
+
+**Case B and Case C are the same crash at the same instant, and they are not the same failure.** That
+asymmetry is the entire entry:
+
+- **Case B is transient and self-healing.** Nothing was written. The client retries, the retry works.
+- **Case C is a permanent inconsistency, and no retry addresses it.** The order exists. The customer
+  was billed. Nothing anywhere recorded that a job was supposed to exist, so a retry would create a
+  *second* order rather than the missing job.
+
+And the uncomfortable half, which is what makes it permanent rather than merely bad: **Relay cannot
+detect Case C at all.** `[INFERRED]` Detection needs a join between the business row and the job, and
+there is no join key — `jobs` has no `order_id`, and `D-03` deliberately kept `id` internal with no
+client-supplied identity. The only party who could detect it is the business system, reconciling its
+own rows against `jobs`, and only if it kept a reference. **That reconciliation job is exactly what
+the outbox pattern exists to make unnecessary.**
+
+So the choice is not "Postgres is convenient". It is that **(b) and (c) reintroduce a failure mode
+that has no repair path and no detection path**, and (a) does not have it at all.
+
+**Two of Week 0's four roles now live in one process, and that is a deliberate acceptance.** Postgres
+is playing **store** and **queue** simultaneously. Three failures exist *only* because of that, and
+they belong in `Cost` rather than being hidden:
+
+1. Queue load lands on the instance serving business queries. `jobs` is unusually update-heavy — every
+   row is updated at least twice on its way to `succeeded`, and under MVCC an `UPDATE` is
+   delete-plus-insert (Week 0 Day 5), so vacuum and bloat pressure are structural rather than
+   incidental. `[INFERRED]`
+2. **One failure removes both capabilities.** Postgres down means Relay can neither serve nor even
+   *record that work needs doing later*. With a separate broker one of the two survives. `[INFERRED]`
+3. Lock pathologies cross between the two roles. `P-06` measured an abandoned `idle in transaction`
+   session blocking a `DROP TABLE` for days, with no visible connection between cause and effect.
+   `[MEASURED]`
+
+**Why not the classic outbox, option (d):** Relay skips both the broker and the publisher, so the
+outbox *is* the queue. `[INFERRED]` A classic outbox still has a dual-write between the outbox and the
+broker — it only moves the problem somewhere retryable, which is why the publisher must be
+at-least-once and consumers must be idempotent regardless. Skipping it buys one fewer component to
+crash, monitor and scale, and removes dual-write from the *whole* system rather than just from enqueue.
+What it gives up is routing, fan-out and topic semantics: `jobs` gives one row claimed by one worker.
+Relay does not need fan-out; recorded as a capability foregone, not a cost paid.
+
+### Cost
+
+> **Lead item, because it is about correctness rather than load, and because it is the largest.**
+
+1. **Relay owns crash recovery, and a broker gives it away for free.** `[MEASURED]` Din 5 `kill -9`'d a
+   worker 3 s into an 8 s handler. The row stayed `running`, `attempts = 0`, execution row present,
+   completion evidence gone. Three stuck-count readings over five minutes were identical, and a
+   **fresh, visibly-polling worker ignored the row** — the claim query says `WHERE status = 'pending'`
+   and the row is not in that set. Job **63** is still in the database. A broker redelivers an
+   unacknowledged message when a consumer dies, because that is what a consumer ack *is*. Postgres has
+   no equivalent.
+
+   **So the trade is not "free outbox in exchange for polling overhead". It is "free outbox in exchange
+   for writing redelivery yourself"** — and Week 2 is the invoice.
+
+2. **That cost recurs; it is not a one-off Week 2 payment.** `[INFERRED]` Writing the reaper takes
+   ownership of everything adjacent to it: lease duration, heartbeats, the reaper's own liveness, DLQ
+   policy, retry backoff, and the interaction of all of them. `P-16` shows the reaper's central
+   question — *dead or merely slow?* — is not answerable with today's schema, so the fix adds a column,
+   which creates a lease, which needs a handler timeout (`P-15`), which `P-02` says cannot be enforced
+   reliably against an uncooperative handler. A broker's maintainers test that surface; here it is my
+   code and my tests, forever.
+
+3. **The stuck row is reachable from the *graceful* path too, so this cost is not conditional on
+   anyone using `kill -9`.** `[MEASURED-R]` Mid-job graceful shutdown took **5.167 s** for an 8 s
+   handler, and the only bound on that path is the handler's own duration — Relay bounds nothing
+   (`P-15`). Under a supervisor whose grace period is shorter than the handler (`docker stop`'s 10 s,
+   Kubernetes' 30 s default), SIGTERM → handler still running → grace expires → SIGKILL produces
+   exactly job 63.
+
+4. **An idle fleet is not free, and the cost scales with workers rather than with work.**
+   `[MEASURED]` One idle worker at `POLL_INTERVAL_SECONDS = 2.0` is **0.5 tx/s** — a full
+   `BEGIN`/`SELECT`/`COMMIT` per poll, not a bare `SELECT` (`P-10`). Observed at fleet scale by
+   accident: four forgotten workers held **3 idle connections and ~2 tx/s for zero work** (`P-13`).
+
+5. **The poll interval prices three different things at once and cannot be tuned for one of them
+   alone:** enqueue-to-start latency, database load, and idle shutdown latency — the last now measured
+   at up to one full interval late (`P-10`, `[MEASURED-R]`: flag observed `0.962 s` into `0.959 s` of
+   remaining sleep).
+
+6. **MVCC churn on the hottest table in the system.** `[INFERRED]` Every job is updated at least twice;
+   each transition writes a new row version that vacuum must later reclaim.
+
+7. **The claim query's behaviour at depth is unknown.** `[NO EVIDENCE]` `P-03` is explicit that the
+   index question — composite `(status, created_at)` versus partial `WHERE status = 'pending'` — gets
+   `EXPLAIN ANALYZE`'d in Week 4 rather than guessed now. At today's table size the planner picks a
+   `Seq Scan` (`[MEASURED]`, Din 6 `EXPLAIN`), so nothing about production behaviour follows from it.
+
+8. **Shared blast radius**, per the two-roles discussion above. `[INFERRED]`, except `P-06`'s
+   lock-crossing instance, which is `[MEASURED]`.
+
+**The honest summary of the Cost field, and it is worth stating plainly because the opposite is the
+usual pitch:** Postgres-as-queue is the right choice here **and it is not the cheap choice.** It trades
+an integration problem that cannot be solved (dual-write) for an implementation problem that can
+(redelivery). That is a good trade. Describing it as *"Postgres is simpler"* would be false.
+
+### Rejected
+
+**(b) Redis.** *What it does better:* far lower per-operation latency, no vacuum or bloat pressure, and
+a push/blocking-pop model instead of polling — which would remove Cost items 4, 5 and 6 outright.
+`[INFERRED]` Those are real advantages and they matter if the queue is genuinely hot.
+
+Rejected because **durability and consistency-with-the-business-write are different properties, and
+Redis can be given the first without the second.** `[INFERRED]` AOF with `fsync` always buys durability
+of the enqueue, so the storage half of contract #1 on that one write. Still missing: the order row is
+in Postgres and the job is in Redis, so **the dual-write returns and Case C becomes reachable again.**
+Redis cannot participate in a Postgres transaction, and `MULTI` is atomic *within Redis* only — it is
+not a cross-system transaction. With a dual-write, the word "accepted" in contract #1 becomes ambiguous,
+because the order can exist with no job.
+
+Worth naming separately: Redis's *default* configuration is weaker still — asynchronous persistence
+means an acknowledged write can be lost on process death. `[INFERRED]` But that is a configuration
+argument and it is fixable. The transactional-coupling argument is not.
+
+**(c) RabbitMQ.** *What it does better, and it is the one thing Relay measurably lacks:* **redelivery
+of unacknowledged messages when a consumer dies.** Din 5 measured that Postgres leaves a row nothing
+will ever look at again; RabbitMQ makes that case disappear without any code from me. `[MEASURED]` for
+the Postgres half, `[INFERRED]` for RabbitMQ's. That is a genuine, significant advantage and `D-01`'s
+Cost item 1 is exactly the price of not having it.
+
+Rejected for the same reason as Redis — the job lives outside the business transaction, so Case C
+returns — plus a second operational system to run, monitor and reason about.
+
+**And the framing that keeps this entry honest:** a broker gives you redelivery, which is **the easy
+half**. The hard half is making redelivery *safe*, and that stays mine in either architecture.
+Redelivery is **at-least-once**, not exactly-once: the broker cannot distinguish "consumer finished the
+side effect and died before acking" from "consumer died before doing anything", because a missing ack
+carries no information about which. `[INFERRED]`, and it is precisely `P-01`'s measured distinction —
+*connect timeout = pahuncha nahi, read timeout = pata nahi.* So consumers must be idempotent regardless,
+which is Week 3 either way. Postgres does not even give the easy half. That is the accurate comparison,
+and it stops `D-01` from overstating what was rejected.
+
+**(d) Classic outbox with a publisher and a broker.** Rejected as unnecessary indirection for Relay's
+scope: it keeps a dual-write (outbox → broker), adds a process that can crash, and buys fan-out and
+routing that Relay does not use. `[INFERRED]` Becomes correct the moment more than one consumer group
+needs the same event.
+
+**Revisit when:** any of these appear — (i) Week 5's measured Postgres-as-queue ceiling shows the claim
+query or vacuum pressure limiting real throughput; (ii) fan-out to more than one consumer group is
+required; (iii) queue load is measurably degrading business queries on the same instance; or (iv) the
+redelivery machinery from Cost items 1–3 grows past the point where operating a broker is cheaper than
+maintaining it. Note that (iv) is a **maintenance-cost** trigger, not a performance one, and it is the
+most likely of the four.
+
+---
+
+## D-02: the worker claims with `SELECT … FOR UPDATE SKIP LOCKED` **and** a compare-and-set `UPDATE`, and the two halves do different jobs
+
+**Problem:** Several workers poll one table. Each must end up executing a different job, and no job may
+be executed twice. Read-then-write is the textbook lost update: two workers read the same `pending`
+row, both decide they own it.
+
+**The actual SQL the worker emits**, copied verbatim from the `echo=True` output on Din 6 Step 5 rather
+than written from memory `[MEASURED]`:
+
+```sql
+SELECT jobs.id, jobs.type, jobs.payload
+FROM jobs
+WHERE jobs.status = $1::VARCHAR
+ORDER BY jobs.created_at, jobs.id
+LIMIT $2::INTEGER FOR UPDATE SKIP LOCKED
+```
+
+with `('pending', 1)`, followed by a **separate statement in the same transaction**:
+
+```sql
+UPDATE jobs SET status='running' WHERE jobs.id = $1 AND jobs.status = $2
+```
+
+Three details that only reading the emitted SQL reveals: it is **two** statements, not one; the bind
+renders as `$1::VARCHAR` against a `TEXT` column (same type family in Postgres, so no cast or index
+consequence — cosmetic, but reading the model instead of the SQL would have missed it); and
+`ORDER BY created_at, id` carries the `id` tiebreaker because jobs enqueued in one transaction share
+`created_at` exactly (`P-05`).
+
+**Options, and what the *second* worker experiences under each:**
+
+| | Option | Second worker experiences |
+|---|---|---|
+| (a) | `SELECT … FOR UPDATE` | **waits** on the row lock, then finds the row no longer `pending` |
+| (b) | `SELECT … FOR UPDATE SKIP LOCKED` + compare-and-set `UPDATE` | **skips** to the next free row |
+| (c) | `UPDATE … WHERE id = (subquery) RETURNING` | **depends entirely on the predicate** — see below |
+| (d) | advisory lock around the claim | serialises the claim path; no data |
+| (e) | `SERIALIZABLE` isolation | **errors** — `40001`, abort and retry |
+
+**Chose:** (b), and the reason is that it is **two independent defences that solve two different
+problems.** Din 6 Step 6 isolated them by running option (c) in three variants across two live `psql`
+sessions, with session 1 deliberately left uncommitted. `[MEASURED]`
+
+| Variant | Outer `WHERE` | Subquery | Session 2 blocked? | id returned | `rowcount` | Outcome |
+|---|---|---|---|---|---|---|
+| **1** | `id = (subquery)` | plain | **yes**, on the row lock | **76 — the same id session 1 claimed** | **1** | ❌ silent duplicate claim |
+| **2** | `id = (subquery) AND status='pending'` | plain | **yes** | none | **0** | ✅ safe, but it waited and got nothing |
+| **3** | `id = (subquery)` | `FOR UPDATE SKIP LOCKED` | **no** | **77 — the next row** | **1** | ✅ safe, and it got useful work |
+
+**Why variant 1 produces a duplicate, measured rather than reasoned.** `EXPLAIN` on the statement
+`[MEASURED, Din 6 reviewer]`:
+
+```
+Update on jobs
+  InitPlan 1 (returns $0)
+    ->  Limit
+          ->  Sort  (Sort Key: jobs_1.created_at, jobs_1.id)
+                ->  Seq Scan on jobs jobs_1   Filter: (status = 'pending'::text)
+  ->  Seq Scan on jobs   Filter: (id = $0)
+```
+
+The subquery does not reference the outer row, so it is **uncorrelated** and Postgres evaluates it
+**once, before the scan, as an `InitPlan` producing a constant `$0`.** The outer qualification is
+therefore literally `Filter: (id = $0)` — **`status` appears nowhere in it.**
+
+That is what makes `EvalPlanQual` unsafe here. Under `READ COMMITTED` a writer that blocks on a locked
+row does not wake holding a stale tuple: it re-fetches the newest committed version and **re-evaluates
+the statement's qualification** against it. Din 4 saw that save a claim, because Din 4's qual was
+`status='pending'` and the recheck failed. In variant 1 the qual is `id = $0`, which is **still true**
+after session 1 set `status='running'`. So session 2 updates the row again and `RETURNING` hands back
+the same id with `UPDATE 1`. Both sessions were told they own job 76. No error, no warning, both
+`rowcount = 1` — **and the row's final state is `status='running'`, which is exactly what one correct
+claim looks like.** `jobs` cannot record that this happened.
+
+**The generalisation, and it is the most useful thing either entry produced:** `EvalPlanQual` is not a
+concurrency safety feature. It is a recheck of **whatever predicate you wrote.** Variants 1 and 2 are
+the same mechanism producing opposite outcomes, and the only difference is whether the changing column
+is in the qual. This is a textbook **lost update**, which DDIA Ch 7 names, along with the fix Relay
+already uses — compare-and-set.
+
+**So the two halves, priced separately:**
+
+| Half | Provides | What Step 6 shows happens without it |
+|---|---|---|
+| `FOR UPDATE SKIP LOCKED` in the claim `SELECT` | **liveness** — never wait behind a row another worker holds | Variant 2: correct, but the worker blocks and is then told `rowcount = 0` for its trouble |
+| `AND status='pending'` on the `UPDATE` | **safety** — the old value is part of the predicate | Variant 1: a silent duplicate claim |
+
+`D-06` called the guard *"not an optimisation, it is the transition guard"* on Din 1. Din 6 is the
+first time in this project that **`rowcount = 0` has actually been observed** — Din 4 and Din 5 both
+recorded the branch as never having fired, and Din 5's two workers claimed **4 µs apart** without
+provoking it. Variant 2 produces it on demand.
+
+### Cost
+
+1. **Ordering becomes more approximate.** `[INFERRED]` A skipped row is deferred to a later poll, so
+   best-effort FIFO (`P-05`) degrades further under contention. Acceptable: ordering is not one of
+   Relay's five contract promises.
+2. **An extra `UPDATE` per claim** — two statements and two round trips instead of one, more write
+   amplification and MVCC churn on the hottest statement in the system. `[INFERRED]`
+3. **The `LIMIT` subtlety is real and was measured.** `[MEASURED]` Din 3 found `LockRows` sitting
+   **below** `Limit` in the plan, which is why a plain-`FOR UPDATE` worker can block on one row while
+   nine are free — the row is locked before the limit is satisfied.
+4. **One round trip per claim, with the poll interval bounding throughput.** `[MEASURED]` `P-10`:
+   0.5 tx/s per idle worker at 2.0 s, and per-job overhead outside the handler measured at
+   **39–57 ms** for three transactions (`[MEASURED-R]`, Din 5 M10).
+5. **On conflict the worker sleeps a full poll interval instead of retrying immediately.**
+   `[INFERRED from code]`, and this is a Din 6 code-review finding rather than a measurement. In
+   `run_worker()`, the `rowcount == 0` branch leaves `claimed_job` as `None`, which falls through to
+   `await asyncio.sleep(POLL_INTERVAL_SECONDS)` — so a worker that loses a race waits 2 s even when
+   other `pending` rows are available. Step 6 variant 2 shows `rowcount = 0` is genuinely reachable, so
+   the branch is no longer hypothetical; it has still **never been observed in the worker itself**.
+   Cheap to change (retry immediately, bounded) and deliberately not changed in Week 1.
+6. **The safety argument rests on discipline, not on the schema.** `[INFERRED]` `P-04`: no constraint
+   can express "`succeeded → running` is illegal", because that needs two versions of one row. Every
+   `status` update must carry the guard, and the database will not remind me. Din 6 measured what the
+   omission costs — variant 1.
+
+### Rejected
+
+**(a) plain `SELECT … FOR UPDATE`.** *What it does better:* strictly better ordering — it does not skip,
+so the oldest pending row is the one that gets claimed. `[INFERRED]`
+
+Rejected on **lock wait**, measured: with a 6 s lock held on the oldest pending row, the `skip_locked`
+worker began real work **1.25 s** in, while the plain `FOR UPDATE` worker waited the full **6 s**
+(`[MEASURED]`, Din 4). A worker sitting in `Lock`/`transactionid` in front of one row while other rows
+are free is doing nothing, and Cost item 3 explains why one row is enough to cause it.
+
+**Not claimed here: any throughput comparison.** `[NO EVIDENCE]` `P-12` disqualified the Din 4 numbers
+that looked like one — both two-worker runs had a staggered second worker (10 s and 23 s late), so the
+7/3 and 8/2 splits are start-time artifacts. Din 5 produced a clean `SKIP LOCKED` **baseline** (three
+workers, first claims within **12.6 ms**, survivors split **4/4**, drain **32.2 s** against a predicted
+32 s, **0 duplicates**), but there is still no like-for-like run of plain `FOR UPDATE`, so no comparison
+exists in either direction.
+
+**(c) `UPDATE … WHERE status='pending' RETURNING` — and the imprecise rejection is the tempting one.**
+
+**Option (c) is not broken. The naive form of it is.** `[MEASURED]` That distinction is the whole of
+Step 6. Variant 2 — the same single statement **with the guard in the predicate** — is a sound claim
+mechanism, and it is arguably simpler than what Relay ships: one statement instead of two, no explicit
+lock, and it produced `rowcount = 0` correctly under a live race.
+
+What (c)-with-guard gives up is variant 3's property. When two workers collide, Relay's form has
+**both** doing useful work (the second skips to the next row); (c)-with-guard has the loser blocked,
+then handed `rowcount = 0`, then polling again. That is the real, statable cost, and it is a far better
+rejection than *"explicit lock semantics are clearer"*.
+
+The naive form is rejected outright, with the mechanism above: the `InitPlan` freezes the target id
+before any lock is taken, `EvalPlanQual` rechecks a qual that does not mention `status`, and two workers
+claim one job with no error and no trace in `jobs`.
+
+**(d) advisory lock around the claim.** `[NO EVIDENCE]` — never run, and this entry does not pretend
+otherwise. The mechanism argument against it `[INFERRED]`: an advisory lock is not tied to the row, so
+it serialises the claim path across all workers rather than per-job, converting a per-row conflict into
+a global bottleneck. Its genuine advantage is that it works when the contended resource is not a row at
+all. Worth measuring in Week 4 alongside `P-03` if the claim query becomes a bottleneck.
+
+**(e) `SERIALIZABLE`.** `[NO EVIDENCE]` on this project — never run against `jobs`. `[INFERRED]` from
+Week 0 Day 5 and DDIA Ch 7: SSI detects the conflict at commit and aborts with `40001` rather than
+blocking, so the loser has already done its work and must retry, and every caller needs `40001` handling.
+For a claim that is contended by design, abort-and-retry is the wrong shape — the conflict is expected,
+not exceptional. Its genuine advantage is that it catches **write skew and phantoms**, which row locks
+cannot, and that matters for invariants spanning several rows. Relay's claim is a single-row transition,
+so it does not need that reach.
+
+**Revisit when:** `P-03`'s Week 4 `EXPLAIN ANALYZE` shows the claim `SELECT` is the bottleneck at depth,
+or Week 2's reaper introduces a second writer to `status` — at which point Cost item 6 stops being a
+discipline problem and becomes a design problem, because two independent writers to one column need
+their transitions enumerated rather than remembered.
 
 ---
 

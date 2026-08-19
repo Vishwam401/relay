@@ -550,3 +550,104 @@ Two consequences that are already visible:
 - **Does "handler finished" deserve a row?** Din 5 Step 1 asked this and it was not answered. Today the completion evidence is a `print` that dies with the terminal, which is why M3's differential — same database state, "finished" print present or absent, two entirely different truths — is currently only observable by a human watching a console. A completion row would let a reaper distinguish "finished but the mark was lost" from "died mid-handler". Cost: another write per job, and `D-21` already priced the symmetric decision for the *start* evidence.
 - **Which table owns the lease?** A `claimed_at` / `lease_expires_at` / `locked_by` on `jobs` keeps the reaper's query on one table and makes the claim a wider `UPDATE`. Putting it on `job_executions` reuses the append-only history but promotes an instrument to a load-bearing structure, against `D-21`'s stated intent.
 - **What is a sane lease duration when the handler has no timeout?** `P-15` shows Relay does not bound handler runtime, so any lease shorter than the slowest handler manufactures duplicate execution on purpose. The lease and the handler timeout are therefore **one decision, not two**, and neither exists yet.
+
+---
+
+## P-17 — `EvalPlanQual` rechecks the predicate you wrote, not the invariant you meant, so the same mechanism that saved a claim on Din 4 destroys one on Din 6
+
+**Status: MEASURED** on Din 6, in two live `psql` sessions, plus an `EXPLAIN` that shows the mechanism `[R]`.
+
+**The problem:** `UPDATE ... WHERE id = (SELECT id FROM jobs WHERE status='pending' ORDER BY created_at, id LIMIT 1) RETURNING id, status` reads like a safe atomic claim. One statement, no read-then-write gap, no explicit lock to forget. Two workers running it concurrently claimed **the same job**, both with `rowcount = 1`, with no error and no trace anywhere in `jobs`.
+
+**What was measured.** Session 1 ran the statement inside `BEGIN` and did not commit. Session 2 ran the identical statement.
+
+| Step | Observed |
+|---|---|
+| session 2 runs while session 1 holds the row | **blocks** on the row lock — not an error, not an immediate empty result |
+| session 1 commits | session 2 unblocks immediately |
+| session 2 returns | `id = 76`, `status = 'running'`, **`rowcount = 1`** |
+| session 1 had claimed | `id = 76` |
+
+**Both sessions were told they own job 76.** And the part that makes it genuinely dangerous rather than merely wrong: **the row's final state is `status='running'`, which is exactly what one correct claim looks like.** There is no state in `jobs` that distinguishes "claimed once" from "claimed twice". `D-21`'s argument for an append-only instrument arrives here from a completely new direction — the evidence has to live outside the row, because the row cannot hold it.
+
+**Why it happens, and this is the part that cannot be discovered by reading the SQL.** `EXPLAIN` on the statement `[MEASURED-R]`:
+
+```
+Update on jobs
+  InitPlan 1 (returns $0)
+    ->  Limit
+          ->  Sort  (Sort Key: jobs_1.created_at, jobs_1.id)
+                ->  Seq Scan on jobs jobs_1   Filter: (status = 'pending'::text)
+  ->  Seq Scan on jobs   Filter: (id = $0)
+```
+
+The subquery does not reference the outer row, so it is **uncorrelated**. Postgres evaluates it **once, before the scan begins**, as an `InitPlan` yielding a constant `$0`. The outer statement's qualification is therefore literally `Filter: (id = $0)` — **`status` appears nowhere in it.** The statement reads as *"claim the current oldest pending row"*; the plan says *"pick one id, then use that constant."*
+
+Then the second mechanism. Under `READ COMMITTED`, a writer that blocks on a locked row does not wake holding a stale tuple: it re-fetches the newest committed version and **re-evaluates the statement's qualification** against it. That is `EvalPlanQual`, and Din 4 met it with a happy ending — the qual there was `status='pending'`, the row had become `running`, the recheck failed, and the row was correctly dropped.
+
+Here the recheck asks `id = $0`, which is **still true** after session 1 set `status='running'`. So the recheck passes, the row is updated a second time, and `RETURNING` reports success.
+
+**Why this is interesting:** it is `P-04`'s shape in a new material. `EvalPlanQual` is not a concurrency safety feature; it is a **recheck of whatever predicate was supplied**. Variants 1 and 2 of the Din 6 experiment are the *same* mechanism producing *opposite* outcomes, and the only difference is whether the column that changes is mentioned in the qual:
+
+| Variant | Outer `WHERE` | Session 2 result | Verdict |
+|---|---|---|---|
+| 1 | `id = (subquery)` | id 76, `rowcount = 1` | ❌ duplicate claim |
+| 2 | `id = (subquery) AND status='pending'` | none, **`rowcount = 0`** | ✅ safe, but it waited for nothing |
+| 3 | `id = (subquery FOR UPDATE SKIP LOCKED)` | id **77**, no blocking | ✅ safe, and it got work |
+
+And the generalisation that is worth more than the specific bug: **Din 4 over-generalised from a happy accident.** Seeing EPQ correctly reject a stale claim taught the wrong lesson — that the mechanism protects concurrent writers. It protects the predicate. Whether the predicate covers the invariant is entirely the author's problem, and the failure is silent when it does not.
+
+**Two smaller findings that came with it, both first-time observations in this project:**
+
+1. **`rowcount = 0` has now actually been seen.** Din 1 called the compare-and-set guard load-bearing, Din 4 and Din 5 both recorded that its branch had never fired, and Din 5's two workers claimed **4 µs apart** without provoking it (`P-14`). Variant 2 produces it on demand. A branch described as load-bearing for five days has finally been *observed* working rather than argued about.
+2. **`UPDATE 0` is a result, not an error.** `psql` prints it, exit status is `0`, `RETURNING` simply yields no rows. In application code it is visible only if `rowcount` is checked — which is exactly why `D-06` requires the check.
+
+**Why it matters for Relay:** it settles `D-02`'s hardest Rejected line and it does so more precisely than the plan expected. **Option (c) is not broken; the naive form of it is.** `UPDATE ... WHERE id = (subquery) AND status='pending' RETURNING` is a sound single-statement claim, arguably simpler than what Relay ships. What it gives up is variant 3's property: when two workers collide, Relay's form has both doing useful work, whereas (c)-with-guard leaves the loser blocked and then empty-handed.
+
+It also prices Relay's two halves separately, which nothing before Din 6 could do:
+
+| Half | Provides | Without it |
+|---|---|---|
+| `FOR UPDATE SKIP LOCKED` in the claim `SELECT` | **liveness** | variant 2 — correct, but the worker blocks then gets nothing |
+| `AND status='pending'` on the `UPDATE` | **safety** | variant 1 — a silent duplicate claim |
+
+**Still `[INFERRED]`, and Din 6 did not settle it:** which of the two halves kept Din 5's 4 µs claims safe. The clean 4/4 split with no repeated ids is what *skipping* produces, and had the guard been the active mechanism the loser of each race would have printed a `rowcount=0` conflict line and re-polled. But worker stdout was not captured for that run, so this remains inference. **What would settle it is cheap and specific:** capture worker stdout during a convoy run and grep for the conflict line. Zero occurrences alongside a clean split confirms `SKIP LOCKED`; any occurrence means both mechanisms are live and the guard is not merely a backstop.
+
+**Named in the literature:** DDIA Ch 7 calls variant 1 a **lost update** — two writers, one row, the second writer's decision based on a value that changed underneath it — and names **compare-and-set** as one of the standard remedies, alongside explicit locking and atomic write operations. Relay was already using the remedy. Din 6 is the first time the disease was produced on purpose.
+
+---
+
+## P-18 — A verification step whose expected output is produced equally by the mechanism and by the mechanism's absence
+
+**Status: MEASURED** on Din 6, and the check in question was written by the reviewer, which is the part worth recording.
+
+**The problem:** Din 6's Part C, Case B, instructed: insert an order, `ROLLBACK`, then read `jobs_id_seq`. Part B question 1.1 asked *"Case B rolls back an order INSERT **and a job INSERT** together. Afterwards, is the jobs sequence value the same as before?"*, and the KEY listed *"a sequence gap after Case B"* under **outputs that will look wrong but are correct**, citing Din 2's M16 finding that `nextval` is non-transactional.
+
+**The SQL in Case B never inserts a job.** It inserts into `orders_probe` only. So no `nextval` on `jobs_id_seq` is ever called, and the sequence is unchanged for a reason that has nothing to do with transactional semantics.
+
+The day reported the observation faithfully — *"`jobs_id_seq` remained 75"* — which is the correct output. It is also the output that a database where sequences **were** transactional would produce, and the output a database where they are **not** would produce. **The check cannot distinguish the two, so it establishes nothing**, and the KEY's stated expectation (a gap) was not reachable from the SQL as written.
+
+**The differential version, run afterwards** `[MEASURED-R]`:
+
+```
+last_value before          78
+BEGIN; INSERT INTO jobs (type) VALUES ('probe_seq_rollback') RETURNING id;  →  id 79
+ROLLBACK;
+last_value after           79        ← advanced
+count(*) FROM jobs         78        ← unchanged
+max(id)                    78        ← unchanged
+```
+
+Sequence value consumed, no row committed, gap permanent. Din 2's M16 is reproduced, and `P-05`'s first half now has a second independent measurement. Cost of the correct check: one extra statement.
+
+**Why this is interesting:** the project already had a rule for exactly this failure, written after Din 2's `413` bug — *"for each check ask: what wrong implementation would also pass this?"* Din 6's own BRIEF restates that rule at the top of Part C. The rule was then broken **in the same document**, by the person who wrote the rule, in the one case out of six where the check had no differential built into it. Everything else in Din 6's Part C was designed to distinguish: Case A alone proves nothing, so Cases B and C exist; one returned `id` proves nothing, so variant 1 compares *two*; `UPDATE 0` is called out in advance as a result rather than an error.
+
+So the finding is not "one check was weak". It is that **the discipline is not transferable by stating it.** A decorative check is not identifiable by reading it, because a decorative check *passes*. The only reliable test is mechanical and has to be applied per check, not per document: write down the output the check produces if the mechanism is present, then the output it produces if the mechanism is absent, and if the two lines are identical, the check is measuring nothing.
+
+There is a second, quieter observation. The mismatch was between **Part B's question and Part C's SQL** — the question asked about a rollback that the procedure never performed. Both were written in the same sitting, which is what made them feel consistent. A question and the experiment that answers it are two artifacts, and agreement between them is something to verify rather than assume.
+
+**Why it matters for Relay:** three carry-forwards, and the first two are about how the days are built rather than about Relay itself.
+
+- **Part C entries need the two-line table, not the prose rule.** *"What output if the mechanism is present / absent?"* If the two match, the check gets rewritten before the day ships. This is the third instance in the project of a check that passed while measuring nothing (Din 2's `413`, Din 5's reported ranges, now this one), and the first where the flaw was in the design rather than in the reporting.
+- **Reviewer-authored material gets audited on the same terms as the day's own output.** `P-12` disqualified a reviewer-suggested throughput line; this entry disqualifies a reviewer-designed check. Neither was caught by review — both were caught by running something.
+- **Reporting the observed output rather than the expected one is what made this findable.** The KEY said to expect a gap. The day reported "remained 75". Had the number been bent toward the KEY's expectation, the BRIEF's error would have been absorbed as a correct result and `P-05`'s mechanism would still be resting on a single Din 2 measurement. That habit is the opposite of the one Din 5's M8/M11/M12 recorded, and it is worth naming as the day's best process outcome.

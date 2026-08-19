@@ -1207,3 +1207,429 @@ Din 6 writes `D-01` and `D-02`, and today changed what those entries should say 
 **`D-02` loses a justification it was going to lean on.** The plan's suggested Rejected line for plain `FOR UPDATE` is *"Din 4 C1 me measured — blocking se throughput gira."* `P-12` disqualified that number. Din 4's valid measurement is about **lock wait**, not throughput: work starting 1.25 s into a 6 s lock instead of after it. Today supplies a clean `SKIP LOCKED` baseline but no comparison run, so the throughput claim still has no evidence behind it. Din 6's real work is therefore narrower and harder than "write two ADRs": **for every Cost and Rejected line, find the measurement, or downgrade the wording.** Given that the recurring failure this week has been claiming things as measured that were not, that is the right shape for the day.
 
 And one question for `D-02` that nothing has touched: option (c), `UPDATE ... WHERE status='pending' RETURNING *`, would claim atomically **without any explicit lock at all**. The plan asks whether it would also work. Nobody has run it. It is a two-`psql`-session experiment, and it is the only Rejected line in either entry with **zero** evidence of any kind.
+
+---
+
+# DIN 6 — `D-01` and `D-02` written, and the two experiments that had never been run
+
+**Date:** 2026-08-19 · **Budget:** ~2h15m · Plan: [`../planning/WEEK_01.md`](../planning/WEEK_01.md) (Din 6) · BRIEF: [`../daily/DIN_06_BRIEF.md`](../daily/DIN_06_BRIEF.md)
+
+> **Delivery, stated first because it changes how the rest reads.** Din 6 had nine steps. **Three were
+> delivered, and they are the three that mattered most** — Step 1 (transactional enqueue), Step 5 (the
+> real claim SQL), Step 6 (option (c) under live concurrency). All three were executable, all three had
+> never been run before, and all three were run correctly with genuine concurrency.
+>
+> **Steps 3, 4 and 7 — the two ADRs — were written by the reviewer**, at the user's request and per the
+> protocol's division of labour. **Steps 0, 2 and 8 were not delivered by anyone:** the claims ledger,
+> the five written Week 2 answers, the DoD tick, and DDIA Ch 7. Step 2 in particular is carried forward
+> rather than written for him — see the Unresolved section for why that is deliberate.
+>
+> **The Part B predictions were not handed over, so Din 6 is unscored.** That is the second consecutive
+> unscored day.
+
+---
+
+## 📐 Measured
+
+### The day's own measurements
+
+**M1 — C0 baseline.** `[MEASURED]` 0 worker processes, 1 connection to `relay`, 0 `idle in transaction`.
+`jobs`: 74 rows — 63 `succeeded`, 8 `failed`, **3 `running`** (41, 63, 65), **0 `pending`**;
+`max(id) = 74`. `job_executions`: 46 rows. Matches the BRIEF's expected values exactly, and the
+`pending = 0` reading is what makes Step 6's seeding auditable later.
+
+**M2 — Step 1: the transactional enqueue, finally demonstrated.** `[MEASURED]` One interactive `psql`
+session, a `TEMP` `orders_probe` table, three cases:
+
+| Case | What was done | Result |
+|---|---|---|
+| **A** — one transaction, committed | order ₹500 + job 75 (`send_receipt`, `payload->>'case' = 'A'`) inside one `BEGIN … COMMIT` | `orders = 1`, `jobs = 1`. Both present |
+| **B** — one transaction, `ROLLBACK` | order ₹900 inserted, then rolled back as if the process died | order count **unchanged**. Clean, zero orphans |
+| **C** — two transactions, death between them | order ₹1200 **committed**, then no job inserted, deliberately | `orders = 2`, jobs with `case = 'C'` **0** |
+
+**The verdict the day wrote, and it is the correct one:** Case C leaves a state where the business order
+exists and the customer was billed, while the fulfilment job is absent — and **no query against `jobs`
+can detect it**, because there is no join key between the two (`jobs` has no `order_id`, and `D-03`
+deliberately kept `id` internal). Case B is transient and self-healing; Case C is permanent. Same crash,
+same instant, and the only difference is a transaction boundary.
+
+This is the central argument of `D-01`. It has been the central argument since Week 0 and **this is the
+first time anybody in this project produced evidence for it.**
+
+**M3 — the probe left no schema drift.** `[MEASURED]` `alembic check` → `No new upgrade operations
+detected.` A `TEMP` table lives in a session-local schema and disappears on disconnect, so neither of
+`P-06`'s two failure modes (a silent `DROP TABLE` in the next autogenerate, or a hung `DROP` behind
+abandoned sessions) was reachable. Probe schemas temporary by construction rather than by discipline.
+
+**M4 — Step 5: the claim SQL, read out of the echo rather than from memory.** `[MEASURED]`
+
+```sql
+SELECT jobs.id, jobs.type, jobs.payload FROM jobs
+WHERE jobs.status = 'pending' ORDER BY jobs.created_at, jobs.id
+LIMIT 1 FOR UPDATE SKIP LOCKED;
+```
+
+Now in `D-02` verbatim. Din 1's lesson (compile the DDL rather than read the source) applied to a
+different artifact.
+
+**M5 — Step 6: option (c) under live concurrency, and this is the day's finding.** `[MEASURED]` Three
+jobs seeded (76, 77, 78). Two `psql` sessions side by side, **session 1 left uncommitted while session 2
+ran** — which is the whole experiment, and it was done correctly.
+
+| Variant | Outer `WHERE` | Subquery | Session 2 blocked? | id returned | `rowcount` | Outcome |
+|---|---|---|---|---|---|---|
+| **1** naive | `id = (subquery)` | plain | **yes**, row lock | **76 — the same id session 1 claimed** | **1** | ❌ duplicate claim |
+| **2** guarded | `… AND status='pending'` | plain | **yes** | none | **0** | ✅ safe, waited for nothing |
+| **3** skip-locked subquery | `id = (subquery)` | `FOR UPDATE SKIP LOCKED` | **no** | **77 — the next row** | **1** | ✅ safe, and got work |
+
+Three separate first-time observations in one step:
+
+1. **A duplicate claim was produced deliberately, and it is invisible.** Both sessions returned
+   `rowcount = 1` on job 76, with no error, and the row's final state is `status='running'` — which is
+   exactly what one correct claim looks like. `jobs` cannot record that it happened.
+2. **`rowcount = 0` was observed for the first time in this project.** Din 1 called the compare-and-set
+   guard load-bearing; Din 4 and Din 5 both recorded that its branch had never fired; Din 5's two
+   workers claimed **4 µs apart** and still did not provoke it. Variant 2 produces it on demand.
+3. **Variant 3 never blocked at all** — the shipped behaviour, isolated.
+
+**M6 — C8 closing bench, and the arithmetic closes exactly.** `[MEASURED]` `failed 8`, `pending 4`
+(75 from Case A + 76/77/78 seeded), **`running` still exactly 3** (41, 63, 65 — untouched),
+`succeeded 63`; 78 rows total; 46 execution rows; 1 connection, **0 `idle in transaction`**.
+
+```
+74 (C0) + 1 (Case A: job 75) + 0 (Cases B and C) + 3 (Step 6: 76, 77, 78) = 78
+```
+
+The `idle_in_txn = 0` reading matters more today than on any previous day, because Step 6 deliberately
+held two transactions open across variants. `P-06` is four abandoned sessions blocking a `DROP TABLE`;
+that did not recur. Bench hygiene is now the most reliable habit in the project — third consecutive day.
+
+---
+
+### Reviewer measurements
+
+**M7 — every number in the dossier independently verified.** `[R]` `jobs` 78 rows (8 `failed`,
+4 `pending`, 3 `running`, 63 `succeeded`), `max(id) = 78`, `job_executions` 46, 1 connection,
+0 `idle in transaction`. `alembic check` clean. **No correction to any reported figure** — which is
+worth saying explicitly, because Din 5 needed four.
+
+**M8 — the fixture is intact and still three different shapes.** `[R]`
+
+| Job | Type | Status | `attempts` | Execution rows |
+|---|---|---|---|---|
+| 41 | `sleep` | `running` | 0 | **0** |
+| 63 | `slow` | `running` | 0 | 1 |
+| 65 | `slow` | `running` | 0 | 1 |
+
+`attempts = 0` on every row in the table. Week 2's input is unchanged, per the scope guard.
+
+**M9 — the mechanism behind variant 1, which the day observed but did not explain.** `[R]` `EXPLAIN` on
+the naive statement:
+
+```
+Update on jobs
+  InitPlan 1 (returns $0)
+    ->  Limit
+          ->  Sort  (Sort Key: jobs_1.created_at, jobs_1.id)
+                ->  Seq Scan on jobs jobs_1   Filter: (status = 'pending'::text)
+  ->  Seq Scan on jobs   Filter: (id = $0)
+```
+
+The subquery is **uncorrelated**, so it is evaluated **once, before the scan**, as an `InitPlan` yielding
+a constant. The outer qualification is literally `Filter: (id = $0)` — **`status` appears nowhere in it.**
+That is why `EvalPlanQual` does not save session 2: EPQ re-fetches the newest committed version and
+rechecks *the qual that was written*, and `id = $0` is still true after session 1 set `status='running'`.
+
+Din 4 met the same mechanism and it produced a *safe* outcome, because Din 4's qual was
+`status='pending'`. **Variants 1 and 2 are the same mechanism with opposite results, and the only
+difference is whether the changing column is in the predicate.** Written up as `P-17`. DDIA Ch 7 names
+variant 1 a **lost update** and names compare-and-set as the remedy — Relay was already using the
+remedy; Din 6 is the first time the disease was produced on purpose.
+
+**M10 — the Step 1 sequence check could not have shown what it was written to show.** `[R]` Part B 1.1
+asked about rolling back *"an order INSERT and a job INSERT together"*, and the KEY listed a sequence gap
+under *outputs that will look wrong but are correct*. **Part C's Case B never inserts a job.** So no
+`nextval` on `jobs_id_seq` was called, and the reported *"remained 75"* is correct output that
+distinguishes nothing — a database with transactional sequences would print the same thing.
+
+The differential version, run afterwards:
+
+```
+last_value before          78
+BEGIN; INSERT INTO jobs (type) VALUES ('probe_seq_rollback') RETURNING id;  →  id 79
+ROLLBACK;
+last_value after           79        ← advanced
+count(*) FROM jobs         78        ← unchanged
+max(id)                    78        ← unchanged
+```
+
+`nextval` is non-transactional, confirmed: value consumed, no row, **gap permanent**. Din 2's M16 is
+reproduced and `P-05`'s first half now rests on two independent measurements instead of one.
+
+**This is a reviewer error, in the same document that restates the rule it broke** — Din 6's Part C opens
+with *"for each check ask: what wrong implementation would also pass this?"* Written up as `P-18`,
+because the transferable part is that a decorative check cannot be spotted by reading it: it passes.
+
+**Bench consequence, stated so the trail stays closed:** that probe consumed sequence value **79**. There
+is now a permanent gap — `jobs` holds 78 rows with `max(id) = 78` and `jobs_id_seq.last_value = 79`, so
+the next enqueued job will be id **80**. No row was added or removed. This is the first gap in the
+sequence, and Week 2's reconciliation arithmetic needs to know it exists.
+
+**M11 — job 75 is a landmine for Week 2's fixture, and it will go off on the next worker start.** `[R]`
+Job 75 is `pending` with `type = 'send_receipt'`, which is **not in the worker's `REGISTRY`**
+(`sleep`, `boom`, `slow`). Reading `run_worker()`: an unregistered type is claimed, printed as
+*"Unknown job type"*, and marked `failed` — **without an execution row**, because `record_execution` is
+only reached inside the `else` branch where a handler exists.
+
+So the next time any worker runs, without anyone doing anything: `pending 4 → 3`, `failed 8 → 9`, and a
+**fourth** fixture shape appears — `failed` with no execution row. Week 2's first commit is supposed to
+be measured against exactly three `running` rows and a known distribution. `[INFERRED from code]` for the
+transition, `[MEASURED]` for the row's current state and for `REGISTRY`'s contents.
+
+**Not fixed, because the fix is a choice rather than a repair** — deleting job 75 breaks the Case A
+reconciliation, and changing its type falsifies the log. Carried into Din 7 Step 0 as a decision to make
+deliberately. This is `P-13`'s shape at row level rather than process level: an artifact that is valid to
+the database and invalid to the application, waiting for the next run to convert it.
+
+**M12 — code review: on conflict the worker sleeps a full poll interval.** `[INFERRED from code]` In
+`run_worker()`, the `update_result.rowcount == 0` branch prints the conflict and leaves `claimed_job` as
+`None`, which falls through to `await asyncio.sleep(POLL_INTERVAL_SECONDS)`. A worker that loses a claim
+race therefore waits **2 s** before trying again, even when other `pending` rows are free. Step 6 makes
+this concrete rather than hypothetical — `rowcount = 0` is now a demonstrated outcome — but it has still
+**never been observed in the worker itself**. Recorded as `D-02` Cost item 5; deliberately not changed,
+because Din 6 changes zero lines in `src/`.
+
+**M13 — nothing else in `src/` changed, and that was the scope guard's main requirement.** `[R]` Reviewed
+`worker.py`, `main.py`, `models.py`, `schemas.py`, `database.py`. No reaper, no `claimed_at`, no handler
+timeout, no change to the claim query. `alembic check` clean confirms the schema is untouched. Part D
+held.
+
+---
+
+## 💡 What I Understood
+
+> **Written by the reviewer from what the session established. Rewrite in your own words before treating
+> any of it as yours.** Steps 3, 4 and 7 were reviewer-written this time, so the proportion of this
+> section that is genuinely borrowed is higher than on any previous day. That is a real cost and it is
+> priced in the Self-Check.
+
+**The day's best result is a distinction, not a discovery: option (c) is not broken — the naive form of
+it is.** That sentence is the difference between an ADR that would have been wrong and one that is
+right. Before Step 6, the honest position was that `UPDATE ... WHERE status='pending' RETURNING` had zero
+evidence and could not be rejected. The tempting outcome was variant 1 alone, followed by *"(c) produces
+duplicates, rejected"* — which is false. Variant 2 changes one clause and makes it sound. So `D-02`'s
+Rejected line for (c) is now about a **real, statable trade** (the loser of a race gets `rowcount = 0`
+and must re-poll, instead of doing useful work) rather than about a defect. **The step that would have
+produced the wrong conclusion is variant 1 by itself, and the BRIEF anticipated exactly that.**
+
+**`EvalPlanQual` is not a safety feature. It is a recheck of whatever predicate you wrote.** This is the
+correction that matters most, because Din 4 taught the opposite lesson by accident. Din 4 watched EPQ
+correctly reject a stale claim and the reasonable inference was "the mechanism protects concurrent
+writers." It protects the *qual*. Variant 1 and variant 2 are the same mechanism, milliseconds apart, on
+the same row, producing a duplicate and a clean rejection — and the only difference is whether `status`
+appears in the `WHERE`. Whether the predicate covers the invariant is entirely the author's problem, and
+`P-04` already said why: **the confidence is real and the protection is not.**
+
+**Relay's claim has two independent halves and they solve different problems.** Until today they were one
+blurred thing described as "the claim mechanism". `SKIP LOCKED` in the `SELECT` gives **liveness** — never
+wait behind a row someone else holds. `AND status='pending'` on the `UPDATE` gives **safety** — the old
+value is part of the predicate. Step 6 removes one at a time and shows exactly what breaks: without the
+guard, a silent duplicate; without the skip, a correct worker that blocks and is then handed nothing. Any
+sentence claiming `SKIP LOCKED` prevents duplicate execution is wrong, and Din 4 already measured why —
+`FOR UPDATE` plus the guard prevented duplicates 6 ms apart with no `SKIP LOCKED` involved.
+
+**Case B and Case C are the argument, and Case A is just an insert.** The transactional-enqueue pitch is
+usually delivered as "both or neither", which sounds like a tidiness property. What Step 1 shows is an
+**asymmetry in repairability**: identical crashes at an identical instant, one of which self-heals and one
+of which is permanent *and undetectable*. Undetectable is the load-bearing word. If Case C were merely
+broken, a reconciliation job would fix it; the reason it cannot is that nothing recorded the intent, and
+`D-03` closed the only route to a join key on purpose. That is why the outbox pattern exists at all, and
+it is the difference between an interview answer that describes a pattern and one that prices it.
+
+**Postgres-as-queue is the right choice here and it is not the cheap choice.** This is the conclusion
+`D-01` now states, and it is the opposite of the usual pitch. It trades an integration problem that
+cannot be solved (dual-write) for an implementation problem that can (redelivery) — and Din 5 measured
+the second half of that invoice sitting in the database as job 63, with Week 2, `P-15` and `P-16` as the
+rest of it. Saying *"Postgres is simpler"* would be false.
+
+**A check that passes is not evidence that a check works.** M10 is the third instance in six days — Din 2's
+`413` ran after the parse it existed to prevent, Din 5 reported ranges where discrete numbers were
+available, and Din 6's own BRIEF asked about a rollback its SQL never performed. The rule ("what wrong
+implementation would also pass this?") was written down after the first instance, restated at the top of
+Din 6's Part C, and then broken inside the same document by the person who wrote it. **Stating the
+discipline does not transfer it.** The mechanical version is the only one that survives contact: write the
+output if the mechanism is present, write the output if it is absent, and if those two lines match, the
+check measures nothing.
+
+**And the process outcome that is genuinely worth crediting: the day reported what it observed, not what
+the KEY expected.** The KEY predicted a sequence gap. There was none, and the dossier said so. Had that
+number been bent toward the expectation, the BRIEF's error would have been absorbed as a correct result
+and `P-05` would still rest on one Din 2 measurement. That is the exact opposite of Din 5's M8, where an
+alternating pattern was filled in rather than read. **One day is not a trend, but this is the first day
+this week where the reporting was better than the plan.**
+
+---
+
+## 🧠 Self-Check — **not scored, and this is the second day in a row**
+
+**The Part B prediction answers were not handed over.** The dossier is entirely measured output. Under
+the protocol a day is scored by comparing *written predictions* against *observed outcomes*, with `idk`
+recorded as legitimate — and none of that input exists, so no fraction can be produced.
+
+Running record: Day 1 `0/9`, Day 2 `62%`, Days 3 and 4 unscored, Day 5 unscored, **Day 6 unscored.**
+**Four of six days now have no score.** The score exists to track concept formation, which is the weak
+half of the pattern this week (measurements strong, concepts borrowed). A missing score is not a good
+score, and at four out of six the instrument has stopped working.
+
+Part B 5.3 was flagged in the BRIEF as *"the question of the day — take it slowly."* Whether it was
+answered correctly before variant 1 ran is **the single most valuable unknown about today**, because the
+whole point of the seal rule is that watching a real output contradict a prediction produces recall while
+reading an answer produces recognition. That evidence is unrecoverable now.
+
+**What can be audited without the predictions — which Part B items the day's results actually answer:**
+
+| Part B | Answered by today's evidence? |
+|---|---|
+| 1.1 sequence value after Case B's rollback | ❌ **the check could not answer it** (M10). Answered afterwards by the reviewer |
+| 1.2 what a retry can/cannot fix in Case C; is it detectable | ✅ M2 — and "not detectable" is the finding |
+| 1.3 real table instead of `TEMP` | ✅ M3, `alembic check` clean |
+| 1.4 what Relay skips from the classic outbox | ⚠️ not written down; the reasoning is in `D-01` but reviewer-written |
+| 2.1–2.4 the reaper's predicate, the schema addition, 41 vs 63, the short lease | ❌ **Step 2 not delivered.** Second slip — this was Din 5's Step 6 |
+| 3.1–3.4 two roles, at-least-once redelivery, Redis + AOF, does the cost recur | ⚠️ all four are in `D-01`, all four reviewer-written |
+| 5.1 predict the claim SQL, then diff against the echo | ⚠️ SQL captured (M4); **the diff against a prediction was the point** and no prediction exists |
+| 5.2 does session 2 block, return, or error | ✅ M5 — blocked, and it was verified as a block rather than assumed |
+| **5.3 which id and what rowcount when session 1 commits** | ✅ **M5 — same id, `rowcount = 1`.** The day's headline. Prediction not recorded |
+| 5.4 variant 2's rowcount, and which Din 1 decision it is | ✅ M5 — `0`, first observation in the project. `D-06`'s guard |
+| 5.5 variant 3's id | ✅ M5 — 77, no blocking |
+| 5.6 which variants EPQ explains, safe or unsafe | ⚠️ mechanism supplied by the reviewer (M9), not derived on the day |
+| 5.7 which mechanism kept Din 5's 4 µs claims safe | ❌ still `[INFERRED]`. Settling it needs worker stdout, not `psql` |
+| 7.1 / 7.2 the sentence to soften, the DoD count | ❌ **Steps 7–8 not delivered** |
+
+**Week 1 Definition of Done — reviewer audit, evidence-based.** The DoD tick is Step 8.1 and was not
+delivered, so this is what the repository can demonstrate. **Every ⚠️ and ❌ still owes a one-line
+*deliberately deferred* (with owner) or *slipped* (with what it needs) — that line is the user's, not
+the reviewer's, and it is Din 7's Part D.**
+
+| DoD item | Status | Evidence |
+|---|---|---|
+| `jobs` table + migration, `downgrade` works | ✅ | `81b6e20c9ea7`, verified Din 1 |
+| `job_executions` table | ✅ | `4bc263254b10`, 46 rows |
+| `POST /jobs` → `202` after commit | ✅ | `main.py`, commit precedes response |
+| `GET /jobs/{id}` → status, `404` if absent | ✅ | `main.py` |
+| Worker: claim (`SKIP LOCKED`) → execute → mark | ✅ | M4, and `D-02` |
+| States `pending → running → succeeded/failed` | ✅ | 78 rows across all four |
+| Graceful shutdown, current job completes | ⚠️ | Measured via **`SIGBREAK`**, and `[R]` (Din 5 M11/M12). Real `SIGINT` keypress still untimed |
+| Day 3 Exp E — four numbers | ❌ | Week 0 debt. Din 7 Part A |
+| Two workers **without** `SKIP LOCKED` → duplicate count | ⚠️ | Din 4: **0** duplicates, 6 ms apart. Valid result; `P-12` disqualified the *timings* of those runs, not the duplicate count |
+| `SKIP LOCKED` → duplicate count **+ throughput difference** | ⚠️ | Duplicate count ✅ (0, Din 5, under 4 µs contention). **Throughput ❌ `[NO EVIDENCE]`** — no like-for-like `FOR UPDATE` run exists |
+| `kill -9` → stuck count, same after 5 min | ✅ | Din 5 M4, plus a fresh polling worker ignoring the row |
+| `SIGTERM` → job completes, exit `0`, zero stuck | ✅ | Din 5 M12, `[R]` on the elapsed time |
+| `DECISIONS.md`: `D-01`, `D-02`, Cost filled | ✅ | **Today.** Every Cost line carries a provenance tag |
+| `LEARNING_LOG.md`: 5–6 entries | ✅ | 6 daily entries |
+| `POSTMORTEMS.md`: entries #2 and #3 | ❌ | **1 entry.** Open since Week 0's DoD |
+| `PROBLEMS.md`: +2 entries (total 4) | ✅ | **18** entries |
+| Week 0 debt: Day 5 bonus (`REPEATABLE READ` → `40001`) | ❌ | Never run |
+| Week 0 debt: Day 4 harness / raw socket / `/blocking` | ⚠️ | Raw socket ruled out httpx; Exp B goal never met |
+| Week 0 debt: Day 2 grace-period timing | ❌ | `P-15` turned this into a specific hypothesis (`137 = 128 + 9`) and it is still unconfirmed |
+
+**Roughly 12 of 19 clean.** The build column is essentially complete; the gaps cluster in two places, and
+they are the same two places every week — **Week 0's carried debt**, and **`POSTMORTEMS.md`**, which has
+been one entry short since the week it was written.
+
+**One thing that was unambiguously done well.** Step 6 was the hardest step of the week to execute
+correctly, because it fails silently if run wrong: with `-T` instead of `-it`, or with session 1 committed
+before session 2 runs, the experiment becomes sequential, produces plausible output, and proves nothing.
+Both traps were avoided, session 2's **block** was observed rather than assumed, and all three variants
+were run with a reset between them. That is a correctly executed concurrency experiment, and the day's
+two best findings both come out of it.
+
+---
+
+## 🚧 Unresolved / Follow-ups
+
+**New, from today:**
+- **`P-17` — `EvalPlanQual` rechecks the predicate, not the invariant.** An uncorrelated subquery becomes
+  an `InitPlan` constant, so `status` leaves the outer qual and two workers claim one job with
+  `rowcount = 1` each and no trace in `jobs`. Also the project's **first observation of `rowcount = 0`**.
+- **`P-18` — a check whose expected output is produced equally by the mechanism and its absence.** Din 6's
+  own Case B. Third instance of this failure in six days, first where the flaw was in the design.
+- **`D-01` and `D-02` are written, and every Cost line carries a provenance tag.** Two claims are
+  explicitly absent because neither survives: any throughput comparison between claim strategies
+  (`P-12`), and *"`SKIP LOCKED` prevents duplicate execution"*.
+- **Sequence gap at 79.** `[R]` Reviewer probe consumed `nextval` and rolled back. 78 rows,
+  `max(id) = 78`, `last_value = 79` — the next enqueue is id **80**. First gap in the sequence.
+- **Job 75 will change the bench on the next worker start.** `[R]` `pending` with `type='send_receipt'`,
+  which is not in `REGISTRY` → claimed, marked `failed`, **no execution row**. That makes `pending 4 → 3`,
+  `failed 8 → 9`, and creates a fourth fixture shape. **Decide deliberately in Din 7 Step 0** — deleting
+  it breaks the Case A reconciliation, retyping it falsifies the log, leaving it changes Week 2's baseline.
+- **`D-02` Cost 5 — the conflict path costs a full poll interval.** `[INFERRED from code]` A worker losing
+  a claim race sleeps 2 s rather than retrying. Cheap to change; not changed in Week 1.
+- **The two files a cold reader needs first are both untracked.** `[MEASURED]` `.gitignore` excludes
+  `docs/daily/`, `docs/roadmap/` and `docs/planning/`, plus `*CHAT_HANDOFF*`. That is a deliberate choice
+  and it keeps the repository clean, but it means **`CURRENT_WEEK.md` and `CHAT_HANDOFF.md` — the two
+  documents that tell a cold reader where the project is — have no history and no backup**, while the
+  `docs/` files they point *into* do. If either is lost it is reconstructed from the log, which is
+  possible but is exactly the kind of quiet single point of failure this project keeps writing up.
+  Neither the BRIEFs nor the KEYs need version control; the pointer arguably does. Din 7 Step 8 decides.
+
+**Slipped again, and the count now matters:**
+- **Step 2 — the five written Week 2 answers.** This was **Din 5's Step 6, then Din 6's Step 2, and it is
+  now Din 7's**. Third slip. It is deliberately **not** being written for the user: the whole value is in
+  naming which column is missing and what adding it breaks, and reading that as prose produces recognition
+  rather than recall. `P-16` has the sub-decisions; `D-01` Cost items 1–3 have the framing. **Week 2 Din 1
+  should not start until this exists in his own words.**
+- **DDIA Ch 7, second pass (pp. 233–251).** Fourth slip. And one correction to what Din 6's BRIEF asked:
+  Ch 7 does **not** name the dead-versus-slow problem in `P-16` — that is **Ch 8, "The Trouble with
+  Distributed Systems."** What Ch 7 does name is **lost update** (which is exactly Step 6 variant 1) and
+  **compare-and-set** as a remedy, which Relay already uses. Stop looking for `P-16` in Ch 7.
+- **Step 0's claims ledger and Step 7's audit pass.** Not delivered. The audit was performed by the
+  reviewer while writing the entries, which means the two claims it caught were caught by the wrong person.
+
+**Carried forward, unchanged:**
+- **Which mechanism made Din 5's 4 µs claims safe** — still `[INFERRED]`. Step 6 did not settle it because
+  it ran in `psql`, not in the worker. Settled by capturing worker stdout during a convoy run and grepping
+  for the conflict line.
+- **Jobs 41, 63, 65 left `running`** — Week 2's fixture, three shapes, verified intact today (M8).
+- **No throughput comparison for any claim strategy** (`P-12` repaid, the comparison still not made).
+- **`P-03`** claim-query index → Week 4 `EXPLAIN ANALYZE`. Today's `EXPLAIN` shows a `Seq Scan` at 78 rows,
+  which tells you nothing about depth.
+- **`ACCESS EXCLUSIVE` lock-queue hazard** (`D-07`) — inference; procedure known.
+- **`POSTMORTEMS.md` entries #2 and #3** — Din 7 Part C.
+- **Week 0 debt:** Day 3 Exp E, Day 5 `40001` bonus, Day 4 Exp B, Day 2 grace-period timing.
+
+**Bench note — reviewer additions, stated so the trail stays closed.** One rolled-back `INSERT`
+(`type='probe_seq_rollback'`) consumed sequence value **79**; no row was committed, so row counts are
+unchanged and the gap is permanent by design. One `EXPLAIN` (no `ANALYZE`, so nothing executed). No
+temporary scripts were created and no files were written outside `docs/`. `jobs` and `job_executions` row
+counts are exactly as the day left them: **78** and **46**.
+
+---
+
+## ❓ Question / Next Thought
+
+Din 7 is the Week 1 review checkpoint, and the honest reading of Din 6 changes what it should be spent on.
+
+**The build is done and the writing is done. What is thin is the part that only the user can produce.**
+Two ADRs exist and they are good, but they were written by the reviewer from measurements the user
+produced — which is the correct division of labour and also means the *reasoning* in them is currently
+recognisable rather than recallable, exactly the state `DECISIONS.md`'s own Din 1 provenance warning
+describes. The single highest-value thing Din 7 can do is not more building. It is **Step 2's five
+answers, in his own words, before Week 2 begins** — because Week 2's first commit is the reaper, and a
+reaper built before the problem statement exists is `P-04` all over again: a mechanism that covers the
+cases you thought of, with real confidence and partial protection.
+
+**And there is now a specific, cheap experiment that closes the last `[INFERRED]` in `D-02`.** The entry
+can say the claim path is safe at 4 µs separation `[MEASURED]`. It cannot say **which half** made it safe.
+`P-17` states what would settle it and it is about ten minutes of work: run the convoy again, capture
+worker stdout, grep for the `rowcount=0` conflict line. Zero occurrences alongside a clean split means
+`SKIP LOCKED` did the work and the guard is a backstop. Any occurrence means both are live. Either answer
+is publishable; the current state is the only one that is not.
+
+**One question nothing has touched, and it is the mirror of today's finding.** Step 6 showed that two
+workers can both be told they own a job, and that `jobs` cannot record it. `job_executions` would have
+recorded it — two rows, one `job_id`. But `P-11` says `count(*) > 1` stops meaning "duplicate" the moment
+Week 2's retries land, and `D-21` deliberately deferred the FK and the index. So the instrument that would
+have caught today's failure has a known expiry date, and it expires in the week that introduces the second
+writer to `status`. **Does the attempt/claim identifier on `job_executions` need to exist before the reaper,
+rather than with the retry logic?** That is a `D-22`-shaped question and today is the first evidence that
+it might be ordered earlier than the roadmap assumes.
