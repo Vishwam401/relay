@@ -120,27 +120,41 @@ Din 1 Step 1 se **pehle** bench check hota hai. Match kare to ek line likh do au
 to **Step 1 rukta hai**, pehle divergence classify hoti hai — classify ka matlab naye numbers ka **cause**
 naam lena hai, *"numbers alag hain"* likhna nahi.
 
-**Check ki date:** `____` · **Match?** `____`
+**Check ki date:** `2026-08-23` · **Match?** **Haan — zero divergence, saari aath lines pe.**
 
 | Kya check kiya | Expected (BENCH block se copy) | Mila (`psql` se, verbatim) | Match? |
 |---|---|---|---|
-| `failed` / `running` / `succeeded` counts | `____` | `____` | `____` |
-| total rows | `____` | `____` | `____` |
-| `max(id)` aur `jobs_id_seq` `last_value` | `____` | `____` | `____` |
-| `job_executions` rows | `____` | `____` | `____` |
-| jobs 41 / 63 / 65 ka `status` | `____` | `____` | `____` |
-| job 75 ka `status` | `____` | `____` | `____` |
-| `\d jobs` — columns aur `pg_constraint` definition | `____` | `____` | `____` |
-| connections to `relay`, `idle in transaction`, worker processes | `____` | `____` | `____` |
+| `failed` / `running` / `succeeded` counts | 9 / 3 / 74 | 9 / 3 / 74 | ✅ |
+| total rows | 86 | 86 | ✅ |
+| `max(id)` aur `jobs_id_seq` `last_value` | 87 / 87 | 87 / 87 | ✅ |
+| `job_executions` rows | 57 | 57 | ✅ |
+| jobs 41 / 63 / 65 ka `status` | teeno `running` | teeno `running` | ✅ |
+| job 75 ka `status` | `failed` | `failed` | ✅ |
+| `\d jobs` — columns aur `pg_constraint` definition | 6 columns, `jobs_status_check` 4 values pe | 6 columns, `jobs_status_check` 4 values pe | ✅ |
+| connections to `relay`, `idle in transaction`, worker processes | 1 / 0 / 0 | idle sessions 0, worker processes 0 | ✅ |
 
-**Classification — E2 ki kaunsi row lagi:** `____`
-*(bhoola hua worker `P-13` · fixture chhed di gayi · job 75 resurrect · rows delete / consumed sequence
-value `P-05` · koi migration chali)*
+**Classification — E2 ki kaunsi row lagi:** **koi nahi. E2 aaj trigger hua hi nahi.**
 
-**Cause, naam se:** `____`
-**Evidence jo cause ko support karta hai** (PID + start time, `alembic history` / `alembic current` ka
-output, jo bhi laagu ho): `____`
-**Naya baseline — iss hafte ka arithmetic yahan se shuru hoga:** `____`
+**Aur ye result apne aap me ek finding hai, kyunki iska ek doosra sawaal band hota hai.** BENCH block ka
+label `[MEASURED] on Din 7 ke end` tha, par `docs/logs/WEEK_01.md` `# DIN 6` pe khatam hoti hai — Din 7 ki
+koi entry nahi hai. To Din 1 ki subah tak ye khula tha ki BENCH block ke numbers asli hain ya kahin se
+aaye hain. **Aaj ke bench ne unhe exactly reproduce kar diya (86 / `max(id)` 87 / seq 87 / 57), Din 6 ke
+numbers ko nahi (78 / 78 / 79 / 46).** Matlab: Din 7 **chala tha aur measure hua tha** — jo gayab hai wo
+sirf uski log entry hai. BENCH block ki provenance theek hai; documentation gap asli hai.
+
+Ye Week 2 ke KEY ki teen possibilities me se **pehli** thi, aur wo `E2`/`P-13` wali nahi thi. Uss
+distinction ko `[MEASURED]` ki tarah likhna theek hai, kyunki dono candidate baselines me `8` rows aur
+`11` sequence values ka farq tha — reproduce hone ki gunjaish nahi thi.
+
+**Naya baseline — iss hafte ka arithmetic yahan se shuru hoga:** **BENCH block hi baseline hai**, badla
+nahi. Din 1 ka closing (niche) usme se delta nikaal ke banta hai.
+
+**Ek carried debt band hota hai, ek nahi:**
+
+| Debt | Ab kya hai |
+|---|---|
+| *"BENCH block ki `[MEASURED]` provenance unverifiable hai"* | **Band.** Aaj ke bench ne reproduce kar diya `[MEASURED]` |
+| *"Din 7 ki log entry maujood nahi hai"* | **Khula.** Numbers verify ho gaye, par Din 7 me kya hua — kaunsa experiment, kaunsa verdict — wo kahin likha nahi hai aur reconstruct nahi hoga. `WEEK_01.md` me ye gap ek line ki tarah rehna chahiye, silently bhara nahi jaana chahiye |
 
 **Ye nahi hota, aur rule dono directions me lagta hai:**
 
@@ -154,16 +168,31 @@ hai ki 41/63/65 ka evidence dobara reproducible **nahi** hai: `____`
 
 ---
 
-## Din 1 — Problem statement, phir lease column (`____`)
+## Din 1 — Problem statement, phir lease column (`2026-08-23`)
 
-**Original goal (from the plan):** `____`
+**Original goal (from the plan):** Problem statement apne shabdon me likhna (aaj ke columns kya measure
+karte hain, naive predicate kis direction me fail karta hai, sabse chhoti schema addition, wo addition
+kaunsa naya failure laati hai, `Interim_Guarantee`) — **phir** ek column, ek migration dono direction me,
+aur claim `UPDATE` me lease ka write. Lease ki **duration** aaj decide nahi hoti.
 
-**Goal met?** `____` — yes / no / partial me se ek. `partial` likho to **kaunsa hissa** hua aur kaunsa nahi,
-wo isi line me.
+**Goal met? — `partial`.** Jo hua: bench check (zero divergence), migration up+down, claim lease likhti
+hai, backfill decision Option B cost ke saath, three-valued logic differential measured. Jo **nahi** hua:
+**Step 0 ke paanch likhe hue answers** (paanchwi baar slip), **Part B ke prediction answers likhit roop me**
+(is review ko supply nahi hue, to score nahi ho sakte), **Ch 8 links file me append** (`DDIA_CH8_LINKS.md`
+ka mtime abhi bhi `2026-08-22 17:28`, Stage Day ka), aur **cleanup** — Step 7 ke **do worker processes
+abhi bhi zinda hain**.
 
-**Anything else learned?** `____` — ye field goal-met se **alag** hai aur alag hi rehta hai. Kuch naya
-seekhna aur jo shuru kiya tha usko khatam karna do alag baatein hain; ek se doosri ko dhakna iss log ki
-sabse purani galti hai.
+**Anything else learned?** Haan, teen cheezein jo plan ne poochhi hi nahi thi:
+
+1. **Migration chain me ek khaali revision permanently baithi hai** (`79cb2ee38481`, `upgrade(): pass`).
+   Step 6 ka reversibility check **pass hua, par ek layer shallow reason se** — `downgrade -1` uss khaali
+   revision pe utra, aur wahan column drop hona hi tha. Doosra `downgrade -1` success report karke kuch
+   nahi badalta.
+2. **Column ka naam `claimed_at` chuna gaya, aur wo *event* hai, *deadline* nahi** — matlab lease ki
+   duration Din 2 ke predicate me ghus aayi hai, jabki plan usko `D-22`/Din 6 tak defer karta hai.
+3. **Job 88 ka enqueue-to-claim gap `00:01:33.705`** `[MEASURED-R]` — yaani aaj ki apni row pe naive
+   `created_at` predicate ka dangerous failure literally reproduce ho sakta tha. Ye number report me nahi
+   tha aur ye Step 2 ki poori argument ka apna evidence hai.
 
 ---
 
@@ -173,72 +202,258 @@ sabse purani galti hai.
 
 | Kya | Value | Label |
 |---|---|---|
-| worker processes chal rahe hain | `____` | `____` |
-| `idle in transaction` sessions | `____` | `____` |
-| connections to `relay` | `____` | `____` |
+| worker processes chal rahe hain | 0 | `[MEASURED]` |
+| `idle in transaction` sessions | 0 | `[MEASURED]` |
+| connections to `relay` | not recorded separately; `idle in transaction` = 0 tha | `[MEASURED]` |
 
-**M1 — `____`**
+**M1 — bench, zero divergence.** Poora table upar ke Divergence section me hai. Short: `9 / 3 / 74`,
+total `86`, `max(id) 87`, seq `87`, `job_executions 57`, 41/63/65 `running`, 75 `failed`. `[MEASURED]`
 
-```
-____
-```
-
-**M2 — `____`**
+**M2 — `\d jobs` migration ke pehle aur baad, aur `downgrade` ka cycle** `[MEASURED]`
 
 ```
-____
+alembic downgrade -1   -> \d jobs  =  6 columns  (claimed_at absent)
+alembic upgrade head   -> \d jobs  =  7 columns  (claimed_at | timestamp with time zone | nullable)
+```
+
+Aaj shaam re-verified `[MEASURED-R]`:
+
+```
+ claimed_at | timestamp with time zone |           |          |
+ alembic_version.version_num = 75a845575d2e
+```
+
+**M3 — claim lease likhti hai (job 88, `slow` handler, 8 s)** `[MEASURED]`
+
+```
+id 88 | status running | claimed_at 2026-08-23 09:46:55.549422+00 | now() 2026-08-23 09:47:05+00   (Etc/UTC)
+```
+
+Shaam ko wahi row `[MEASURED-R]`:
+
+```
+ id | type | status    | created_at                   | claimed_at                    | claimed_at - created_at
+ 88 | slow | succeeded | 2026-08-23 09:45:21.84424+00 | 2026-08-23 09:46:55.549422+00 | 00:01:33.705182
+ job_executions: job_id 88 | worker-32636 | 2026-08-23 09:46:55.597239+00
+```
+
+Teesra column aaj ka sabse kaam ka number hai aur report me nahi tha: **enqueue se claim tak 93.7 s**.
+Naive predicate `created_at < now() - interval '60 seconds'` iss row pe **claim hone ke instant** match
+kar jaata — job zinda, handler abhi shuru bhi nahi hua, aur reaper usko utha leta. Step 2 ka
+"dangerous direction" wala argument aaj apni hi row pe reproduce ho sakta tha.
+
+**M4 — three-valued logic differential** `[MEASURED]`, aaj shaam reproduce `[MEASURED-R]`
+
+```
+select count(*) from jobs where status='running' and claimed_at < now();                          -> 0
+select count(*) from jobs where status='running' and (claimed_at is null or claimed_at < now());   -> 3
 ```
 
 **Aaj ye numbers likhne hain (plan ka Din 1 obligation):**
 
 | Kya | Value / text | Label |
 |---|---|---|
-| **Problem statement ka poora text** (apne shabdon me, Step 1 ka output) | `____` | — |
-| Chuna hua column name, type, nullability | `____` | `____` |
-| Migration up + down chala — `downgrade` ka actual output | `____` | `____` |
-| `NULL` backfill ka faisla (migration me backfill **ya** `IS NULL` branch) | `____` | — |
-| Uss faisle ki **cost**, apne shabdon me | `____` | — |
-| Claim ke baad ek row ka lease value (non-null) | `____` | `____` |
-| Purani `running` rows (41/63/65) pe lease column ka value | `____` | `____` |
-| Three-valued logic wala differential — dono counts | `____` | `____` |
-| `Interim_Guarantee` — kaunsa contract point kis ke against trade hua (*narrows*, *does not close*) | `____` | — |
+| **Problem statement ka poora text** (apne shabdon me, Step 1 ka output) | Substance niche 💡 me hai, par **apne shabdon me disk pe nahi likha gaya** — ye field abhi bhi user ka hai | `[NO EVIDENCE]` for authorship |
+| Chuna hua column name, type, nullability | `claimed_at`, `DateTime(timezone=True)` → `timestamptz`, `nullable=True` | `[MEASURED]` |
+| Migration up + down chala — `downgrade` ka actual output | M2, dono `\d jobs` | `[MEASURED]` |
+| `NULL` backfill ka faisla (migration me backfill **ya** `IS NULL` branch) | **Option B** — `NULL` rehne diya, predicate me `IS NULL` branch | — |
+| Uss faisle ki **cost**, apne shabdon me | `D-07` ka argument: backfilled value 41/63/65 ke liye **fiction** hoti, aur `downgrade` usko wapas nahi laa sakti — migration shape me reversible hoti, information me nahi. Iski keemat: `IS NULL` branch **hamesha** predicate me rahegi, aur wo har `NULL`-lease row ko reclaimable banati hai — including koi future writer jo `SET` me `claimed_at` likhna bhool jaaye | — |
+| Claim ke baad ek row ka lease value (non-null) | M3 | `[MEASURED]` |
+| Purani `running` rows (41/63/65) pe lease column ka value | teeno pe `NULL` | `[MEASURED]` |
+| Three-valued logic wala differential — dono counts | `0` aur `3` | `[MEASURED]` |
+| `Interim_Guarantee` — kaunsa contract point kis ke against trade hua | Contract **#1** behtar hota hai: accepted job hamesha ke liye `running` me atki nahi rehti, wo wapas claimable ho jaati hai. Iski keemat contract **#2** deta hai: reclaim ka matlab hai ek handler jo already chal chuka hai dobara chal sakta hai, aur dono executions individually legit hain. To lease + reaper stranded-work ka window **narrow karta hai** aur duplicate side effect ka window **band nahi karta**. #2 Week 3 ke dedup tak **unprotected** rehta hai. Aur ye strict improvement nahi, ek **trade** hai: pehle atki hui job bekaar padi rehti thi — bura, par **ek baar**. Ab wo dobara chalayi jaayegi jabki pehla worker possibly abhi bhi chal raha hai | — |
+
+**Aur ek cheez jo aaj plan ne poochhi nahi thi par reaper ka faisla decide karti hai** — `claimed_at`
+naam ka structural asar:
+
+`claimed_at` ek **event** hai, `lease_expires_at` ek **deadline** hota. Farq predicate me dikhta hai:
+
+```
+deadline column:  WHERE lease_expires_at < now()                        -- duration query me nahi hai
+event column:     WHERE claimed_at < now() - interval '<duration>'      -- duration ab har predicate me hai
+```
+
+Matlab lease ki **duration** — jo plan `D-22` / Din 6 tak defer karta hai, kyunki uski `Cost` line Din 3
+ke duplicate number ke bina likhi hi nahi ja sakti — **Din 2 ke predicate me aa gayi hai**. Ye galat
+choice nahi hai (`claimed_at` sach record karta hai: ye row iss instant claim hui; `lease_expires_at` ek
+policy record karta hai jo tab badalti hai jab duration badalti hai), par iski keemat aaj likhni hai:
+Din 2 ko ek duration **chunni padegi**, aur wo number Din 3 ka evidence aane se **pehle** chuna hua
+number hoga. `D-22` ko Din 6 pe likhte waqt ye baat yaad rakhni hai — us waqt sawaal hoga
+*"ye number measure kiya ya choose kiya"*, aur jawab "choose kiya, Din 2 pe, evidence se pehle" hoga.
+
+**Aur isi wajah se Step 9 ki pehli query reaper ka predicate nahi hai.** `claimed_at < now()` ka matlab
+hai *"kabhi bhi claim hui thi"* — yaani **zero-second lease**. Aaj usne `0` diya sirf isliye ki teeno
+`running` rows pe `claimed_at` `NULL` hai. Agar job 88 uss waqt `running` hoti, ye query usko claim hone
+ke **usi second** utha leti. Differential (`0` vs `3`) `NULL` trap theek dikhata hai — aur usi line me ek
+doosra defect chhupa rehta hai. Din 2 ka predicate iss query ki shape se **nahi** aa sakta.
 
 **Closing reconciliation** — opening counts BENCH block se, delta aaj ka. **Kabhi `max(id)` se nahi, kabhi
 id contiguity se nahi:**
 
 | Line | Value |
 |---|---|
-| opening `pending` / `running` / `succeeded` / `failed` / total (BENCH block) | `____` |
-| `+` aaj enqueue hui probe jobs (ids **naam se**) | `____` |
-| `−` unme se jo `succeeded` / `failed` hui | `____` |
-| `=` closing counts | `____` |
-| `psql` ke actual counts | `____` |
-| Match? | `____` |
-| `job_executions` delta | `____` |
-| Migration ne kisi row ka `status` badla? | `____` |
+| opening `pending` / `running` / `succeeded` / `failed` / total (BENCH block) | `0 / 3 / 74 / 9 / 86` |
+| `+` aaj enqueue hui probe jobs (ids **naam se**) | **id 88** (`type='slow'`) — ek row |
+| `−` unme se jo `succeeded` / `failed` hui | 88 → `succeeded` |
+| `=` closing counts | `0 / 3 / 75 / 9 / 87` |
+| `psql` ke actual counts | `running 3`, `succeeded 75`, `failed 9`, total `87`, `max(id) 88`, seq `88` — `[MEASURED-R]` aaj shaam |
+| Match? | **Haan.** `9 + 3 + 75 = 87` |
+| `job_executions` delta | `57 → 58`, `+1`. Sirf ek job dispatch hui, to `+1` sahi hai `[MEASURED-R]` |
+| Migration ne kisi row ka `status` badla? | **Nahi.** `running` opening `3` (41/63/65) tha aur closing bhi `3` hai, aur wo wahi teen ids hain `[MEASURED-R]`. `attempts <> 0` wali rows aaj bhi `0` hain — retry ka koi rasta galti se nahi chala `[MEASURED-R]` |
 
 Match na kare to wo **finding** hai (E5), adjust karke balance nahi hoti. Pehla suspect ek bhoola hua worker
-(`P-13`). Finding: `____`
+(`P-13`). **Finding: reconciliation match karta hai, par `P-13` phir bhi hua — sirf usne counts contaminate
+nahi kiye.** Niche cleanup dekho: do worker abhi zinda hain, aur unhone kuch claim nahi kiya kyunki
+`pending` count `0` hai aur `running` rows claim query ko dikhti hi nahi (`P-16`). **Yaani clean
+reconciliation ne ek asli hygiene failure ko chhupa liya.** Arithmetic ne wo cheez detect nahi ki jo
+detect karne ke liye wo likhi gayi thi — aur agar aaj ek bhi `pending` row hoti, ye entry galat hoti.
 
-**Cleanup:** stdout capture file (`python -u` wali) delete hui? `____` — relevant output pehle upar copy
-hua? `____` · Probe **rows delete nahi** hoti; unke ids: `____`
+**Cleanup — ye hissa fail hua, aur ye sabse important line hai iss entry me:**
 
-**Commit:** staged paths naam se (`.` kabhi nahi): `____`
+| Kya | Status |
+|---|---|
+| stdout capture file (`python -u` wali) delete hui? | not recorded — report me mention nahi tha, aur koi capture file repo me nahi mili |
+| Worker processes band hue? | **Nahi.** `2026-08-23 10:27 UTC` pe **do** processes zinda the: OS PID `34280` aur `32636`, dono `python -m src.worker`, dono `StartTime 15:16:54 IST` `[MEASURED-R]` |
+| Live DB backend? | **Haan, ek.** backend PID `3119`, `application_name` khali (asyncpg), `backend_start 09:46:55.463+00`, aur `state_change` do baar 2 s ke andar aage badha (`10:26:29.02`, phir `10:27:21.67`) — **~40 minute baad bhi poll kar raha tha** `[MEASURED-R]` |
+| Kaunsa process job 88 chalayi thi? | `job_executions.worker_id = worker-32636` → OS PID `32636` `[MEASURED-R]` |
+| Do process, par ek hi asyncpg backend — kyun? | **Not established.** Ek hi non-psql connection dikhi. Doosre process ka connection kahan hai, ye measure nahi hua |
+| Leftover `psql` sessions | `8`, sabhi `state = 'idle'`, sabka `xact_start` `NULL`, sabse purani `09:17:53+00` `[MEASURED-R]`. **`idle in transaction` zero hai** — matlab `P-06` ka mechanism (locks pakde baithna) maujood **nahi** hai. Ye hygiene hai, lock hazard nahi |
+| Probe **rows delete nahi** hoti; unke ids | **id 88** — rakhi gayi hai, delta me count hai |
+
+**Ye `P-13` ka teesra instance hai** aur pehla jisme wo *bina nuksaan* hua. Nuksaan na hone ki wajah luck
+hai, discipline nahi: `pending` count `0` thi. Aur closing report me *"Zero idle sessions"* likha gaya tha —
+wo `idle in transaction` ke liye sach hai, par *"0 worker processes"* closing pe **re-verify nahi hua**, aur
+wo sach nahi tha.
+
+**Commit:** **nahi hua.** `git log` ka HEAD abhi bhi `9d60df7 docs: complete Stage Day requirements` hai,
+aur `git status` ye dikhata hai `[MEASURED-R]`:
+
+```
+ M labs/day2_signals.py
+ M src/models.py
+ M src/worker.py
+?? alembic/versions/75a845575d2e_add_claimed_at_to_jobs.py
+?? alembic/versions/79cb2ee38481_add_claimed_at_to_jobs.py
+```
+
+`labs/day2_signals.py` bhi modified hai — wo Din 1 ke scope me nahi tha. Kya badla, ye recorded nahi hai;
+stage karne se pehle uska diff dekh lena chahiye, aur agar wo aaj ka kaam nahi hai to usko **alag** commit
+me rakhna hai. `docs/planning/`, `docs/roadmap/` aur `docs/daily/` gitignored hain, to khali `git status`
+ka matlab "kuch likha nahi" **nahi** hai.
+
+---
+
+### 🔧 Migration chain — ek khaali revision jo permanently baithi rahegi
+
+Ye report me nahi tha aur reversibility check ke matlab ko badalta hai `[MEASURED-R]`.
+
+```
+$ python -m alembic history
+79cb2ee38481 -> 75a845575d2e (head), add claimed_at to jobs
+4bc263254b10 -> 79cb2ee38481, add claimed_at to jobs
+81b6e20c9ea7 -> 4bc263254b10, create_job_executions_table
+<base> -> 81b6e20c9ea7, create_jobs_table
+```
+
+**Do revisions, ek hi message, aur pehli khaali hai:**
+
+| Revision | Create Date | `upgrade()` | `downgrade()` |
+|---|---|---|---|
+| `79cb2ee38481` | `15:07:40.511` | `pass` | `pass` |
+| `75a845575d2e` | `15:09:36.624` | `op.add_column('jobs', sa.Column('claimed_at', sa.DateTime(timezone=True), nullable=True))` | `op.drop_column('jobs', 'claimed_at')` |
+
+**Cause, aur ye mtime se establish hota hai:** `src/models.py` ka mtime `15:08:44` hai — pehli revision
+`15:07:40` pe generate hui, yaani **`claimed_at` model me aane se pehle**. Autogenerate ne diff nahi paaya,
+`pass` likh diya, aur **exit status zero** diya. `[MEASURED-R]`
+
+**Iska asar Step 6 ke verification pe:**
+
+- `alembic downgrade -1` head (`75a845575d2e`) se **khaali revision** pe utra. Column drop hua, `\d jobs`
+  ne 6 columns dikhaye. Check **pass**, aur uska mechanism asli tha.
+- Par ek **doosra** `alembic downgrade -1` khaali revision ka `downgrade()` chalata — `pass` — aur success
+  report karke **kuch nahi badalta**. Yaani chain me ek step hai jo hamesha "chala" bolega aur kabhi kuch
+  nahi karega.
+- **Aur asli baat:** agar sirf wahi khaali revision bani hoti, `alembic upgrade head` `Running upgrade
+  4bc263254b10 -> 79cb2ee38481` print karke exit `0` deta, aur column **nahi** banta. Migration ka output
+  success aur no-op me **farq nahi** karta.
+
+Ye `P-18` ki exact shape hai, migration layer pe: **ek verification jiska expected output mechanism ke
+hone aur na hone, dono se milta hai.** Iss baar wo pakda gaya kyunki agli hi statement (claim ka
+`SET claimed_at=...`) column ke bina **loud** fail karti. Silent version wo hota jo `DIN_01_KEY.md` Step 7
+me likha hai: column migration me ho aur `models.py` me na ho.
+
+**Aaj isko theek nahi karna.** Khaali revision chain ka hissa hai aur `alembic_version` usse guzar chuki
+hai; usko delete karna history rewrite hai. Wo wahan rehti hai aur **iss log me uska naam** likha rehta
+hai — yahi record hai ki wo dead hai, bhooli hui nahi.
 
 ---
 
 ### 💡 What I Understood
 
-`____`
+> ⚠️ **Ye section reviewer ne likha hai, user ne nahi.** Isme wo hai jo aaj ke session ne **establish**
+> kiya — user ki samajh ka record nahi. Iska poora point yahi hai ki ise **apne shabdon me replace kiya
+> jaaye**, aur jo cheez sirf padhke aayi uske saath likha jaaye ki wo padhi hui hai. Jab tak replace nahi
+> hota, ye entry apni sabse zaroori field pe `[NO EVIDENCE]` carry karti hai.
 
-*(Apne shabdon me. Jo cheez sirf padh ke samajh aayi, uske saath likho ki wo padhi hui hai — recognisable
-aur recallable me farq isi line se dikhta hai.)*
+Aaj ke session ne teen cheezein establish ki, aur teeno measurement se aayi hain:
+
+**1. Column add karna aasan tha; column ka *naam* asli decision tha.** `claimed_at` aur
+`lease_expires_at` ek hi type, ek hi nullability, ek hi migration lete hain — aur do bilkul alag
+predicates maangte hain. Event column duration ko **query me** rakhta hai, deadline column duration ko
+**writer me** rakhta hai. Kyunki `claimed_at` chuna gaya, lease ki duration Din 2 ke predicate me aa gayi
+hai, jabki plan usko `D-22`/Din 6 tak defer kar raha tha. Aaj ka sabaq: schema ka shape decide karte waqt
+ye poochhna padta hai ki **iss column ko padhne wali query kaisi dikhegi**, sirf ye nahi ki column me kya
+store hoga.
+
+**2. `NULL` ne `false` ki tarah behave nahi kiya, aur wo do counts me dikha — `0` versus `3`.** Ye
+prediction se aayi baat nahi hai, output se aayi hai. Aur ek layer neeche: Step 9 ki pehli query
+(`claimed_at < now()`) ne `0` diya, aur wo `0` **do** wajah se aa sakta tha — `NULL` trap, ya "koi row
+expired nahi thi". Aaj wo pehli wajah thi. Same output, do kahaniyan; farq sirf doosri query ne dikhaya.
+**Ek count kabhi apna cause nahi batata.**
+
+**3. Ek migration jo "chali" aur kuch nahi badla.** `--autogenerate` ne khaali `upgrade(): pass` likha
+kyunki `models.py` me column tab tha hi nahi, aur usne exit status `0` diya. Yahan wo silent nahi raha
+sirf isliye ki agli statement column ke bina loud fail karti. Ye `P-18` ka wahi shape hai jo Din 6 pe
+verification me mila tha — ab tooling layer pe. **Exit code `0` ka matlab "kaam hua" nahi hai; matlab
+"error nahi aayi" hai.**
+
+**Aur ek cheez jo aaj sabse mehngi nahi thi par ho sakti thi:** clean reconciliation ne ek asli failure
+chhupa liya. Do worker chalte reh gaye, aur arithmetic ne unhe nahi pakda — kyunki `pending` count `0`
+thi. Agar ek bhi `pending` row hoti, closing counts galat hote. Reconciliation ne aaj kaam kiya, par wo
+`P-13` ko **detect** nahi kar sakti; uske liye process check chahiye, aur wo closing pe chala hi nahi.
 
 ---
 
-### 🧠 Self-Check (honest — `____` / `____` self-answered)
+### 🧠 Self-Check (honest — 0 / 6 self-answered on Part B, aur ye score data ke absence ka hai, galat jawab ka nahi)
 
 `____`
+
+**Part B ke chhe sawaalon ka koi likha hua pre-measurement answer iss review ko supply nahi hua.** Report
+me **outcomes** the, predictions nahi. Reviewer rule 1 aur 6 saaf hain: jo field report nahi hui uska
+plausible value nahi bharna, aur jo answer nahi hua usko correct me count nahi karna. To aaj ka honest
+score **0/6 scorable** hai — iska matlab "chhe galat" nahi, iska matlab "chhe ka evidence nahi".
+
+Agar wo chhe jawab kaagaz pe ya kisi file me likhe hue hain, unhe paste karo aur ye section per-question
+re-score ho jaayega. **Aur agar wo likhe hi nahi gaye the, to wahi likhna hai** — kyunki uske bina din ke
+measurements ka comparison base hi nahi banta, aur `DIN_01_KEY.md` khulne ke baad wo base dobara nahi ban
+sakta (`E8` — seal khulne ke baad answer *reconstruction* score karta hai, *answered* nahi).
+
+Per-question status, taki gap naam se dikhe:
+
+| Part B Q | Kya poochha gaya | Status |
+|---|---|---|
+| 1 | `created_at` kya measure karta hai; naive predicate safe ya dangerous direction | **not supplied.** Report ka content isse cover karta hai, par execution ke **baad** aaya |
+| 2 | `job_executions` row = claim current? `record_execution()` kis transaction me | **not supplied.** Report me `D-21`/evidence-not-control-input ka jawab hai, phir bhi post-hoc |
+| 3 | `now()` transaction-start ya statement time; lambi reaper transaction me matlab | **not supplied**, aur ye Din 2 ka direct input hai |
+| 4 | `NOT NULL` 86 rows se kya demand karta hai; `NULL` predicate se kya | **not supplied.** Faisla (Option B) aur uski cost aayi — wo Step 8 ka deliverable hai, Q4 ka answer nahi |
+| 5 | Kaunsa contract point behtar, kaunsa kamzor | **not supplied.** `Interim_Guarantee` ka text sahi shape me aaya (`narrows` / `does not close`), par prediction ki tarah nahi |
+| 6 | Claim ka `rowcount` ab kuch **naya** batata hai? | **not supplied**, aur ye woh sawaal hai jiska galat jawab sabse mehnga hota — `rowcount = 1` lease likhne ka proof **nahi** hai |
+
+**Step 0 — paanch likhe hue answers: paanchwi baar slip.** `docs/logs/WEEK_02.md` ka mtime din shuru hone
+tak `2026-08-22 18:01` tha, to wo paanch answers disk pe nahi the `[MEASURED-R]`. Report ka content
+teen-chaar ko cover karta hai, par wo BRIEF aur plan padhne ke **baad** likha gaya — `E8` ke hisaab se wo
+**reconstruction** hai, *answered* nahi. Paanchwa item (*"short lease — handler se chhoti lease me kya
+galat hota hai"*) report me bilkul nahi aaya, aur wo **Din 3 ka centrepiece** hai.
 
 `idk` ek valid answer hai aur wo **not-answered** ki tarah score hota hai. Guess ko knowledge ki tarah
 likhna dono directions me dishonest hai — jo aata tha usko miss likhna bhi revision material kharab karta
@@ -248,7 +463,11 @@ hai.
 
 | # | I said | Actual | The transferable lesson |
 |---|---|---|---|
-| `__` | `____` | `____` | `____` |
+| 1 | *"Week 2 Din 1 ka execution **100% complete aur verify** ho gaya hai"* | **Partial.** Step 0 (paanch answers) nahi hua, Step 10 ka deliverable disk pe nahi hai (`DDIA_CH8_LINKS.md` mtime abhi bhi Stage Day ka `2026-08-22 17:28`), Step 11 ka log / `PROBLEMS.md` / `CURRENT_WEEK.md` / commit nahi hua, aur cleanup fail hua `[MEASURED-R]` | "Verified" ka matlab **file state check karna** hai. Ye wahi galti hai jo Stage Day pe unsaved buffers ke saath hui thi — us din bhi kaam complete report hua tha aur disk khali tha. Do baar, ek hi hafte me |
+| 2 | *"Zero idle sessions"* aur implicitly clean close | `idle in transaction` **0** — ye sach hai. Par closing pe **do worker process zinda** the aur ek asyncpg backend `~40 min` baad bhi poll kar raha tha `[MEASURED-R]` | `idle in transaction = 0` aur `workers = 0` do **alag** checks hain. Pehla lock hazard dekhta hai (`P-06`), doosra measurement contamination (`P-13`). Ek ko dekhkar doosre ka dava nahi kar sakte |
+| 3 | *"Migration 'add claimed_at to jobs' generated"* — ek migration | **Do** revisions bani, dono ka message same, aur pehli (`79cb2ee38481`) **khaali** hai — `upgrade(): pass` `[MEASURED-R]` | `--autogenerate` model state ke against diff leta hai. Model me column aane se **pehle** chalane pe wo khaali revision banata hai aur exit `0` deta hai. Ek `alembic revision` ka success uske andar kuch hone ka proof nahi hai |
+| 4 | Step 7 ka clock evidence: `claimed_at 09:46:55+00` aur `now() 09:47:05+00` | Dono **DB clock** ke hain. Ye pair lease value verify karta hai — par KEY ne jo maanga tha (DB clock versus worker stdout ka **offset**) wo isse measure hi nahi hota `[MEASURED-R]` | *"Ek hi query me dono"* clock-consistency ke liye sahi hai, par do **different** clocks ka offset measure karne ke liye dono clocks ko padhna padta hai. Ek clock ko do baar padhna offset nahi deta |
+| 5 | Step 9 ka `claimed_at < now()` → `0` = *"koi expired lease nahi"* | `0` aaya kyunki teeno rows pe `claimed_at` `NULL` hai. **Aur usi query me ek doosra defect hai:** `claimed_at` event column hai, to `< now()` ka matlab zero-second lease hai — job 88 `running` hoti to wo claim ke **usi second** match kar jaati `[MEASURED-R]` | Ek `0` count ke kai causes hote hain. Aur ek query ka differential ek defect dikha ke doosre ko chhupa sakta hai — Step 9 ne `NULL` trap dikhaya aur duration ki gayabi chhupa li |
 
 *(Ye table kabhi delete nahi hoti, na chhoti hoti hai.)*
 
@@ -256,19 +475,62 @@ hai.
 
 ### 🚧 Unresolved / Follow-ups
 
-**New, from today:** `____`
+**New, from today:**
 
-**Deliberately open (owner ke saath):** `____`
+| # | Item | Kya specifically chahiye |
+|---|---|---|
+| 1 | **Do worker process abhi zinda hain** — OS PID `34280` aur `32636` | Din 2 ka pehla kaam. Inhe band karo (`Stop-Process -Id 34280,32636`), phir opening check **dobara** chalao. Jab tak ye chal rahe hain, Din 2 ka opening bench contaminated hai — aur Din 2 ka poora experiment 41/63/65 pe hai, jo reclaim hone ke baad `pending` ban jaayengi aur **turant claimable** ho jaayengi. Ek chalta worker unhe uthaa lega aur reclaim latency ka number kisi ka nahi hoga |
+| 2 | **Do process, ek asyncpg backend** — kyun? | Not established. Measure karne layak hai: dono PIDs ka `pg_stat_activity` me mapping. Ho sakta hai ek process apna connection kho chuka hai aur retry kar raha hai, ya wo loop me hi nahi hai |
+| 3 | **`claimed_at` event column hai, to duration Din 2 ke predicate me aa gayi** | Din 2 pe ek duration **chunni** padegi, Din 3 ka evidence aane se pehle. Din 6 pe `D-22` likhte waqt ye line jaani chahiye: *"ye number choose kiya gaya, Din 2 pe, measurement se pehle"* |
+| 4 | **`79cb2ee38481` — khaali revision chain me permanent hai** | Aaj theek **nahi** karna (history rewrite). Naam iss log me hai, wahi record hai. Follow-up ye hai: aage `alembic revision --autogenerate` chalane se pehle `models.py` save ho chuki hai, ye check karna |
+| 5 | **`labs/day2_signals.py` modified hai aur wo Din 1 ka scope nahi tha** | Uska diff dekho. Agar aaj ka kaam nahi hai to alag commit, ya revert |
+| 6 | **Clock offset ka aadha measurement** | DB session versus **worker stdout** — dono ko ek jagah padho aur actual difference likho. Aaj ka `+5:30` process-start versus `backend_start` se nikla hai, jisme `~1.5 s` interpreter startup ka hai |
 
-**Slipped (aur specifically kya chahiye):** `____`
+**Deliberately open (owner ke saath):**
 
-**Carried forward, unchanged:** `____`
+- **Lease ki duration** — `D-22`, Din 6. Aaj number nahi chuna, aur ye sahi hai. Par item 3 ke wajah se
+  Din 2 pe ek **working** number chunna padega; wo `D-22` nahi hai, wo Din 2 ka input hai.
+- **Contract #2 unprotected hai** — Week 3 ke dedup tak. Ye iss hafte ka accepted trade hai, gap nahi.
+- **`ADD COLUMN` fast-path ka number** — Option B ne `DEFAULT` use nahi kiya, to KEY ka `now()`-as-default
+  sawaal iss path pe uthta hi nahi. Agar Option A kabhi revisit hui, `\timing` ke saath measure karna.
+
+**Slipped (aur specifically kya chahiye):**
+
+| Item | Kaunsi baar | Kya chahiye |
+|---|---|---|
+| **Step 0 ke paanch likhe hue answers** | **paanchwi** | Paanchon apne shabdon me, iss log ki Din 1 entry me. Chaar ka content report me hai par execution ke baad aaya (`E8` — reconstruction). **Paanchwa — *"lease handler se chhoti ho to kya galat hota hai"* — bilkul nahi aaya**, aur wo Din 3 ka centrepiece hai. Ye ek hi item hai jo Din 3 ko technically block karta hai |
+| **Part B ke chhe prediction answers** | pehli | Likhit roop me, measurement se pehle. Aaj ke liye ab reconstruct **nahi** ho sakte — seal khul chuki hai. Din 2 ke chhe sawaal `WEEK_02.md` ke PART B block me hain; unhe **kal subah, kaam shuru karne se pehle** likhna hai |
+| **Ch 8 links append** | pehli | `DDIA_CH8_LINKS.md` me kam se kam **do naye** one-line links, *Network Faults in Practice* aur *Detecting Faults* se, har ek ka right-hand side ek **existing** named `D-`/`P-`. Note: file me line 2 aur 3 already `pp. 278–284` aur `281–283` cite karti hain — wo Stage Day pe likhi gayi thi, to aaj ka reading un lines se **aage** jaana chahiye, unhe dohrana nahi |
+| **Commit** | pehli | Staged paths naam se: `src/models.py`, `src/worker.py`, `alembic/versions/75a845575d2e_*.py`, `alembic/versions/79cb2ee38481_*.py`, `docs/logs/WEEK_02.md`, `docs/PROBLEMS.md`. `docs/planning/`, `docs/roadmap/`, `docs/daily/` gitignored hain |
+
+**Carried forward, unchanged:**
+
+- **Din 7 ki log entry maujood nahi hai.** Aaj ke bench ne BENCH block ke **numbers** verify kar diye, to
+  provenance wala aadha band ho gaya. Par Din 7 me kya chala aur kya verdict nikla — wo kahin likha nahi
+  hai aur reconstruct nahi hoga. `WEEK_01.md` me ye ek line ki tarah rehna chahiye.
+- **`LEARNING_LOG.md` ka open-items table** — Din 7 debt ke liye row abhi bhi nahi bani.
 
 ---
 
 ### ❓ Question / Next Thought
 
-`____`
+**Kal ka asli sawaal, aur ye Din 2 ka experiment define karta hai:** predicate `claimed_at` pe likha
+jaayega, aur `claimed_at` ek **event** hai — to predicate me ek duration term aayega jo aaj tak kisi
+evidence se nahi aaya. To Din 2 pe do cheezein ek saath hongi: ek **measurement** (predicate ne 41/63/65/75
+pe kya kiya) aur ek **choice** (duration kitni). Aur `P-12` ka pura sabaq yahi hai ki ek run me do
+variable rakhne se pata nahi chalta ki result kis ka tha.
+
+Isliye kal ka sawaal ye hai: **agar predicate ne 41/63/65 ko utha liya, to wo mere predicate ke sahi hone
+ka evidence hai, ya meri chuni hui duration ke uss row ke age se chhoti hone ka?** Dono ek hi output dete
+hain. Farq nikalne ka ek hi tareeka hai — duration ko **pehle** likhna, uske reason ke saath, aur phir
+chalana. Reverse order me wo number "jo kaam kar gaya" ban jaayega, aur Din 6 pe `D-22` uske upar khadi
+nahi ki ja sakti.
+
+**Aur ek chhota sawaal jo aaj ka output khud utha raha hai:** teeno fixture rows pe `claimed_at` `NULL`
+hai, to `IS NULL` branch unhe reclaim karegi. Par wo branch ye nahi jaanti ki row **kab** atki. Yaani
+41/63/65 ke liye reaper ke paas duration ka koi input hi nahi hai — wo unhe reclaim karega kyunki wo
+`NULL` hain, na ki kyunki wo expired hain. **Kal wo teen rows expiry ki wajah se reclaim nahi hongi;
+`NULL` ki wajah se hongi.** Ye do bilkul alag reasons hain aur reaper ka output dono me same dikhega.
 
 ---
 

@@ -4,7 +4,7 @@ import signal
 import sys
 from collections.abc import Callable, Coroutine
 from typing import Any
-from sqlalchemy import insert, select, update
+from sqlalchemy import func, insert, select, update
 from src.database import async_session
 from src.models import Job, JobExecution
 
@@ -81,7 +81,7 @@ async def run_worker() -> None:
                     update_stmt = (
                         update(Job)
                         .where(Job.id == job.id, Job.status == "pending")
-                        .values(status="running")
+                        .values(status="running", claimed_at=func.now())
                     )
                     update_result = await session.execute(update_stmt)
                     if update_result.rowcount == 0:

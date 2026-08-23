@@ -651,3 +651,103 @@ There is a second, quieter observation. The mismatch was between **Part B's ques
 - **Part C entries need the two-line table, not the prose rule.** *"What output if the mechanism is present / absent?"* If the two match, the check gets rewritten before the day ships. This is the third instance in the project of a check that passed while measuring nothing (Din 2's `413`, Din 5's reported ranges, now this one), and the first where the flaw was in the design rather than in the reporting.
 - **Reviewer-authored material gets audited on the same terms as the day's own output.** `P-12` disqualified a reviewer-suggested throughput line; this entry disqualifies a reviewer-designed check. Neither was caught by review — both were caught by running something.
 - **Reporting the observed output rather than the expected one is what made this findable.** The KEY said to expect a gap. The day reported "remained 75". Had the number been bent toward the KEY's expectation, the BRIEF's error would have been absorbed as a correct result and `P-05`'s mechanism would still be resting on a single Din 2 measurement. That habit is the opposite of the one Din 5's M8/M11/M12 recorded, and it is worth naming as the day's best process outcome.
+
+---
+
+## P-19 — The lease column adds a second clock and a third meaning to `NULL`, and the column's *name* decides which of them the reaper has to reason about
+
+**Status: MEASURED** on Week 2 Din 1. Three separate measurements, and the third one was not planned.
+
+**The problem:** `jobs` gained one nullable column, `claimed_at timestamptz`, written by the claim's
+compare-and-set `UPDATE` from `func.now()`. One column, one migration, no logic change. What arrived with
+it was not one thing but three, and only the first was expected.
+
+### 1. A second clock, and the decision that kept it at one
+
+Before today, claimability was a **string comparison**: `status = 'pending'`. After today, part of it is a
+**timestamp comparison**, and a timestamp comparison has two sides. Each side can come from a different
+clock, and if they do, nothing errors — the arithmetic still works, the sort order still works, and the
+error is a fixed offset, which is the hardest bug class to see.
+
+Two shapes were available:
+
+| Who computes the value | Clocks involved |
+|---|---|
+| Python: `datetime.now(timezone.utc)` in the worker | Worker's clock writes, database's clock compares — **two** |
+| SQL: `func.now()` in the `UPDATE`'s `SET` | Database writes, database compares — **one** |
+
+The second was chosen, and that is the reason the clock count is still one `[MEASURED]`. This is worth
+recording as a decision rather than a detail, because the two implementations are one line apart and
+produce identical output on a single machine. The difference only appears when the worker and the database
+are on different hosts — which is to say, it appears in production and not in this repo.
+
+**And the offset itself was only half measured.** The day's evidence was `claimed_at = 09:46:55.549+00`
+against `now() = 09:47:05+00`, both from the same `select`. That pair proves the two values share a clock;
+it cannot measure the offset to any *other* clock, because both readings came from the same one. The
+DB-versus-worker-stdout offset had to be recovered afterwards from process start time
+(`15:16:54 IST`) against that connection's `backend_start` (`09:46:55.463+00`) → `5:30:01.46`, of which
+roughly `1.5 s` is interpreter startup and connect `[MEASURED-R]`. Reading one clock twice does not
+measure an offset.
+
+### 2. `NULL` is a third state, and it is silent
+
+86 rows existed before the column did. Option B was chosen — leave them `NULL`, branch in the predicate —
+and the cost was accepted in writing: `(claimed_at IS NULL OR claimed_at < now())` lives in the predicate
+permanently, and it makes **every** `NULL`-lease row reclaimable, including any future writer that forgets
+to stamp the lease.
+
+Measured, on the three fixture rows `[MEASURED]`, reproduced `[MEASURED-R]`:
+
+```
+select count(*) from jobs where status='running' and claimed_at < now();                          -> 0
+select count(*) from jobs where status='running' and (claimed_at is null or claimed_at < now());  -> 3
+```
+
+`NULL < now()` is `NULL`, not `false`, and `WHERE` admits only `true`. So a predicate that reads as
+completely correct matches **none** of the three rows it was built for, and reports success. Stranded row
+and nothing-to-do are the same output.
+
+**The part that generalises past `NULL`:** the first count is `0`, and `0` had two available causes — the
+three-valued-logic trap, or "nothing was expired". Only the second query separated them. A single count
+never carries its own cause, which is `P-12`'s rule arriving in a new place.
+
+**And the same two lines hid a second defect.** `claimed_at < now()` on an *event* column means "claimed
+at any instant in the past" — a zero-second lease. It returned `0` today only because all three rows are
+`NULL`. Had job 88 still been `running`, that query would have matched it in the same second it was
+claimed. The differential exposed the `NULL` trap and concealed the missing duration term, in one line.
+
+### 3. The name is the decision, not the type
+
+`claimed_at` and `lease_expires_at` take the same type, the same nullability, the same migration, and the
+same one-line change to the claim. They demand **different predicates**, and the difference is where the
+lease *duration* lives:
+
+```
+deadline column:  WHERE lease_expires_at < now()                     -- duration is in the writer
+event column:     WHERE claimed_at < now() - interval '<duration>'   -- duration is in every reader
+```
+
+`claimed_at` was chosen. It is defensible on its own terms: it records a fact that happened (this row was
+claimed at this instant), whereas a deadline records a policy that changes whenever the duration changes,
+and a stored deadline cannot be reinterpreted after the fact. But it has a scheduling consequence that was
+not visible when the column was named: **the lease duration is now an input to the reaper's predicate**,
+and the plan defers that number to `D-22` on Din 6 specifically because its `Cost` line cannot be written
+before Din 3 produces a duplicate count.
+
+So a number that was scheduled to be *measured first, chosen second* now has to be chosen on Din 2, before
+the evidence exists. When `D-22` is written, the honest line is *"chosen on Din 2, ahead of measurement"*,
+not *"measured"*.
+
+**Why it matters for Relay:** four carry-forwards.
+
+- **The reaper's decision now rests on a comparison, and comparisons have two sides.** Every future writer
+  of `claimed_at` has to use the database's clock. A Python-side write would not fail, it would skew.
+- **The `IS NULL` branch is load-bearing and its reason lives only in the log.** The database cannot
+  distinguish "Option B was chosen" from "the backfill was forgotten" — both look like `NULL` on three
+  rows. `P-16`'s shape, one layer up: the state is one value covering two situations.
+- **On Din 2, 41/63/65 will be reclaimed because they are `NULL`, not because they expired.** No duration
+  applies to them — there is nothing to subtract from. The reaper's output will look identical for both
+  reasons, so the per-row verdict has to say which one fired.
+- **Naming a column is a query-design decision.** The question to ask before choosing is not "what does
+  this column store" but "what will the query that reads it look like, and what does it force the reader
+  to know". Today that question was answered after the migration ran.
