@@ -751,3 +751,106 @@ not *"measured"*.
 - **Naming a column is a query-design decision.** The question to ask before choosing is not "what does
   this column store" but "what will the query that reads it look like, and what does it force the reader
   to know". Today that question was answered after the migration ran.
+
+---
+
+## P-20 — The reaper reports a post-state it never read, and a pass with nothing to reclaim prints nothing at all, so a working guard and a missing guard produce the same stdout
+
+**Status: MEASURED** on Week 2 Din 2 `[MEASURED-R]` — reviewer ran the reaper against a database with zero
+`running` rows and read the compiled statement, not the source comments.
+
+**The problem:** `src/reaper.py` does everything the transition needed. It is a separate process, the
+`UPDATE` carries a compare-and-set guard on the old value, the predicate lives in the `WHERE` rather than
+in a Python `if`, and `rowcount` is read on every row. The *transition* is correct. What is not correct is
+the **evidence** the loop emits about that transition — and on Din 2 the evidence was the deliverable.
+
+### 1. `post_status` is asserted, not read
+
+```python
+matched = update_result.rowcount
+post_status = "pending" if matched == 1 else candidate.status
+print(f"... id={id} pre_status={...} matched={matched} post_status={post_status}")
+```
+
+`post_status` is a restatement of `matched`. It carries no independent information: the row is never
+re-read, so the line reports what the code *believes* the `UPDATE` did. Any mechanism that made the write
+land differently — a wrong `values()`, a trigger, a later statement in the same transaction — produces
+**exactly this output**. `P-18` at the reporting layer.
+
+The parameterised fix is one clause, not a second round trip: `UPDATE ... RETURNING status`. Then
+`post_status` is a value the database sent back, and the line becomes a measurement.
+
+### 2. A pass with no candidates emits no per-row lines
+
+The loop `SELECT`s candidates first (`status = 'running' AND (...)`), then iterates. A row that fails the
+`SELECT` is never printed. Measured over a 7-second run against 0 `running` rows `[MEASURED-R]`:
+
+```
+[reaper-30276] Starting reaper process (PID: 30276, poll=2.0s, lease=30s)...
+   ... 24 lines of SQLAlchemy echo, 3 passes, zero [reaper-...] per-row lines
+```
+
+Two consequences, and the second is the expensive one:
+
+- **Din 2's Step 6 differential is unsatisfiable by this implementation.** The check was *"run it twice;
+  the second run reports `rowcount 0` on those rows"*. The second run cannot report `rowcount 0` on them,
+  because after reclaim they are `pending` and the `SELECT` excludes them before the guard is ever
+  reached. The expected output of the check is an **empty** output — which is what a dead reaper, a
+  truncated capture, and a correctly-guarded reaper all produce.
+- **The only thing distinguishing an idle reaper from a hung one today is `echo=True`** in
+  `src/database.py` `[MEASURED-R]`. That is a debug flag, not a design decision, and it is the sole reason
+  the run above had 25 lines instead of 1. Turn it off and liveness evidence disappears with it.
+
+### 3. The guard is real, but nothing exercises it — and the `SELECT` is what actually filtered
+
+Deletion test on `AND status = 'running'` inside the `UPDATE`: remove it, and within a single pass the
+`SELECT` has already restricted candidates to `running`, so the observable behaviour on Din 2 would have
+been **identical**. The guard's only job is to reject a row that some *other* writer moved in the window
+between the `SELECT` and that row's `UPDATE`. That is a genuine protection and it is not decorative — but
+Din 2 ran with no worker and one reaper, so no such window existed, and the guard was never asked a
+question it could answer wrongly. Recorded as **present and untested**, not as verified.
+
+### 4. `now()` is frozen for the whole pass, so the guard's expiry term cannot shift
+
+`reap_stuck_jobs()` wraps the `SELECT` and every per-row `UPDATE` in one `session.begin()`. Measured
+`[MEASURED-R]`:
+
+```
+first  now()=2026-08-25 10:55:08.738597+00   clock_timestamp()=...08.750751+00
+second now()=2026-08-25 10:55:08.738597+00   clock_timestamp()=...10.260537+00
+now() identical: True    clock_timestamp advanced: 0:00:01.509786
+```
+
+So the `now()` the `SELECT` used and the `now()` the recheck uses are the **same instant**. On the expiry
+branch the re-evaluated predicate cannot disagree with the one that selected the row, and rows that expire
+*during* the pass are not picked up until the next pass. The bias is toward **under**-reclaiming, which is
+the safe direction — and that is luck, not design. The same mechanism biases dangerously the moment a
+transaction is used to decide something has *not yet* expired.
+
+### 5. The two branches answer different questions and the output cannot say which one fired
+
+`claimed_at < now() - interval '30 seconds'` asks *has this claim outlived the lease*. `claimed_at IS NULL`
+asks *is there any claim information at all*. The reaper treats both as "reclaim this" and prints one
+line either way. On Din 2 **all three reclaimed rows matched the second branch** — derivable from the
+day's own pre-reclaim dump, where every `running` row had `claimed_at NULL` `[INFERRED from Din 2 Step 2
+verbatim]`. The chosen lease duration of `30 s` therefore had **no effect on the run that appeared to
+validate it**: 10 seconds or 10 hours would have produced the same three lines.
+
+### What this means for Relay
+
+- **The transition and the evidence about the transition are two separate deliverables, and only the first
+  one was built.** A reclaim loop whose output is inferred is a loop whose behaviour cannot be audited
+  after the fact — and Din 3 onward compares numbers *across* runs.
+- **A `SELECT`-then-`UPDATE` shape moves the filtering upstream of the guard, and takes the guard's
+  observability with it.** Anything the `SELECT` excludes is invisible to the per-row report, which is
+  also why job 75's *not-matched* verdict cannot be read from the reaper's stdout at all — it can only be
+  read from a separate `select`. A per-row verdict on non-candidates is structurally impossible in this
+  shape.
+- **`narrows`, not `closes`:** per-row output with `RETURNING` narrows the gap between what the reaper did
+  and what the reaper claims. It does not close it — a row can still change after the pass commits, and
+  nothing in the loop revisits it.
+- **Carried to Din 3:** the duplicate count depends on reading the reaper's reclaim line and a worker's
+  handler lines against one clock. The reaper's timestamps come from `datetime.now()` — naive, local, and
+  printed without a timezone label — while every `jobs` value is `Etc/UTC`. The offset is now measured at
+  `5:29:59.994671` with a `7.262 ms` read gap `[MEASURED-R]`, so the arithmetic is workable; the missing
+  label is what makes a lease bug and a timezone bug read identically in a diff.

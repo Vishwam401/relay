@@ -21,7 +21,7 @@ Plan: [`../planning/WEEK_02.md`](../planning/WEEK_02.md) · Decisions: [`../DECI
 - [Stage Day — slip register](#stage-day--slip-register)
 - [Divergence — Din 1 ki subah ka bench check (E2)](#divergence--din-1-ki-subah-ka-bench-check-e2)
 - [Din 1 — Problem statement, phir lease column](#din-1--problem-statement-phir-lease-column-____)
-- [Din 2 — Reaper: recovery bahar se aati hai](#din-2--reaper-recovery-bahar-se-aati-hai-____)
+- [Din 2 — Reaper: recovery bahar se aati hai](#din-2--reaper-recovery-bahar-se-aati-hai-2026-08-25)
 - [Din 3 — 🎯 Zinda par slow worker: ek job, do execution](#din-3--zinda-par-slow-worker-ek-job-do-execution-____)
 - [Din 4 — Bounded retry, backoff, jitter](#din-4--bounded-retry-backoff-jitter-____)
 - [Din 5 — `dead_letter` + graceful shutdown](#din-5--dead_letter--graceful-shutdown-____)
@@ -534,13 +534,42 @@ hai, to `IS NULL` branch unhe reclaim karegi. Par wo branch ye nahi jaanti ki ro
 
 ---
 
-## Din 2 — Reaper: recovery bahar se aati hai (`____`)
+## Din 2 — Reaper: recovery bahar se aati hai (`2026-08-25`)
 
-**Original goal (from the plan):** `____`
+> **Date, aur ek gap jo record karna zaroori hai.** Din 1 ki entry `2026-08-23` hai. `src/reaper.py` ka
+> mtime `2026-08-25 15:41:32 IST` hai `[MEASURED-R]`, to Din 2 `2026-08-25` hai. **`2026-08-24` ka koi
+> record nahi hai** — na log, na file mtime. Ye plausible kahani se band nahi hota: **cause not
+> identified.** Ye Week 1 ke Din 7 gap ka doosra instance hai, aur ab ye ek pattern hai.
 
-**Goal met?** `____` — yes / no / partial, aur partial pe kaunsa hissa.
+**Original goal (from the plan):** ek **alag process** me ek reaper loop banana jo `running` → `pending`
+ek statement me kare — compare-and-set guard purani value pe, predicate `WHERE` me (Python `if` me nahi),
+aur `rowcount` check har pass pe. Predicate **pehle likha jaaye, phir chalaya jaaye**. Chaar rows
+(41/63/65/75) pe **per-row verdict**, `3 reclaimed` wali ek line nahi. Reclaim se **pehle** ka fixture
+state verbatim log me. Ek reclaim latency number. `attempts` aaj touch nahi hota, `DECISIONS.md` me aaj
+kuch nahi jaata.
 
-**Anything else learned?** `____` — goal-met se alag field.
+**Goal met? — `partial`.**
+
+| Hua | Nahi hua |
+|---|---|
+| Reaper ek alag process me bana (`src/reaper.py`), `worker.py` ke andar nahi | **Part B ke chhe answers** — dusre din lagataar supply nahi hue, to `0/6` scorable |
+| Predicate, lease duration aur poll interval **pehle** likhe gaye, "chosen ahead of measurement" label ke saath | **Step 4 ka three-query split** (a/b/c) aur uska chaar-row verdict table — supply nahi hua, **aur ab reproduce nahi ho sakta**: fixture ja chuki hai |
+| Pre-reclaim state **verbatim** — aaj ka sabse valuable output, aur ye ek hi baar liya ja sakta tha | **Step 6** — guard ka differential. Chala hi nahi, aur iss implementation se **chal bhi nahi sakta** (`P-20`) |
+| Reclaim actually hua: 41/63/65 `pending`, `claimed_at NULL`; 75 `failed` untouched `[MEASURED-R]` | **Step 7** — reclaim latency. Koi number supply nahi hua |
+| `attempts` kisi row pe touch nahi hua — `D-23`/Din 4 ka scope respect hua `[MEASURED-R]` | **Step 8** — Ch 8 links. `DDIA_CH8_LINKS.md` ka mtime abhi bhi `2026-08-22 17:28` (Stage Day ka) `[MEASURED-R]`. **Doosri consecutive slip** |
+| Reconciliation match karta hai, total badla nahi, `job_executions` delta `0` | **Cleanup** — reaper band nahi hua. Doosri consecutive cleanup failure |
+
+**Anything else learned?** Haan, chaar cheezein jo plan ne poochhi nahi thi:
+
+1. **Din 1 ka *"do worker process"* galat tha — wo ek worker tha.** Aaj ke process tree ne wo band kar
+   diya, aur ye Din 1 ka open item #2 hai.
+2. **Reaper ka per-row output apna verdict padhta nahi, assert karta hai** — `post_status` sirf `matched`
+   ka doosra roop hai. `P-20`.
+3. **Ek khaali pass **kuch bhi** print nahi karta**, to Step 6 ka differential iss shape me satisfy hi
+   nahi ho sakta — aur ek zinda-par-idle reaper ko ek mare hue reaper se alag karne wali ek hi cheez hai:
+   `echo=True`, jo ek debug flag hai.
+4. **Clock offset pehli baar poora measure hua** — `5:29:59.994671`, `7.262 ms` read gap ke saath. Din 1 ka
+   open item #6 band.
 
 ---
 
@@ -550,100 +579,390 @@ hai, to `IS NULL` branch unhe reclaim karegi. Par wo branch ye nahi jaanti ki ro
 
 | Kya | Value | Label |
 |---|---|---|
-| worker processes / `idle in transaction` / connections | `____` | `____` |
-| jobs 41 / 63 / 65 ka `status` | `____` | `____` |
-| job 75 ka `status` | `____` | `____` |
+| worker processes / `idle in transaction` / connections | Din 1 ke do leftover PIDs band kiye gaye (PIDs report me naam se **nahi** aaye — *not recorded*). Uske baad: `1` active connection, `0` `idle in transaction` | `[MEASURED]` |
+| jobs 41 / 63 / 65 ka `status` | teeno `running`, `claimed_at NULL` | `[MEASURED]` |
+| job 75 ka `status` | `failed` | `[MEASURED]` |
+| counts | `75 succeeded / 9 failed / 3 running / 0 pending`, total `87`, `max(id) 88` | `[MEASURED]` |
+| `job_executions` | `58` | `[MEASURED]` |
+| job 88 | `succeeded`, `claimed_at` non-null | `[MEASURED]` |
+
+**Din 1 ke close se zero divergence.** E2 aaj trigger nahi hua.
 
 **Pre-reclaim state — reaper chalane se PEHLE ka verbatim output.** Ye reclaim ke baad **wapas nahi aa
-sakta**, isliye pehle yahan:
+sakta**, isliye pehle yahan (`Etc/UTC`):
 
 ```
-____
+-- jobs (41, 63, 65 running with claimed_at NULL, 75 failed):
+--  id | status  | claimed_at | created_at                    | attempts
+    41 | running | NULL       | 2026-08-17 13:57:24.155331+00 | 0
+    63 | running | NULL       | 2026-08-18 13:55:22.845247+00 | 0
+    65 | running | NULL       | 2026-08-18 14:10:18.301994+00 | 0
+    75 | failed  | NULL       | 2026-08-19 12:51:56.711211+00 | 0
+
+-- job_executions:
+    63 | worker-18960 | 2026-08-18 13:55:25.538209+00
+    65 | worker-24152 | 2026-08-18 14:10:28.184853+00
+-- 41 has NO row in job_executions.
 ```
 
-**M1 — `____`**
+**`select now()`** Step 2 me maanga gaya tha aur report me **nahi** aaya — *not recorded*. Iska asar: aaj ke
+`now()` ke against un rows ki age exactly nahi likhi ja sakti, sirf `created_at` se derive hoti hai.
+
+**Aur ye dump khud ek cheez saabit kar deta hai jo baaki poore din se nahi hui:** chaaron rows me
+`claimed_at` `NULL` hai, matlab database me ek bhi `running` row aisi nahi thi jiska `claimed_at` non-null
+ho. **To expiry branch (`claimed_at < now() - interval '30 seconds'`) zero rows pe match karta, aur wo aaj
+exercise hua hi nahi** `[INFERRED from Step 2 verbatim]`. Reclaim `IS NULL` branch se hua — legacy-data
+branch se, na ki uss branch se jiske liye reaper exist karta hai.
+
+**M1 — post-reclaim state, reviewer ne verify kiya** `[MEASURED-R]` (`2026-08-25 10:53:00+00`):
 
 ```
-____
+ id |  status   |          claimed_at           |          created_at           | attempts
+ 41 | pending   |                               | 2026-08-17 13:57:24.155331+00 |        0
+ 63 | pending   |                               | 2026-08-18 13:55:22.845247+00 |        0
+ 65 | pending   |                               | 2026-08-18 14:10:18.301994+00 |        0
+ 75 | failed    |                               | 2026-08-19 12:51:56.711211+00 |        0
+ 88 | succeeded | 2026-08-23 09:46:55.549422+00 | 2026-08-23 09:45:21.84424+00  |        0
+
+ status    | count            job_executions = 58   (delta 0)
+ failed    |     9            total = 87, max(id) = 88, jobs_id_seq.last_value = 88
+ pending   |     3
+ succeeded |    75
 ```
+
+Chaar cheezein isme confirm hoti hain: **41 actually move hui** (`pending` + `claimed_at NULL`), **75
+untouched hai**, **`attempts` kahin touch nahi hua**, aur **`job_executions` ka delta `0` hai** — matlab
+reclaim ke waqt koi worker nahi chal raha tha.
+
+**M2 — reaper ka predicate, compiled SQL, source comment se nahi** `[MEASURED-R]`:
+
+```sql
+SELECT jobs.id, jobs.status, jobs.claimed_at FROM jobs
+ WHERE jobs.status = 'running'
+   AND (jobs.claimed_at IS NULL OR jobs.claimed_at < now() - interval '30 seconds')
+ ORDER BY jobs.id
+```
+
+`func.now() - text("interval '30 seconds'")` **theek render hota hai**. Ye check karne layak tha kyunki
+SQLAlchemy me `text()` ko arithmetic me daalna silently galat parenthesisation de sakta tha; nahi diya.
+
+**M3 — `now()` ek transaction ke andar freeze hai (Part B Q4 ka mechanism, measured)** `[MEASURED-R]`:
+
+```
+first  now()=2026-08-25 10:55:08.738597+00   clock_timestamp()=2026-08-25 10:55:08.750751+00
+second now()=2026-08-25 10:55:08.738597+00   clock_timestamp()=2026-08-25 10:55:10.260537+00
+now() identical: True     clock_timestamp advanced: 0:00:01.509786
+```
+
+`reap_stuck_jobs()` `SELECT` aur **saare** per-row `UPDATE` ek hi `session.begin()` me rakhta hai. To
+selecting `now()` aur rechecking `now()` **ek hi instant** hain — expiry branch pe guard ka time term pass
+ke andar hil hi nahi sakta, aur jo rows pass ke **dauran** expire hoti hain wo agle pass tak nahi uthti.
+Bias **under**-reclaim ki taraf hai, jo aaj safe direction hai — **luck, design nahi.**
+
+**M4 — clock offset, pehli baar ek jagah dono clocks padh ke** `[MEASURED-R]`:
+
+```
+python datetime.now()  (naive, local) before = 2026-08-25 16:25:10.266437
+db     clock_timestamp() (tz-aware, UTC)     = 2026-08-25 10:55:10.271766+00
+python datetime.now()  (naive, local) after  = 2026-08-25 16:25:10.273699
+local - db_utc = 5:29:59.994671        (read gap = 0:00:00.007262)
+```
+
+Din 1 ne ek clock do baar padha tha aur usse offset nahi nikalta. Aaj offset `+5:30:00` measure hua,
+`~5 ms` ke andar, aur ye **compute nahi kiya gaya** ("IST = UTC+5:30" maan ke) — wahi maanna hi test tha.
+Din 1 ka open item #6 **band**.
+
+**M5 — poll cadence aur pass duration** `[MEASURED-R]`, reaper 7 s chalaya gaya (0 `running` rows):
+
+```
+BEGIN 16:26:12.548 -> COMMIT 16:26:12.560     pass ≈ 12 ms
+BEGIN 16:26:14.568                            interval 2.020 s
+BEGIN 16:26:16.581                            interval 2.013 s
+```
+
+Read-only imitation, teen pass: `12.06 / 9.78 / 11.65 ms` (aur isme `echo=True` ka logging overhead shaamil
+hai, jo Week 1 pe `2.3 ms` measure hua tha). **Sleep kaam ke *baad* hai, to period `poll_interval + pass
+duration` hai, fixed `2.0 s` cadence nahi.** Aaj `~20 ms` ka farq hai, par yahi shape load pe drift banata
+hai.
+
+**M6 — khaali pass silent hai, aur ye Step 6 ko marta hai** `[MEASURED-R]`. 7 second, 3 pass, 25 lines:
+
+```
+[reaper-30276] Starting reaper process (PID: 30276, poll=2.0s, lease=30s)...
+... 24 lines of SQLAlchemy echo ...
+```
+
+**Zero `[reaper-...]` per-row lines.** `SELECT` candidates ko pehle filter karta hai, to `pending` row
+guard tak pahunchti hi nahi — wo print hi nahi hoti. Matlab Step 6 ka expected output ek **khaali** output
+hai, aur khaali output ek mara hua reaper, ek truncated capture, aur ek theek se guarded reaper — teeno
+deta hai. `P-18`, aur poora `P-20`.
+
+**M7 — Din 1 ka *"do worker process"* ek worker tha** `[MEASURED-R]`. Aaj ke leftover reaper pe wahi
+pattern mila aur process tree ne usko resolve kar diya:
+
+| PID | ParentProcessId | Threads | WorkingSet | CommandLine |
+|---|---|---|---|---|
+| `33540` | `44460` | 1 | 3.9 MB | `python.exe -u -m src.reaper` |
+| `33584` | **`33540`** | 2 | 56.9 MB | `python.exe -u -m src.reaper` |
+
+`33584` ka parent `33540` hai; parent 1-thread/3.9 MB ka stub hai, child 2-thread/56.9 MB ka asli
+interpreter. Aur `pg_stat_activity` me **ek** asyncpg backend tha (PID `66`), jiska `state_change` har
+`~2 s` pe aage badh raha tha. **Do OS PID = ek Python interpreter = ek DB connection.** Din 1 ke log me
+likha *"do worker processes zinda the"* isliye **galat** tha — wo ek worker tha, aur `P-13` ka instance
+ab bhi asli hai, sirf uska count ek hai. Din 1 ka open item #2 **band**; launcher-stub ka exact mechanism
+`[INFERRED]` hai (venv `python.exe` re-exec), aur process tree `[MEASURED-R]`.
 
 **Aaj ye numbers likhne hain (plan ka Din 2 obligation):**
 
 | Kya | Value / text | Label |
 |---|---|---|
-| Likha hua predicate, **as-written** (traps padhne se pehle wala) | `____` | — |
-| Per-row verdict — job **41** | `____` | `____` |
-| Per-row verdict — job **63** (duplicate risk noted?) | `____` | `____` |
-| Per-row verdict — job **65** (duplicate risk noted?) | `____` | `____` |
-| Per-row verdict — job **75** (untouched?) | `____` | `____` |
-| Ek hi output me chaar rows ka farq dikha? | `____` | `____` |
-| Reclaim latency | `____` | `____` |
-| Chuna hua lease expiry + reaper poll interval, **apne reason ke saath** | `____` | — |
-| Compare-and-set guard ka affected-row-count | `____` | `____` |
-| Din 5 ke liye notice hui baat (`status` akela guard kaafi nahi rehta) | `____` | — |
-| Kaunsa number **measure** kiya aur kaunsa **choose** kiya | `____` | — |
+| Likha hua predicate, **as-written** (traps padhne se pehle wala) | `status = 'running' AND (claimed_at IS NULL OR claimed_at < now() - interval '30 seconds')` — compiled SQL isse match karta hai `[MEASURED-R]` | — |
+| Chuni hui **lease duration** + reason | `30 seconds`. Reason: *"8 s slow handler ko headroom de"*. Label jo user ne khud lagaya: **"chosen on Din 2, ahead of measurement"** | `[NO EVIDENCE]` for the value being *right* |
+| Chuna hua **poll interval** + reason | `2.0 s`. Reason: *"detection latency ko 2 s pe bound karta hai bina DB thrash kiye"*. Measured cadence `2.013–2.020 s` | choice `[NO EVIDENCE]`, cadence `[MEASURED-R]` |
+| Per-row verdict — job **41** | Reclaimed. Matched **`IS NULL` branch**, expiry branch se nahi. Reclaim **muft** tha: `job_executions` me row nahi thi, to side effect possible hi nahi tha | `[MEASURED-R]` (outcome) · `[INFERRED]` (branch, Step 2 dump se) |
+| Per-row verdict — job **63** | Reclaimed, `IS NULL` branch. **Duplicate risk: haan** — `job_executions` row `2026-08-18 13:55:25.538209+00`, `worker-18960`. Handler arbitrary code chala tha aur kitna chala ye Relay bata nahi sakta | `[MEASURED-R]` / `[INFERRED]` |
+| Per-row verdict — job **65** | Wahi shape. `job_executions` row `2026-08-18 14:10:28.184853+00`, `worker-24152`. **Duplicate risk: haan** | `[MEASURED-R]` / `[INFERRED]` |
+| Per-row verdict — job **75** | **Not matched, untouched, `failed`.** Correct outcome | `[MEASURED-R]` |
+| Ek hi output me chaar rows ka farq dikha? | **Nahi.** Reaper ka stdout iss review ko supply nahi hua, aur uss shape me ho bhi nahi sakta tha: 75 kabhi candidate nahi thi, to reaper usko print hi nahi karta. 75 ka *not-matched* verdict sirf ek alag `select` se aata hai — reaper ke output se nahi (`P-20`) | `[MEASURED-R]` for the structural limit |
+| **Expiry branch kitni rows pe match kiya** | **0, aur wo branch aaj exercise hua hi nahi.** Database me ek bhi `running` row nahi thi jiska `claimed_at` non-null ho | `[INFERRED from Step 2 verbatim]` |
+| Reclaim latency | **Supply nahi hui.** Aur jo quantity plan maang raha tha (*expiry → `pending`*) wo aaj **undefined** thi, `0` nahi: teeno rows kabhi expire hui hi nahi, `IS NULL` pe matched. Jo measurable tha — reaper-start → row `pending` — wo record nahi hua | `[NO EVIDENCE]` |
+| Compare-and-set guard ka affected-row-count | Per-row `rowcount` code me padha jaata hai aur print hota hai — shape maujood. Par **koi run output supply nahi hua**, aur guard **exercise nahi hua**: single reaper, koi worker nahi, to `SELECT` aur `UPDATE` ke beech koi window bani hi nahi. **Present aur untested** | `[MEASURED-R]` (code) · `[NO EVIDENCE]` (behaviour) |
+| Din 5 ke liye notice hui baat (`status` akela guard kaafi nahi rehta) | Reclaim ke baad `running → pending → running` reachable ho gaya. Worker A ka mark `WHERE id = :id AND status = 'running'` **do** situations me match karta hai: uska apna `running`, aur worker B ka `running`. Guard sirf **value** poochhta hai, *kis ka* value nahi — to worker A wo kaam `succeeded` mark kar sakta hai jo worker B abhi kar raha hai. Compare-and-set ek recurring value pe generations distinguish nahi kar sakta. Structural jawab fencing token hai — **Din 5, aaj sirf likha** | `[INFERRED]` |
+| Kaunsa number **measure** kiya aur kaunsa **choose** kiya | **Choose:** lease `30 s`, poll `2.0 s`. **Measure:** poll cadence `2.013–2.020 s`, pass duration `~10–12 ms`, clock offset `5:29:59.994671`, `now()` freeze. **Neither:** reclaim latency — na choose, na measure. Aur lease duration ke saath aaj **koi** measurement attached nahi hai | — |
 
-**Agar reaper ne fixture row strand ki, ya terminal row sweep kar li (E4):** dono directions finding hain,
-aur dono **predicate** ke baare me hain — row ke baare me nahi. Kya hua, aur predicate ka kaunsa hissa
-zimmedaar tha: `____`
+**Agar reaper ne fixture row strand ki, ya terminal row sweep kar li (E4):** **dono nahi hue.** 41/63/65
+teeno reclaim hui, 75 untouched rahi. Predicate ne `job_executions` pe key **nahi** kiya, `claimed_at` pe
+kiya — aur `D-21`/`P-16` ka trap isliye nahi laga. Ye credit predicate ko jaata hai, run ko nahi: KEY dono
+directions pehle se naam se likh chuki thi.
 
 **Closing reconciliation** — opening counts **Din 1 ke log se** (BENCH block se nahi, wo Din 1 ka opening
 tha):
 
 | Line | Value |
 |---|---|
-| opening counts (Din 1 log) | `____` |
-| `+` aaj enqueue hui probe jobs (ids naam se) | `____` |
-| `±` reclaim se `running` → `pending` shift | `____` |
-| `=` closing counts | `____` |
-| `psql` ke actual counts | `____` |
-| Match? | `____` |
-| `job_executions` delta | `____` |
-| Job 75 abhi bhi `failed` aur count me hai? | `____` |
+| opening counts (Din 1 log) — `pending`/`running`/`succeeded`/`failed`/total | `0 / 3 / 75 / 9 / 87` |
+| `+` aaj enqueue hui probe jobs (ids naam se) | **koi nahi.** Aaj ek bhi row insert nahi hui |
+| `±` reclaim se `running` → `pending` shift | `−3 running`, `+3 pending` — ids **41, 63, 65** |
+| `=` closing counts | `3 / 0 / 75 / 9 / 87` |
+| `psql` ke actual counts | `pending 3`, `running 0`, `succeeded 75`, `failed 9`, total `87`, `max(id) 88`, seq `88` `[MEASURED-R]` |
+| Match? | **Haan.** `3 + 0 + 75 + 9 = 87`, total badla nahi — reclaim buckets ke beech move karta hai, banata ya mitata kuch nahi |
+| `job_executions` delta | `58 → 58`, **`+0`** `[MEASURED-R]`. Consistent with worker-off — koi handler dispatch nahi hua |
+| Job 75 abhi bhi `failed` aur count me hai? | **Haan**, `failed 9` me ginti hai `[MEASURED-R]` |
 
-Match na kare to finding (E5), pehla suspect `P-13`: `____`
+Match na kare to finding (E5), pehla suspect `P-13`: **chain judti hai — par `P-13` aaj phir hua, aur ek
+naye roop me.** Din 1 pe leftover **worker** tha; aaj leftover **reaper** hai (niche cleanup). Dono baar
+arithmetic ne usko pakda **nahi**, aur dono baar wajah ek hi thi: jo process chhoot gaya usne kuch move
+nahi kiya. Aaj reaper ke paas move karne ko kuch nahi tha kyunki `running` count `0` ho gayi thi. **Ye
+detection nahi hai, ye khaali queue hai** — aur agar Din 3 ki ek seeded `running` row iss reaper ke chalte
+hue bani hoti, wo turant reclaim ho jaati aur Din 3 ka number kisi ka nahi hota.
 
-**Cleanup:** reaper ka stdout capture delete hua? `____` — output pehle log me copy hua? `____` · Reclaim ki
-hui rows **delete nahi** hoti, wo ab normal rows hain: `____`
+**Cleanup — ye hissa fail hua, lagataar doosre din:**
+
+| Kya | Status |
+|---|---|
+| Reaper ka stdout capture delete hua? | *Not recorded.* Repo me koi capture file nahi mili `[MEASURED-R]`. Report me per-row **format** likha tha, actual lines **nahi** — to jo output copy hona chahiye tha wo copy hua hi nahi |
+| Reaper band hua? | **Nahi.** `2026-08-25 16:25 IST` pe do PIDs zinda the — `33540` (stub) aur `33584` (interpreter), dono `python -u -m src.reaper`, dono `StartTime 15:51:43 IST`, matlab **~33 minute** se chal rahe the `[MEASURED-R]` |
+| Live DB backend? | Haan, ek — backend PID `66`, `application_name` khaali (asyncpg), `state = idle`, `xact_start NULL`, `wait_event = ClientRead`, aur `state_change` har `~2 s` pe aage badh raha tha `[MEASURED-R]` |
+| Locks pakde the? | **Nahi.** `state = idle` + `xact_start NULL` = koi lock, koi snapshot nahi. `P-06` ka mechanism **absent** hai; ye `P-13` hazard hai, `P-06` nahi |
+| Reviewer ne kya kiya | `Stop-Process -Id 33584,33540`. Uske baad `Get-Process python` **khaali** `[MEASURED-R]` |
+| Reclaim ki hui rows delete nahi hoti | **41, 63, 65** — teeno rakhi gayi hain, `pending` hain, delta me ginti hain. Ab ye **fixture nahi** hain: Din 3 apni stuck rows khud seed karega |
+| Reviewer ke probes | Ek temporary file `labs/_probe_din2.py` bani, read-only chali, aur **delete ho gayi** `[MEASURED-R]`. Ek reaper 7 s chalaya gaya jab `running` count `0` thi — usne kisi row ko touch nahi kiya. Probe ke pehle aur baad ke counts identical: `9 failed / 3 pending / 75 succeeded / 87 total / 58 job_executions`. **Koi probe row nahi banayi, koi row delete nahi hui** |
+
+**Commit:** Din 1 ka commit **ho gaya** — `6db1042 feat(worker): add claimed_at lease column and update claim
+statement (Week 2 Din 1)` `[MEASURED-R]`. Din 2 ka **nahi** hua:
+
+```
+ M labs/day2_signals.py
+?? src/reaper.py
+```
+
+`src/reaper.py` untracked hai. `labs/day2_signals.py` abhi bhi modified hai, mtime `2026-08-20 15:33` —
+matlab wo Din 1 se **aage nahi badha** aur wo carried debt hai, aaj ka kaam nahi.
 
 **`DECISIONS.md` me aaj kuch nahi jaata.** `D-22` Din 6 pe likhi jaayegi. Aaj ke numbers yahan `[MEASURED]`
-tag ke saath baithe rehte hain taki Din 6 unhe utha sake.
+tag ke saath baithe rehte hain taki Din 6 unhe utha sake. **Aur Din 6 ke liye ek line abhi likhna zaroori
+hai:** lease duration `30 s` ke saath aaj **koi** measurement attached nahi hui, kyunki jis run ne predicate
+ko validate karta dikha wo run poora `IS NULL` branch pe chala. `D-22` likhte waqt honest phrasing hai
+*"chosen on Din 2, ahead of measurement, and the Din 2 run did not test it."*
+
+---
+
+### 🔧 Code review — `src/reaper.py`, aur yahan transition sahi hai par evidence nahi
+
+Reaper ne jo **transition** maangi thi wo theek se banayi: alag process, `UPDATE` me compare-and-set guard
+purani value pe, predicate `WHERE` me (Python `if` me nahi), `rowcount` har row pe padha, `attempts`
+untouched. Ye teen-chaar cheezein aksar chhoot jaati hain aur nahi chhooti. **Jo galat hai wo transition
+nahi, uske baare me nikalne wala evidence hai** — aur Din 2 ka poora deliverable wahi evidence tha.
+
+| # | Kya | Label | Kyu ye matter karta hai |
+|---|---|---|---|
+| **R1** | `post_status = "pending" if matched == 1 else candidate.status` — row **dobara padhi nahi jaati** | `[MEASURED-R]` | `post_status` sirf `matched` ka restatement hai. Wo line wahi print karti hai jo code **maanta** hai. Fix ek clause hai, extra round trip nahi: `UPDATE ... RETURNING status`, phir wo value database se aayi hui hoti hai. Sabse zyada value dene wali ek-line correction hai |
+| **R2** | Poora pass ek transaction me, to `now()` freeze | `[MEASURED-R]` (M3) | Expiry branch pe recheck kabhi select ke `now()` se disagree nahi kar sakta. Pass ke dauran expire hone wali rows next pass tak nahi uthti. Bias under-reclaim ki taraf — aaj safe, aur luck |
+| **R3** | Khaali pass koi per-row line print nahi karta | `[MEASURED-R]` (M6) | Step 6 ka differential iss shape me satisfy hi nahi ho sakta. Aur idle-versus-dead reaper me farq karne wali ek hi cheez `echo=True` hai, jo `src/database.py` me ek **debug flag** hai. Off karo aur liveness evidence uske saath chala jaata hai. `P-20` |
+| **R4** | `SELECT` filter guard se **pehle** hai | `[INFERRED]` | Deletion test: `AND status = 'running'` `UPDATE` se hataa do — aaj ka observable behaviour **same** hota, kyunki `SELECT` already filter kar chuka tha. Guard decorative **nahi** hai (wo `SELECT` aur `UPDATE` ke beech ki window pe hi lagta hai), par aaj wo window bani hi nahi. **Present aur untested** — verified likhna galat hoga |
+| **R5** | `text(f"interval '{LEASE_DURATION_SECONDS} seconds'")` | `[MEASURED-R]` renders theek (M2) | Aaj `LEASE_DURATION_SECONDS` ek int constant hai, to injection surface nahi hai. Jis din wo env/config se aayi, ye ek raw-SQL interpolation ban jaayega. Parameterised shape `func.make_interval(secs=...)` hai. Aaj ye **pattern** ka note hai, bug nahi |
+| **R6** | `SHUTDOWN_REQUESTED` sirf loop top pe check hota hai, `asyncio.sleep(2.0)` ke baad | `[MEASURED-R]` (M5 cadence) | `SIGTERM` ke baad exit up to `2.0 s` late. Ye `P-10` ka wahi shape hai — poll interval ek saath teen cheezein price karta hai, aur shutdown latency unme se ek hai |
+| **R7** | `reap_stuck_jobs()` `reclaimed_count` return karta hai, `run_reaper()` usko discard karta hai | `[MEASURED-R]` | Dead code. Per-row output hi maanga gaya tha, to ye galat nahi — par ek total jo compute hota hai aur kahin nahi jaata baad me chup-chaap "3 reclaimed" ban jaata hai, aur `P-18` wahi line ban chuki hai |
+| **R8** | stdout timestamp `datetime.now()` se — naive, local, **bina tz label** | `[MEASURED-R]` (M4) | Offset ab measured hai (`+5:30:00`), to arithmetic chal sakti hai. Par label ke bina ek lease bug aur ek timezone bug ek diff me **bilkul same** dikhte hain, aur Din 3 ka poora duplicate proof do stdout aur ek DB column ko ek clock pe laane pe khada hai |
+
+**Ek line jo genuinely earned hai:** predicate `job_executions` pe key **nahi** kiya. KEY ne dono galat
+directions (strand 41 / sweep 75) naam se likhi hui thi aur dono avoid hui.
 
 ---
 
 ### 💡 What I Understood
 
-`____`
+> ⚠️ **Ye section reviewer ne likha hai, user ne nahi.** Isme wo hai jo aaj ke session ne **establish**
+> kiya — user ki samajh ka record nahi. Ise **apne shabdon me replace karna hai**, aur jo cheez sirf
+> padhke aayi uske saath likhna hai ki wo padhi hui hai. Jab tak replace nahi hota, ye entry apni sabse
+> zaroori field pe `[NO EVIDENCE]` carry karti hai.
+
+**1. Reclaim ho gaya, aur reclaim ne wo branch test nahi kiya jiske liye reaper banaya gaya hai.** Teen
+rows `pending` ho gayi — aur teeno `claimed_at IS NULL` pe matched, kyunki database me ek bhi `running` row
+non-null `claimed_at` ke saath nahi thi. Matlab `30 seconds` ki jagah `10 seconds` ya `10 hours` likhne se
+**bilkul wahi teen lines** aati. Predicate ke do branches **do alag sawaal** poochhte hain — ek *"kya ye
+claim lease se aage nikal gaya"* (elapsed time), doosra *"iss claim ke baare me koi information hai hi
+nahi"* (missing data) — aur reaper dono ko "reclaim this" maanta hai. Aaj sirf doosra chala. Log me likhne
+wali line: **"expiry branch matched 0 rows and was not exercised today."**
+
+**2. Ek loop jo sahi kaam karta hai aur galat report karta hai, ek loop hai jise audit nahi kiya ja
+sakta.** `post_status` padha nahi gaya, khaali pass silent hai, aur 75 kabhi print hi nahi hui kyunki wo
+candidate nahi thi. Teeno ek hi structural baat ke roop hain: **jo `SELECT` bahar kar deta hai, wo per-row
+report se bhi bahar ho jaata hai.** Isliye "chaar rows ek output me" iss shape me possible hi nahi thi —
+aur ye implementation ka choice tha, effort ka nahi.
+
+**3. `now()` transaction-start hai, aur ye measure ho gaya, maana nahi gaya.** Ek transaction me do
+`select now()` **identical** aaye jabki `clock_timestamp()` `1.51 s` aage badha. Iska seedha asar: pass ke
+andar guard ka time term hil nahi sakta, aur reaper conservative ho jaata hai. Aaj wo safe direction hai —
+par wahi mechanism khatarnak ho jaata hai jis din transaction ka use ye decide karne me hoga ki kuch
+**abhi expire nahi hua**.
+
+**4. Do PID ka matlab do process nahi hota.** Din 1 ne *"do worker"* likha tha; aaj process tree ne dikhaya
+ki parent ek 1-thread stub hai aur asli interpreter uska child hai, aur DB connection **ek** thi. Ek
+count ko interpret karne se pehle ye poochhna padta hai ki wo count **kis cheez** ka hai — `P-12` ka rule,
+OS process table pe.
+
+**5. Clean reconciliation ne dobara ek hygiene failure chhupa liya, aur ab ye pattern hai.** Din 1 pe
+leftover worker, aaj leftover reaper — dono baar arithmetic match kar gaya, dono baar isliye ki chhoote
+hue process ke paas move karne ko kuch nahi tha. Reconciliation `P-13` ko **detect nahi kar sakti**; uske
+liye process check chahiye, aur wo closing pe dono din chala nahi.
 
 ---
 
-### 🧠 Self-Check (honest — `____` / `____` self-answered)
+### 🧠 Self-Check (honest — 0 / 6 self-answered on Part B, aur ye score data ke absence ka hai, galat jawab ka nahi)
 
-`____`
+**Part B ke chhe sawaalon ka koi likha hua pre-measurement answer iss review ko supply nahi hua** — Din 1
+ke baad **doosra** consecutive din. Report me choices aur outputs the, predictions nahi. Reviewer rule 1
+aur 6: jo answer nahi hua usko correct me count nahi karna, aur jo field report nahi hui uska plausible
+value nahi bharna. Honest score **0/6 scorable** — matlab "chhe galat" nahi, matlab "chhe ka evidence
+nahi".
 
-**Corrections:**
+**Aur ye ab pehle din se mehnga hai.** Din 1 ka `0/6` ek missing baseline tha. Din 2 ka `0/6` iska matlab
+hai ki hafte ke do din ke measurements ke saath comparison ke liye **koi** prediction base nahi hai — aur
+`DIN_02_KEY.md` khud yahi line apni pehli scoring note me likh chuki hai: *"that is the single most
+expensive thing that can go wrong this week, and it costs 10 minutes to prevent."*
+
+Per-question status, taki gap naam se dikhe:
+
+| Part B Q | Kya poochha gaya | Status | KEY ab kholi ja sakti hai? |
+|---|---|---|---|
+| 1 | 41 ka reclaim aur 63 ka — ek hi cheez? Farq `status` me ya evidence me? | **not supplied.** Step 2 ka dump farq **dikhata** hai (41 ka koi `job_executions` row nahi, 63/65 ka hai), par wo observation likha gaya, prediction nahi | **Haan** — Step 2 ka measurement chala |
+| 2 | `job_executions` pe join wala predicate → 41 ka kya, aur stranded row output me kaisi dikhti? | **not supplied.** Aur Step 4 chala hi nahi, to iska measurement **kabhi nahi hoga** — fixture ja chuki hai | **Explanation ki tarah**, recall ki tarah nahi. Ye din ke liye permanently unscoreable |
+| 3 | Ulta rule (*"execution row nahi hai to reset"*) 75 pe kya karta, aur kitni der me pakda jaata? | **not supplied.** Wahi baat — Step 4 ka read-only probe nahi chala | Same as Q2 |
+| 4 | Lambi reaper transaction — `now()` kis waqt ka, expiry kis clock ke against? | **not supplied**, aur ye woh sawaal hai jiska mechanism aaj **measure** ho gaya (M3) | **Haan** — M3 chala |
+| 5 | Pehla worker zinda — mark kab `rowcount 0` deta, aur kab `1` jabki kaam doosra worker kar raha hai? | **not supplied.** Ye Din 5 ka direct input hai aur uska text obligation table me reviewer ne bhara hai — matlab wo baat *establish* hui, *answered* nahi | **Haan** — Step 3/5 chale |
+| 6 | Reclaim latency — duration se, poll interval se, ya dono se? Kya measure kiya, kya choose kiya? | **not supplied**, aur latency ka number bhi nahi. Ye ek hi sawaal hai jiska **dono** hissa gayab hai | Step 7 chala nahi — **sealed rehna chahiye** |
+
+**Seal status (`E8`):** koi seal-break report nahi hui. Par Q2/Q3/Q6 ke liye ye ab academic hai — un steps
+ka measurement chala hi nahi, to unka prediction data iss din ke liye khatam hai chahe KEY khuli ho ya na
+khuli. **`idk` likhna teeno se behtar hota.**
+
+**Corrections — jo maine kaha aur jo measurement/review ne refute kiya:**
 
 | # | I said | Actual | The transferable lesson |
 |---|---|---|---|
-| `__` | `____` | `____` | `____` |
+| 1 | *"day 2 complete"* | **Partial.** Step 4 (three-query split + verdict table), Step 6 (guard differential), Step 7 (latency), Step 8 (Ch 8 links — `DDIA_CH8_LINKS.md` mtime abhi bhi `2026-08-22 17:28`), Part B ke chhe answers, cleanup, aur commit — saat items missing `[MEASURED-R]` | Ye Din 1 ki correction #1 ka **exact repeat** hai, ek din baad. "Complete" ka matlab **file state aur process state check karna** hai. Do din, ek hi galti, aur doosri baar wo pehle se named thi |
+| 2 | Per-row output format `[REAPER] [ts] id={id} pre_status={} matched={} post_status={}` — jaise ye chaar rows ka verdict de raha hai | Format theek hai; **content nahi.** `post_status` row se padha nahi jaata, wo `matched` ka restatement hai `[MEASURED-R]`. Aur **75 kabhi print hi nahi hoti** kyunki wo `SELECT` ka candidate nahi hai — to "chaar rows ek output me" iss shape me possible nahi thi | Ek output format design karte waqt sawaal ye nahi hai *"kaunse fields print karun"*, sawaal ye hai *"inme se kaunsa field database se aaya aur kaunsa main assert kar raha hoon"*. Assert kiya hua field verification me zero weight rakhta hai |
+| 3 | Lease `30 s` chuna — *"8 s slow handler ko headroom de"* — aur reclaim ne teen rows uthaayi, matlab predicate kaam kar gaya | Predicate ka **`IS NULL` branch** kaam kar gaya. Expiry branch **zero rows** pe chala, kyunki ek bhi `running` row non-null `claimed_at` ke saath nahi thi `[INFERRED from your own Step 2 dump]`. `30 s` ki jagah kuch bhi likha hota, wahi teen lines aati | Ek run jo pass karta hai, **kaunsa** mechanism validate karta hai — ye alag se poochhna padta hai. Teen reclaim dikhne se predicate confirm nahi hota; sirf wo branch confirm hota hai jo actually evaluate hua |
+| 4 | Step 6 — reaper do baar chalaya (do PIDs zinda mile, dono `src.reaper`) | Do PID **ek** process hain: `33584` ka parent `33540`, parent 1-thread/3.9 MB stub, ek asyncpg backend `[MEASURED-R]`. To do concurrent reaper nahi chale (scope violation nahi hua — accha), par Step 6 ka differential **produce bhi nahi hua**, aur wo iss implementation se ho hi nahi sakta: doosra run khaali output deta hai (`P-20`) | Aur ye Din 1 ki *"do worker"* claim ko bhi correct karta hai — wo bhi ek worker tha. OS process count aur "kitne mere program chal rahe hain" do alag numbers hain |
+| 5 | Step 0 — *"1 active connection, 0 idle in transaction"*, clean baseline | Sach hai, **aur adhoora**: Din 1 ke leftover PIDs kya the ye record nahi hua (*not recorded*), aur closing pe process check dobara chala hi nahi — isliye `~33 minute` chalta hua reaper mila `[MEASURED-R]` | Opening pe process check karna aur closing pe **na** karna — dono din ki wahi galti. `idle in transaction = 0` (jo `P-06` dekhta hai) aur `processes = 0` (jo `P-13` dekhta hai) do alag checks hain, aur doosra dono baar closing pe skip hua |
+
+*(Ye table kabhi delete nahi hoti, na chhoti hoti hai.)*
 
 ---
 
 ### 🚧 Unresolved / Follow-ups
 
-**New, from today:** `____`
+**New, from today:**
 
-**Deliberately open (owner ke saath):** `____`
+| # | Item | Kya specifically chahiye |
+|---|---|---|
+| 1 | **`post_status` padha nahi jaata (R1, `P-20`)** | `UPDATE ... RETURNING status` pe move karo, aur us value ko print karo. Ek clause, koi extra round trip nahi. **Din 3 se pehle**, kyunki Din 3 ka duplicate proof reaper ki reclaim line pe khada hai |
+| 2 | **Khaali pass silent hai (R3, `P-20`)** | Per-pass ek line chahiye jisme candidate count ho — `0` bhi print ho. Iske bina Step 6 ka differential kabhi nahi chalega, aur Din 3 me *"reaper uss window me chala tha?"* (diagnosis #3) ka jawab nahi milega |
+| 3 | **Expiry branch aaj tak kisi row pe evaluate nahi hua** | Din 3 iska pehla asli test hai: ek live-but-slow worker ki lease actually expire hogi. Aaj tak jo evidence hai wo poora `IS NULL` branch ka hai |
+| 4 | **Reclaim latency ka koi number nahi hai** | Plan-defined quantity (*expiry → `pending`*) aaj **undefined** thi. Din 3 ka prereq table isko naam se maangta hai — to Din 3 ke pehle ye decide karna hai: Din 3 apna number khud banayega (uske paas expire hone wali lease hai), aur Din 2 ka slot `[NO EVIDENCE]` rehta hai. **Yaad se plausible number bharna nahi hai** |
+| 5 | **Reaper poll period `poll_interval + pass_duration` hai, fixed `2.0 s` nahi** | Aaj `~20 ms` ka farq hai `[MEASURED-R]`. Din 3 me jab window seconds me nap rahi ho, ye drift ek line ka note maangta hai — measure karke, maan ke nahi |
+| 6 | **`echo=True` production shape nahi hai** | Aaj wo accidentally liveness evidence de raha hai (R3). Off karne ka faisla apne aap me ek decision hai (Week 4, metrics ke saath) — par jab off ho, tab reaper ka apna per-pass line **pehle** exist karna chahiye |
 
-**Slipped (aur specifically kya chahiye):** `____`
+**Deliberately open (owner ke saath):**
 
-**Carried forward, unchanged:** `____`
+- **Lease duration ka final number** — `D-22`, Din 6. Aaj `30 s` ek **working number** hai, `D-22` nahi.
+  Aur aaj ka run usko test **nahi** karta — ye line `D-22` me jaani chahiye.
+- **Fencing token** — Din 5 ka reading, aur uska argument aaj likha gaya (obligation table ki aakhri
+  rows). Aaj banana nahi hai.
+- **Contract #2 unprotected** — Week 3 ke dedup tak. Accepted trade, gap nahi.
+- **Do reaper / leader election** — Week 4. Aaj scope violation hua **nahi** (do PID ek process the).
+
+**Slipped (aur specifically kya chahiye):**
+
+| Item | Kaunsi baar | Kya chahiye |
+|---|---|---|
+| **Part B ke chhe prediction answers** | **doosri** | Likhit roop me, measurement se **pehle**. Din 2 ke liye ab reconstruct nahi ho sakte. Din 3 ke sawaal `WEEK_02.md` ke PART B block, `## Din 3` me hain — wo **kal subah, kaam shuru karne se pehle** likhne hain, `idk` include |
+| **Ch 8 links append** | **doosri** | `DDIA_CH8_LINKS.md` me ab **chaar** lines owed hain: Din 1 ke do (*Network Faults in Practice*, *Detecting Faults*) aur Din 2 ke do (*Timeouts and Unbounded Delays*, aur unme se **ek `P-02` pe** jaani chahiye). File ki lines 2 aur 3 already `pp. 278–284` aur `281–283` cite karti hain — nayi lines unse **aage** jaani chahiye |
+| **Step 4 — three-query split aur chaar-row verdict table** | pehli, aur **permanent** | Ye ab **poora nahi ho sakta**. 41/63/65 `pending` hain, to (a)/(b)/(c) teeno khaali aate hain `[MEASURED-R]`. Jo bacha hai wo Step 2 ka verbatim dump hai — aur wo isliye bacha hai ki wo liya gaya tha. **Yahi iss discipline ka poora proof hai** |
+| **Step 6 — guard ka differential** | pehli | Pehle R1 aur R3 fix karo, phir ye check meaningful ban jaayega. Aaj ise "pass" likhna decorative hoga (`E7`) |
+| **Step 7 — reclaim latency** | pehli | Din 3 pe, apni expire hone wali lease ke saath. Aaj ka slot `[NO EVIDENCE]` rehta hai |
+| **Cleanup — reaper band karna** | **doosri** (Din 1 pe worker) | Closing pe `Get-Process python` chalao, output log me. Opening pe chalana aur closing pe nahi chalana — dono din ki wahi galti |
+| **Commit** | **pehli for Din 2** | Staged paths naam se: `src/reaper.py`, `docs/logs/WEEK_02.md`, `docs/PROBLEMS.md`. `labs/day2_signals.py` **alag** commit ya revert — wo Din 1 ka carried debt hai aur uska mtime `2026-08-20` hai |
+
+**Carried forward, unchanged:**
+
+- **`2026-08-24` ka koi record nahi.** Din 1 `08-23`, Din 2 `08-25`. **Cause not identified.** Week 1 Din 7
+  gap ka doosra instance — ab ye ek pattern hai aur Din 6 ke week-close pe iska naam jaana chahiye.
+- **Din 7 (Week 1) ki log entry maujood nahi hai.** Numbers verify ho chuke hain; kya chala wo nahi.
+- **`labs/day2_signals.py` modified** — mtime `2026-08-20 15:33`, Din 1 se aage nahi badha.
+- **`79cb2ee38481` — khaali migration revision** chain me permanent hai. Theek nahi karna; naam log me hai.
+- **`LEARNING_LOG.md` ka open-items table** — Din 7 debt ke liye row abhi bhi nahi bani.
+- ~~`CURRENT_WEEK.md` abhi bhi Week 1 pe point karta hai~~ — **reviewer ki galti, aur wo yahan rehti hai.**
+  File kholke measure kiya: wo Din 1 pe hi Week 2 pe repoint ho chuki thi, week status table ke saath
+  `[MEASURED-R]`. Ye claim Stage Day register ki ek stale line se copy hui thi, aur wahi galti hai jo iss
+  poore log me manaa hai — **ek doosre document ki line ko measurement ki tarah padhna.** Din 2 ke close pe
+  file Din 3 pe repoint kar di gayi.
+- **Do process / ek backend ka sawaal — BAND.** M7 ne resolve kiya: parent stub + child interpreter.
 
 ---
 
 ### ❓ Question / Next Thought
 
-`____`
+**Kal ka asli sawaal, aur ye Din 3 ke paanch-sawaal diagnosis ka pehla dandaa hai:** aaj reaper ne teen
+rows uthaayi aur uska output usme se **ek bhi** cheez prove nahi karta jo Din 3 ko chahiye. Din 3 ka pura
+duplicate proof teen timestamps ke ek clock pe aane pe khada hai — reaper ki reclaim line, worker A ka
+handler end, worker B ka `executed_at` — aur aaj measure hua ki reaper ki line ka timestamp **naive local**
+hai bina label ke, uska post-state **assert kiya hua** hai, aur ek khaali pass **kuch print nahi karta**.
+
+To kal se pehle ka sawaal ye hai: **agar Din 3 ka duplicate count `0` aaya, to main kaise batao ki overlap
+window bani hi nahi thi, versus reaper uss window me chala hi nahi tha?** Aaj ke output se ye do cases
+**alag nahi** kiye ja sakte — dono me reaper ki koi line nahi hoti. Diagnosis #3 (*"reaper uss window me
+chala?"*) ka jawab literally ek line hai jo abhi print hoti hi nahi. Isliye R1 aur R3 Din 3 ke **prereq**
+hain, cosmetic nahi.
+
+**Aur ek chhota sawaal jo aaj ka reclaim khud utha raha hai:** 41, 63 aur 65 ab `pending` hain aur teeno
+claimable hain. 41 ka reclaim muft tha; 63 aur 65 ka nahi — unke `job_executions` rows batate hain ki
+handler code chala tha. Ab jo bhi worker inhe uthayega, wo 63 aur 65 ka handler **doosri baar** chalayega,
+aur `jobs` me aisi koi cheez nahi hai jo usko ye bata sake. **Din 2 ne duplicate execution ka darwaza
+khol diya hai aur wo darwaza abhi khula hua hai** — teen rows queue me baithi hain, aur unme se do pe
+side effect dobara ho sakta hai. Ye Week 2 ka honest guarantee ka literal roop hai: reaper ne stranded
+work ka window **narrow** kiya, aur duplicate ka window **band nahi** kiya.
 
 ---
 
