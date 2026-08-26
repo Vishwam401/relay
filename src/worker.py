@@ -9,6 +9,7 @@ from src.database import async_session
 from src.models import Job, JobExecution
 
 POLL_INTERVAL_SECONDS = 2.0
+HEARTBEAT_INTERVAL_SECONDS = 10.0
 WORKER_ID = f"worker-{os.getpid()}"
 SHUTDOWN_REQUESTED = False
 
@@ -20,6 +21,30 @@ def request_shutdown(signum: int, frame: Any) -> None:
         f"\n[{WORKER_ID}] Signal {sig_name} received. Finishing current job before shutdown..."
     )
     SHUTDOWN_REQUESTED = True
+
+
+async def send_heartbeat(job_id: int, stop_event: asyncio.Event) -> None:
+    while not stop_event.is_set():
+        try:
+            await asyncio.wait_for(
+                stop_event.wait(), timeout=HEARTBEAT_INTERVAL_SECONDS
+            )
+            break
+        except asyncio.TimeoutError:
+            async with async_session() as session:
+                async with session.begin():
+                    update_stmt = (
+                        update(Job)
+                        .where(Job.id == job_id, Job.status == "running")
+                        .values(claimed_at=func.now())
+                    )
+                    result = await session.execute(update_stmt)
+                    if result.rowcount == 0:
+                        print(
+                            f"[{WORKER_ID}] Heartbeat lost: job {job_id} is no longer 'running'"
+                        )
+                        break
+                    print(f"[{WORKER_ID}] Heartbeat sent for job {job_id}")
 
 
 async def handle_sleep(payload: dict) -> None:
@@ -107,8 +132,14 @@ async def run_worker() -> None:
             )
             new_status = "failed"
         else:
+            stop_event = asyncio.Event()
+            heartbeat_task = asyncio.create_task(
+                send_heartbeat(job_id, stop_event)
+            )
             try:
-                print(f"[{WORKER_ID}] Executing job {job_id} (type={job_type})...")
+                print(
+                    f"[{WORKER_ID}] Executing job {job_id} (type={job_type})..."
+                )
                 await record_execution(job_id, WORKER_ID)
                 await handler(payload)
                 print(f"[{WORKER_ID}] Finished execution for job {job_id}.")
@@ -118,6 +149,9 @@ async def run_worker() -> None:
                     f"[{WORKER_ID}] Job {job_id} raised an exception: {exc}. Marking failed."
                 )
                 new_status = "failed"
+            finally:
+                stop_event.set()
+                await heartbeat_task
 
         async with async_session() as session:
             async with session.begin():
