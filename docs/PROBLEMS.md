@@ -854,3 +854,220 @@ validate it**: 10 seconds or 10 hours would have produced the same three lines.
   printed without a timezone label — while every `jobs` value is `Etc/UTC`. The offset is now measured at
   `5:29:59.994671` with a `7.262 ms` read gap `[MEASURED-R]`, so the arithmetic is workable; the missing
   label is what makes a lease bug and a timezone bug read identically in a diff.
+---
+
+## P-21 — The heartbeat's usefulness is inversely correlated with the severity of the failure a lease exists to catch
+
+**Status: MEASURED** on Week 2 Din 3 — the working half by the user (Run 2, job 96), the failing half by
+mechanism plus `[MEASURED-R]` source reading. The cases where it does nothing were **not** produced today,
+and that is stated rather than papered over.
+
+**The problem in one line:** a heartbeat is a **write**, so it only lands if the paused-or-slow process
+still reaches the code that sends it — and the failures a lease is *for* are precisely the ones where it
+does not.
+
+### What was measured, and it is the easy case
+
+`src/worker.py` runs the heartbeat as a task alongside the handler:
+
+```python
+heartbeat_task = asyncio.create_task(send_heartbeat(job_id, stop_event))
+...
+finally:
+    stop_event.set()
+    await heartbeat_task
+```
+
+`HEARTBEAT_INTERVAL_SECONDS = 10.0` against a `30 s` lease. Run 2 (job 96, a `45 s` handler whose body is
+`await asyncio.sleep(45)`):
+
+| Reading | Value | Label |
+|---|---|---|
+| dispatch (`job_executions.executed_at`) | `2026-08-26 10:44:15.793133+00` | `[MEASURED-R]` |
+| `claimed_at` at close | `2026-08-26 10:44:56.088549+00` | `[MEASURED-R]` |
+| distance between them | **`40.295 s`** — the 4th heartbeat, on a `10 s` interval | `[MEASURED-R]` |
+| reaper candidates during the run | `0` on every pass | `[MEASURED]` (user's capture) |
+| `job_executions` rows for job 96 | **1** | `[MEASURED-R]` |
+
+The lease never expired, so the reaper's predicate never matched, so the window never opened. Compare
+Run 1 (job 95, identical shape, **no** heartbeat): two dispatches, `14.783 s` of proved overlap.
+
+**This worked because `await asyncio.sleep()` yields.** The event loop got control four times and
+scheduled the heartbeat task. That is the mechanism, and it is also the whole limitation.
+
+### Where it does nothing at all
+
+| Situation | Why the heartbeat never arrives | Measured? |
+|---|---|---|
+| **CPU-bound handler** — tight loop, large synchronous computation | Never yields; the loop never schedules the heartbeat task. Lease expires while the process is busy and healthy | **No** — `[INFERRED from asyncio semantics]` |
+| **Blocking I/O in the handler** — `time.sleep`, `requests`, a sync DB driver | Same mechanism: the thread is inside a call that does not return to the loop | **No** — `[INFERRED]` |
+| **Process pause** — GC, OS paging, VM suspend | DDIA Ch 8 *Process Pauses*. Alive in the process table, executing nothing | **No** — `[INFERRED from Ch 8]` |
+| **Network partition worker↔database** | The write is attempted and cannot land. The lease expires and the worker does not know | **No** — `[INFERRED]` |
+| **Worker genuinely dead** | Correct behaviour — this is the case the heartbeat must *not* cover | n/a |
+
+**The inversion.** Rank those by how badly the system needs recovery: a healthy-but-slow handler is the
+mildest case, and a pause or partition is the reason leases exist at all. The heartbeat covers the mildest
+case perfectly and the severe cases not at all. So Run 2's zero is evidence about **one schedule with one
+handler shape**, and Relay does not bound its handlers (`P-15`) — meaning nothing stops a future handler
+from being exactly the shape the heartbeat cannot help.
+
+### And the guard has the same generation blindness as the mark statement
+
+`where(Job.id == job_id, Job.status == "running")` plus a `rowcount` check. Measured on Din 3
+`[MEASURED-R]`, reviewer probe (job 97), reaper reclaimed first and the heartbeat fired second:
+
+```
+STEP9  heartbeat rowcount on released row = 0
+STEP9  final row = (97, 'pending', None, 0)
+```
+
+**The guard rejects a *released* lease.** It cannot reject a *re-claimed* one: if worker B has already
+taken the row back to `running`, worker A's heartbeat satisfies `status = 'running'` and returns `1` — the
+old worker renewing the new worker's lease, and the reaper will then never rescue B if B dies. That case
+was **not** produced on Din 3 and is open. It is the same limitation as worker A's mark returning
+`rowcount = 1` on work worker B was executing: compare-and-set on a value that **recurs** cannot
+distinguish generations. Structural answer is a fencing token — **Din 5**, noticed here, not built.
+
+### What this means for Relay
+
+- **`narrows`, not `closes`.** The honest sentence is *"the heartbeat narrows the duplicate window for
+  handlers that yield."* Run 2's zero duplicates does not license anything stronger, and the reason is
+  mechanical rather than cautious.
+- **A mitigation whose coverage is correlated with handler *shape* needs the handler contract written
+  down.** Right now Relay accepts arbitrary coroutines. Either the contract says *"handlers must yield at
+  least every N seconds"* (and nothing enforces it), or the lease duration must be sized for handlers that
+  never yield — in which case the heartbeat is not what is protecting anything. That trade belongs in
+  `D-22`.
+- **Two independent knobs price the same thing and they are not the same knob.** Heartbeat interval prices
+  write volume against effective margin (`lease − interval − scheduling delay`, **not** `lease − interval`).
+  Lease duration prices reclaim latency against duplicate width. Din 3 measured the second at
+  `1.798192 s` and `≥ 15.04 s` respectively; the first is unmeasured.
+- **Not fixed today, and deliberately.** Adding a timeout or a yield requirement to handlers is Din 5's
+  and Week 4's territory; forcing it now would erase the measurement that makes the argument.
+
+---
+
+## P-22 — A latency number can be arithmetically correct and still measure the observer instead of the event
+
+**Status: MEASURED** on Week 2 Din 3 `[MEASURED-R]` — reviewer re-ran the same quantity with one procedural
+change and got a number **11× smaller**.
+
+**The problem:** Din 3's Step 2 produced a reclaim latency of `19.953818 s`. Every input was real, both
+instants were `Etc/UTC`, and the subtraction was right. The number is still not reclaim latency.
+
+### The two runs
+
+Reclaim latency is defined in the plan as *expiry → `pending`*. That definition silently assumes the
+reaper is **already running when the row expires**.
+
+| Run | Procedure | expires_at | reclaim instant | Result |
+|---|---|---|---|---|
+| Din 3 Step 2 (user) | seed the row, read the instants, **then** start the reaper | `10:05:55.823960+00` | `10:06:15.777778+00` | `19.953818 s` `[MEASURED]` |
+| Din 3 close (reviewer) | **start the reaper first**, let it idle, then seed a row at `29 s` age | `15:41:54.448822+00` | `15:41:56.247014+00` | **`1.798192 s`** `[MEASURED-R]` |
+
+The reviewer run's reclaim instant comes from the reaper's own `RETURNING ... clock_timestamp()`, so both
+values are the database's clock with zero conversions.
+
+**And a third, independent reading from the centrepiece itself.** In Run 1 the reaper *was* already
+running. Worker A's `claimed_at` was overwritten by worker B, but it is bounded above by A's
+`executed_at = 10:28:27.762549+00`, so expiry `≤ 10:28:57.762549+00`. Worker B's `claimed_at` is
+`10:28:57.969647+00`. Expiry-to-re-claim is therefore **`≤ 207.098 ms`**, and that bound already contains
+the reclaim *and* worker B's poll `[MEASURED-R]`.
+
+Two readings under one poll period; one reading an order of magnitude above it. The `~18 s` residual is
+the time between seeding the row and starting the reaper.
+
+### Why the shape matters more than the number
+
+The reviewer capture contains the line that proves the bound is structural rather than lucky
+`[MEASURED-R]`:
+
+```
+[reaper-43620] [2026-08-26 21:11:54.223374] Pass completed: candidates=0 reclaimed=0
+                     ^ 226 ms BEFORE expiry -- correctly matched nothing
+[reaper-43620] [DB_TIME: 2026-08-26T15:41:56.247014+00:00] id=97 pre_status=running matched=1 post_status=pending
+                     ^ the next pass caught it
+```
+
+Measured cadence in the same run: `2.016 / 2.015 / ~2.02 s`, consistent with Din 2's `2.013–2.020 s`. So
+expiry sets the **floor** and the poll period sets the **jitter above the floor**, and worst case is
+`lease + one period`. `19.95 s` does not fit that model at all, which is the tell — a number that cannot be
+explained by the mechanism is usually measuring something else.
+
+**Note the reason this was catchable and the earlier failure was not.** Din 2's reclaim latency was
+`[NO EVIDENCE]` — the slot was empty, and an empty slot announces itself. Din 3's slot was **full**, with a
+verbatim pair of timestamps and a `[MEASURED]` tag. A wrong number with good provenance is harder to find
+than a missing one, and it propagates: this value was on its way into `D-22`'s `Cost` line, where it would
+have justified a lease duration against a reclaim latency that was `11×` too large.
+
+### What this means for Relay
+
+- **The observer's start time is part of the measurement.** For any *event → response* latency, the
+  responder must be running and idle **before** the event. Otherwise the number includes operator reaction
+  time, and it will look plausible.
+- **A `[MEASURED]` tag certifies that a value was read, not that it is the value you named.** The label
+  belongs to the **procedure**, not the arithmetic. `P-18`'s family with the failure moved one layer up:
+  there the *check* could not fail; here the *measurement* could not be wrong-looking.
+- **Concrete carry-forward for every latency in this project** — reclaim latency, shutdown latency,
+  inter-attempt delay on Din 4: write the procedure next to the number, specifically *when the observer
+  started relative to the event*. If the answer is "after", the number is an upper bound contaminated by
+  setup and it is labelled that way.
+- **Din 4 walks straight into this.** Inter-attempt gaps are read from `executed_at` diffs while the worker
+  polls every `2.0 s`. A first backoff smaller than the poll interval produces a measured gap of `~2 s`
+  that is the **poll interval**, not the backoff — same failure, different quantity.
+
+---
+
+## P-23 — The code that produced the week's most expensive measurement exists in no commit
+
+**Status: MEASURED** on Week 2 Din 3 `[MEASURED-R]` — `git log --all -S"super_slow"` returns **nothing**,
+and `git status` is clean at `f43388c`.
+
+**The problem:** jobs `93, 94, 95, 96` carry `type = 'super_slow'` in the database. `REGISTRY` at `HEAD`
+holds `sleep`, `boom`, `slow` — and `handle_slow` is still `await asyncio.sleep(8.0)`. The `45 s` handler
+that made the centrepiece arithmetically possible lived in the working tree during the run and was removed
+before the commit.
+
+### What is lost
+
+| Artefact | State |
+|---|---|
+| Job 95's two dispatches, `14.783 s` of proved overlap | **In the database**, permanent `[MEASURED-R]` |
+| Worker A's `Marked job 95 as 'succeeded' (rowcount=1)` while B ran | **In the log only** — the three `python -u` captures were deleted |
+| The handler that produced both | **Nowhere.** Not in `HEAD`, not in any commit, not in any stash reachable by `-S` |
+
+So the week's headline result is reproducible in *description* and not in *execution*. `D-22`'s `Cost` line
+will cite a `45 s` handler against a `30 s` lease, and there is no code behind the `45`.
+
+### A dormant second-order hazard
+
+`run_worker()` does `handler = REGISTRY.get(job_type)`, and on `None`:
+
+```python
+print(f"Unknown job type: '{job_type}'. Marking failed.")
+new_status = "failed"
+```
+
+No execution row, straight to terminal. **That is job 75's exact shape** — `type='send_receipt'`, no
+handler, and Week 1's log records it as a landmine that goes off on its own. Din 3 manufactured four more
+rows of the same kind. Currently harmless: `93`–`96` are all `succeeded` and terminal, so nothing will
+claim them. It stops being harmless the moment anything moves one of them back to `pending` — which is
+exactly what the reaper does, and the reaper is now a running process in this project.
+
+### What this means for Relay
+
+- **An experiment's evidence is the measurement *and* the code that produced it.** The database rows and
+  the log entry both survived; the mechanism did not. A reader six weeks out can see that a `45 s` handler
+  overlapped a `30 s` lease and cannot re-run it, extend it, or check what else that handler did.
+- **The commit message asserted more than the commit contained.** `"demonstrate slow worker duplicate
+  execution and mitigate with worker heartbeat"` — the heartbeat is in the diff; the demonstration is not.
+  The reviewer initially read the message as evidence of the contents and had to grep history to find the
+  absence, which is this project's own recurring error (*reading another document's line as a measurement*)
+  one layer down.
+- **The fix is a choice, and it must be written rather than defaulted:** either bring the long handler back
+  as a **duration read from `payload`** — no new named handler, and it makes the knob explicit — or record
+  in `D-22` that the centrepiece ran on an uncommitted working-tree state and will not re-run. The second
+  is honest and cheap; leaving it unstated is neither.
+- **`narrows`, not `closes`:** committing the handler would make the centrepiece re-runnable. It would not
+  make Din 3's *run* reproducible, because the three stdout captures are gone and worker A's mark line
+  survives only as a quotation.
