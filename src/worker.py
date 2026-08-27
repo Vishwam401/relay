@@ -1,15 +1,20 @@
 import asyncio
 import os
+import random
 import signal
 import sys
 from collections.abc import Callable, Coroutine
 from typing import Any
-from sqlalchemy import func, insert, select, update
+from sqlalchemy import func, insert, or_, select, text, update
 from src.database import async_session
 from src.models import Job, JobExecution
 
 POLL_INTERVAL_SECONDS = 2.0
 HEARTBEAT_INTERVAL_SECONDS = 10.0
+MAX_ATTEMPTS = 3
+BASE_BACKOFF_SECONDS = 3.0
+BACKOFF_MULTIPLIER = 2.0
+BACKOFF_CAP_SECONDS = 15.0
 WORKER_ID = f"worker-{os.getpid()}"
 SHUTDOWN_REQUESTED = False
 
@@ -93,8 +98,14 @@ async def run_worker() -> None:
         async with async_session() as session:
             async with session.begin():
                 claim_query = (
-                    select(Job.id, Job.type, Job.payload)
-                    .where(Job.status == "pending")
+                    select(Job.id, Job.type, Job.payload, Job.attempts)
+                    .where(
+                        Job.status == "pending",
+                        or_(
+                            Job.next_attempt_at.is_(None),
+                            Job.next_attempt_at <= func.now(),
+                        ),
+                    )
                     .order_by(Job.created_at, Job.id)
                     .limit(1)
                     .with_for_update(skip_locked=True)
@@ -106,7 +117,11 @@ async def run_worker() -> None:
                     update_stmt = (
                         update(Job)
                         .where(Job.id == job.id, Job.status == "pending")
-                        .values(status="running", claimed_at=func.now())
+                        .values(
+                            status="running",
+                            claimed_at=func.now(),
+                            attempts=Job.attempts + 1,
+                        )
                     )
                     update_result = await session.execute(update_stmt)
                     if update_result.rowcount == 0:
@@ -114,17 +129,24 @@ async def run_worker() -> None:
                             f"[{WORKER_ID}] Conflict: Job {job.id} was claimed by another writer (rowcount=0)."
                         )
                     else:
-                        claimed_job = (job.id, job.type, job.payload)
+                        current_attempts = job.attempts + 1
+                        claimed_job = (
+                            job.id,
+                            job.type,
+                            job.payload,
+                            current_attempts,
+                        )
                         print(
-                            f"[{WORKER_ID}] Claimed job {job.id} (rowcount={update_result.rowcount}). Status is now 'running'."
+                            f"[{WORKER_ID}] Claimed job {job.id} (attempt={current_attempts}, rowcount={update_result.rowcount}). Status is now 'running'."
                         )
 
         if not claimed_job:
             await asyncio.sleep(POLL_INTERVAL_SECONDS)
             continue
 
-        job_id, job_type, payload = claimed_job
+        job_id, job_type, payload, current_attempts = claimed_job
         handler = REGISTRY.get(job_type)
+        next_attempt_at = None
 
         if not handler:
             print(
@@ -138,17 +160,34 @@ async def run_worker() -> None:
             )
             try:
                 print(
-                    f"[{WORKER_ID}] Executing job {job_id} (type={job_type})..."
+                    f"[{WORKER_ID}] Executing job {job_id} (type={job_type}, attempt={current_attempts}/{MAX_ATTEMPTS})..."
                 )
                 await record_execution(job_id, WORKER_ID)
                 await handler(payload)
                 print(f"[{WORKER_ID}] Finished execution for job {job_id}.")
                 new_status = "succeeded"
             except Exception as exc:
-                print(
-                    f"[{WORKER_ID}] Job {job_id} raised an exception: {exc}. Marking failed."
-                )
-                new_status = "failed"
+                if current_attempts < MAX_ATTEMPTS:
+                    delay = min(
+                        BASE_BACKOFF_SECONDS
+                        * (BACKOFF_MULTIPLIER ** (current_attempts - 1)),
+                        BACKOFF_CAP_SECONDS,
+                    )
+                    actual_delay = (delay / 2.0) + random.uniform(
+                        0, delay / 2.0
+                    )
+                    new_status = "pending"
+                    next_attempt_at = func.now() + text(
+                        f"interval '{actual_delay} seconds'"
+                    )
+                    print(
+                        f"[{WORKER_ID}] Job {job_id} failed attempt {current_attempts}/{MAX_ATTEMPTS}: {exc}. Scheduling retry in {actual_delay:.2f}s (new_status='pending')."
+                    )
+                else:
+                    new_status = "failed"
+                    print(
+                        f"[{WORKER_ID}] Job {job_id} reached max_attempts ({MAX_ATTEMPTS}): {exc}. Marking terminal 'failed'."
+                    )
             finally:
                 stop_event.set()
                 await heartbeat_task
@@ -158,7 +197,10 @@ async def run_worker() -> None:
                 mark_stmt = (
                     update(Job)
                     .where(Job.id == job_id, Job.status == "running")
-                    .values(status=new_status)
+                    .values(
+                        status=new_status,
+                        next_attempt_at=next_attempt_at,
+                    )
                 )
                 mark_result = await session.execute(mark_stmt)
                 if mark_result.rowcount == 0:

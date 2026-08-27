@@ -59,6 +59,11 @@ class Job(Base):
         nullable=True,
     )
 
+    next_attempt_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
     __table_args__ = (
         CheckConstraint(
             "status IN ('pending', 'running', 'succeeded', 'failed')",
