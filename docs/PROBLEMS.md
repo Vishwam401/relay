@@ -1071,3 +1071,220 @@ exactly what the reaper does, and the reaper is now a running process in this pr
 - **`narrows`, not `closes`:** committing the handler would make the centrepiece re-runnable. It would not
   make Din 3's *run* reproducible, because the three stdout captures are gone and worker A's mark line
   survives only as a quotation.
+
+---
+
+## P-24 — Jitter narrower than the observation quantum is erased before it can be measured, and both instruments that could have separated them were destroyed the same day
+**Status: MEASURED** on Week 2 Din 4 `[MEASURED-R]` — four jobs, one worker, three retry rounds, and the
+convoy came back **tighter** than the round that had no jitter in it.
+
+**The problem:** Relay's worker polls every `POLL_INTERVAL_SECONDS = 2.0`, so every retry becomes visible
+only on a poll tick. A jitter range narrower than that tick is a real randomisation that the schedule
+rounds away. The measurement then reports the tick grid and it looks like a distribution.
+
+### The measurement
+
+Jobs `99, 100, 101, 102` — `type='boom'`, enqueued together, `MAX_ATTEMPTS = 3`, equal jitter on
+`base = 3.0`, one worker (`worker-35924` on every row) `[MEASURED-R]`.
+
+Read as a width, jitter appears to work:
+
+| Round | `max − min` |
+|---|---|
+| 1 (initial failure) | `0.151462 s` |
+| 2 (retry 1) | `2.114609 s` |
+| 3 (retry 2) | `2.132550 s` |
+
+Read as consecutive steps, the same rows say the opposite:
+
+```
+ round | job |     off_in_round | step_from_prev
+     1 |  99 |         0.000000 |  (first)
+     1 | 100 |         0.047110 | 0.047110
+     1 | 101 |         0.082139 | 0.035029
+     1 | 102 |         0.151462 | 0.069323      <- 4 jobs inside 151 ms
+     2 | 101 |         0.000000 |  (first)
+     2 |  99 |         2.046103 | 2.046103      <- ONE POLL PERIOD
+     2 | 100 |         2.081002 | 0.034899
+     2 | 102 |         2.114609 | 0.033607      <- 3 jobs inside 68 ms
+     3 | 101 |         0.000000 |  (first)
+     3 | 102 |         0.042248 | 0.042248
+     3 |  99 |         0.076086 | 0.033838      <- 3 jobs inside 76 ms
+     3 | 100 |         2.132550 | 2.056464      <- ONE POLL PERIOD
+```
+
+Rounds 2 and 3 contain **two** distinct instants each, separated by one poll period. Inside an instant the
+jobs sit `33–69 ms` apart, which is the worker's serial claim loop: `limit(1)` claims one row per pass and
+the success path does not sleep, so the worker drains every claimable row back-to-back and then sleeps.
+
+**So the width is a count of ticks, and the intra-tick clustering is tighter in the jittered rounds
+(`68 ms`, `76 ms`) than in the un-jittered round 1 (`151 ms`).** `P-14`'s convoy reappeared inside the
+retry path, which is exactly what jitter was added to prevent.
+
+### Why, and the arithmetic was available before the run
+
+```
+equal jitter:  actual(n) = delay(n)/2 + uniform(0, delay(n)/2)
+               range width = delay(n)/2
+
+attempt 1: delay = 3.0  ->  range width = 1.50 s   <  quantum 2.00 s   -> collapses to ~1 tick
+attempt 2: delay = 6.0  ->  range width = 3.00 s   >  quantum 2.00 s   -> 2 ticks observed
+```
+
+The observed tick count tracks `range / quantum`, which is the tell that the visible structure belongs to
+the scheduler and not the policy. **This is sampling below the quantum:** the mechanism is present in the
+system and absent from the measurement.
+
+### The second half — the two instruments that could have separated them
+
+Two independent records of the *intended* delay existed and both were gone by day close:
+
+1. `src/worker.py` prints `Scheduling retry in {actual_delay:.2f}s` on every retry. The stdout capture was
+   deleted without copying those lines up — **fourth consecutive day** `[MEASURED-R]`.
+2. `next_attempt_at` holds the intended instant while the row waits, and the mark statement writes
+   `next_attempt_at = None` on both the success and the terminal branch. So the value is erased the moment
+   the job stops retrying. Jobs `98`–`102` all read `next_attempt_at IS NULL` at close `[MEASURED-R]`.
+
+The reconstruction in this entry had to come from the poll grid instead, which yields an *interval* for each
+delay rather than a value: attempt 1 `∈ (2.01, 3.00]`, attempt 2 `∈ (4.07, 6.00]` `[MEASURED-R]`.
+
+### What this means for Relay
+
+- **The observer's resolution is part of the policy, not a detail after it.** Before choosing a jitter
+  shape, write `range_width / POLL_INTERVAL_SECONDS`. Below `1` the jitter cannot be evidenced by
+  `executed_at` at all, whatever the spread number says.
+- **`max − min` is a width; a convoy is a question about clustering.** Report `step_from_prev` alongside any
+  spread claim, or a two-cluster grid reads as a distribution.
+- **A quantised measurement admits a family of implementations.** Din 4's gap list `4.071787 s`,
+  `6.098167 s` is `≈ 2 × 2.036` and `≈ 3 × 2.033` — poll-grid multiples. An implementation waiting `33 %`
+  less than configured produces the identical list. `P-18`'s shape, `P-22`'s general lesson, on a new
+  quantity.
+- **Keep one record of what the policy *intended*, separate from what the schedule *did*.** The two must be
+  comparable after the fact, and today neither survived. `narrows`, not `closes`: raising `base` above
+  `2 × POLL_INTERVAL_SECONDS` makes the jitter visible; it does not make the poll grid disappear, and every
+  gap remains a window rather than a value.
+
+---
+
+## P-25 — A guard that correctly rejects a stale transition also discards the policy that transition was carrying
+**Status: MEASURED** on Week 2 Din 4 `[MEASURED-R]`, on a seeded row — the guard did its job and the retry
+came back with no backoff at all.
+
+**The problem:** Relay's retry write is one `UPDATE` carrying two different concerns — the state transition
+(`running → pending`) and the retry policy (`next_attempt_at`). The compare-and-set guard is written against
+the transition. When it rejects, both are rejected, and `attempts` has already been incremented elsewhere.
+
+### The measurement
+
+Reviewer probe, job `104`: `type='boom'`, seeded `status='running'`, `attempts=1`,
+`claimed_at = now() − 45 s`, so the reaper reaches it first `[MEASURED-R]`.
+
+```
+  seeded job 104: status=running attempts=1 next_attempt_at=None
+  [reaper-35376] id=104 pre_status=running matched=1 post_status=pending
+  after reaper: status=pending attempts=1 claimed_at=None next_attempt_at=None
+  worker would have scheduled retry in 2.853s
+  RETRY MARK rowcount = 0
+  after rejected mark: status=pending attempts=1 next_attempt_at=None
+  db_now=2026-08-27 11:11:29.366976+00  CLAIM GATE SAYS CLAIMABLE NOW = True
+```
+
+`rowcount = 0` is the correct and desired result — `attempts` did not move twice for one failure. The line
+that matters is the last one: `next_attempt_at` stayed `NULL`, so the claim gate
+`(next_attempt_at IS NULL OR next_attempt_at <= now())` matches **immediately**. The `2.853 s` the worker
+computed was never written anywhere.
+
+**The bound survives and the backoff does not**, and that asymmetry comes from *where each one lives*:
+`attempts` is incremented by the **claim** (Din 4 Decision 1, Option A), which already committed;
+`next_attempt_at` is written by the **mark**, which was rejected.
+
+### The related finding: a reclaim bypasses backoff by construction
+
+Same day, job `105`, worker's own statements `[MEASURED-R]`:
+
+```
+  retry mark rowcount=1
+  [after retry mark]  status=pending  claimed_at=11:17:53.856474+00  next_attempt_at=11:18:23.895751+00
+                      -> the retry mark does NOT clear claimed_at
+  claim rowcount=1
+  [after claim]       status=running  attempts=2  next_attempt_at=11:17:52.941574+00
+                      -> the claim does NOT clear next_attempt_at; the running row carries a past value
+  [reaper-51860] id=105 pre_status=running matched=1 post_status=pending
+  [after reclaim]     status=pending  claimed_at=None  next_attempt_at=11:17:52.941574+00  claimable=True
+```
+
+No writer clears `next_attempt_at` except the mark, so a reclaimed row is claimable at once. Combined with
+increment-on-claim this means **`MAX_ATTEMPTS` is a budget for dispatches of any origin, including lease
+flapping, and the flapping path spends it with zero delay between attempts.** Job 95's shape from Din 3 —
+two dispatches, overlapping, zero failures — spends two of three under this policy.
+
+### What this means for Relay
+
+- **A guard is scoped to the predicate it names.** `WHERE status = 'running'` protects the transition. Any
+  other column in the same `.values()` inherits the rejection silently, and `rowcount` alone does not say
+  what was lost. Read the **post-state**, not just the count.
+- **Two decisions chosen independently were not independent.** Increment-on-claim and not-before-in-its-own-column
+  were each written with their own cost. The cost that showed up belongs to their *interaction* with a third
+  choice (the reaper touching neither column), and no per-decision cost table would have caught it. This
+  belongs in `D-23`'s `Cost` line.
+- **`claimed_at` now has a third meaning.** On a retry-waiting `pending` row it is neither a live lease
+  deadline nor `NULL` — it is the last dispatch instant. The reaper filters on `status = 'running'` so it
+  does not match today; that safety is a property of the *other* predicate, not of the column. `P-19`.
+- **What this does not establish:** the ordering measured is reaper-first. The worker-B-re-claims-first
+  ordering satisfies the guard and returns `rowcount = 1`, because compare-and-set on a recurring value
+  cannot distinguish generations. Untested, and it is the fencing-token argument (`P-21`, `P-17`).
+
+---
+
+## P-26 — A parameter no input can reach, and a verification row that can neither pass nor fail
+**Status: MEASURED** on Week 2 Din 4 `[MEASURED-R]` — `BACKOFF_CAP_SECONDS` was chosen, documented, and
+cannot affect any code path at the configured `MAX_ATTEMPTS`.
+
+**The problem:** `src/worker.py` ships
+
+```python
+MAX_ATTEMPTS = 3
+BASE_BACKOFF_SECONDS = 3.0
+BACKOFF_MULTIPLIER = 2.0
+BACKOFF_CAP_SECONDS = 15.0
+
+delay = min(BASE_BACKOFF_SECONDS * (BACKOFF_MULTIPLIER ** (current_attempts - 1)), BACKOFF_CAP_SECONDS)
+```
+
+and the retry branch is only entered while `current_attempts < MAX_ATTEMPTS`.
+
+### The measurement
+
+Enumerated from the shipped constants `[MEASURED-R]`:
+
+```
+  attempt n=1: raw=  3.0  delay= 3.0  cap inert   reachable
+  attempt n=2: raw=  6.0  delay= 6.0  cap inert   reachable
+  attempt n=3: raw= 12.0  delay=12.0  cap inert   NEVER computed (terminal at n=MAX)
+  attempt n=4: raw= 24.0  delay=15.0  CAP BINDS   NEVER computed (terminal at n=MAX)
+```
+
+The cap first binds at `n = 4`, and `n = 3` already takes the terminal branch. So `BACKOFF_CAP_SECONDS`
+could be `3.0` or `300.0` with byte-identical behaviour.
+
+**And the verification row written for it is worse than the parameter.** Din 4's Part C contained *"the cap
+engages — gaps grow, then flatten at one value"* with a failure mode of *"gaps keep growing. No cap."*
+Neither branch is reachable: with two computed delays there is no third gap to flatten, and no run can
+distinguish a present cap from an absent one. The day's report said nothing about the cap, which is the
+accurate outcome of an unfalsifiable check, and it went unnoticed because silence and a pass look the same.
+
+### What this means for Relay
+
+- **The cap is not wrong, it is inert.** Without a cap, growth is unbounded and a job stops silently rather
+  than crossing its bound — that argument stands. The error is presenting a value as a chosen tuning when
+  no reachable input consults it.
+- **For every parameter, name the input that makes it bind, and check that input is reachable.** Here:
+  *the cap binds from attempt 4, and `MAX_ATTEMPTS = 3` means attempt 4 does not exist.* One line, and it
+  would have been available before the code ran.
+- **`P-18` at the parameter layer.** `P-18` is a check whose expected output is produced equally by the
+  mechanism and its absence. This is the degenerate case: a check with **no** output either way. A
+  verification row must be written by asking not only *what wrong implementation also passes this* but
+  *is there any run in which this row produces a result at all.*
+- **Consequence for `D-23`:** the cap must be defended as *reserved for a future `MAX_ATTEMPTS`* — with the
+  crossing point stated (`n = 4`, `raw = 24.0`) — or `MAX_ATTEMPTS` must rise until the cap binds, which is
+  a separate decision with its own day. Recording it as a tuned value is the one option that is not honest.

@@ -1428,13 +1428,27 @@ uska "kaam kar raha hai" wala evidence poora `P-18` shape ka hoga: mechanism ho 
 
 ---
 
-## Din 4 — Bounded retry, backoff, jitter (`____`)
+## Din 4 — Bounded retry, backoff, jitter (`2026-08-27`)
 
-**Original goal (from the plan):** `____`
+> ⚠️ **Ye section reviewer ne likha hai.** Har jagah jahan *"maine samjha"* likha hai, wo **session ne
+> establish kiya** hai, mera apna wording nahi. **Isko apne shabdon me edit karna hai.** Jo measurements
+> maine khud nahi chalayi wo `[R]` / `[MEASURED-R]` se marked hain.
 
-**Goal met?** `____` — yes / no / partial, aur partial pe kaunsa hissa.
+**Original goal (from the plan):** retry ko ek *policy* banao — kitni baar, kitni der baad, aur kahan rukti
+hai. Do written decisions (`attempts` kahan increment hota hai, *"abhi nahi"* kahan store hota hai), ek
+verbatim backoff formula, ek verbatim jitter formula, ek measured inter-attempt gap list ek hi clock me, ek
+measured jitter spread kai jobs par, ek bounded-out row jo stuck row se distinguishable ho, aur retry
+writer ka `rowcount` ek reaper ke khilaaf jo pehle pahunch gaya.
 
-**Anything else learned?** `____` — goal-met se alag field.
+**Goal met?** **`partial`** — aur partial ka hissa saaf hai. **Code shipped aur code sahi hai.** Dono
+decisions liye gaye, dono formulas likhe gaye, bound hold karta hai, guard reject karta hai. Jo *nahi* hua:
+**jitter ka evidence** aur **cap ka evidence** dono absent hain, aur dono ko present bataya gaya. Aur Part B
+ka **ek bhi jawab likha nahi gaya** — 5/6 ke baad.
+
+**Anything else learned?** Aaj ka sabse bada seekh measurement ke *resolution* ka hai, mechanism ka nahi.
+Teen alag-alag claims (gap list, jitter spread, cap) ek hi wajah se galat hue: **observation quantum
+(`2.0 s` poll) us quantity se mota hai jo measure ki ja rahi thi.** `P-22` ka yahi general form tha aur
+BRIEF ne isko naam se warn kiya tha; wo trap ek naye darwaze se aaya aur teen jagah lag gaya.
 
 ---
 
@@ -1444,82 +1458,450 @@ uska "kaam kar raha hai" wala evidence poora `P-18` shape ka hoga: mechanism ho 
 
 | Kya | Value | Label |
 |---|---|---|
-| worker processes / `idle in transaction` / connections | `____` | `____` |
-| `attempts` ka current state (kitni rows non-zero) | `____` | `____` |
+| worker / reaper processes at close | `python.exe` count = **`0`** — **char din me pehli clean close** | `[MEASURED-R]` |
+| `idle in transaction` | `0` | `[MEASURED-R]` |
+| `datname='relay'` connections at review time | `2` — aur ek unme se **`2026-08-25 09:55:12.346835+00`** se connected hai (`application_name = psql`, state `idle`, `~2 din`) | `[MEASURED-R]` |
+| `attempts` ka closing state | `0 → 95` · `1 → 1` · `3 → 6` rows (review probes se pehle) | `[MEASURED-R]` |
 
-**Aaj ye likhna hai (plan ka Din 4 obligation):**
+**Aaj ka obligation (plan ka Din 4 list):**
 
 | Kya | Value / text | Label |
 |---|---|---|
-| `attempts` increment point ka faisla (claim pe ya failure pe), **apni cost ke saath** | `____` | — |
-| *"abhi nahi"* store karne ka faisla, apni cost ke saath | `____` | — |
-| Backoff ka formula, **verbatim** | `____` | — |
-| Jitter ka formula, alag se | `____` | — |
-| Jitter kyun — apne shabdon me | `____` | — |
-| Retry ka `status` write compare-and-set guard ke saath? affected-row-count | `____` | `____` |
-| Ek always-failing job ke **measured inter-attempt gaps** (`executed_at` diffs, `Etc/UTC`) | `____` | `____` |
-| Kai jobs ka **jitter spread** | `____` | `____` |
-| Bounded-out job pe final `attempts` | `____` | `____` |
-| Log poora hai — failure lines ka count versus `attempts` (`P-18`) | `____` | `____` |
+| `attempts` increment point | **Option A — claim pe.** `update(Job).where(id, status=='pending').values(attempts=Job.attempts + 1)`, claim ke apne transaction aur row lock ke andar | `[MEASURED-R from source]` |
+| Option A ki likhi hui cost | dispatch ginta hai, failure nahi — handler enter na ho to bhi ginta hai; badle me ek attempt crash me **kabhi kho nahi sakta** | — |
+| *"abhi nahi"* ka storage | **Option A — naya column** `next_attempt_at timestamptz NULL`, migration `9e4822cbf157` | `[MEASURED-R]` |
+| Claim gate | `status='pending' AND (next_attempt_at IS NULL OR next_attempt_at <= now())` — `IS NULL` branch **present hai**, Din 1 ka `NULL` trap avoid hua | `[MEASURED-R]` |
+| Backoff formula, verbatim | `delay(n) = min(BASE * MULT ** (n-1), CAP)` — `BASE=3.0`, `MULT=2.0`, `CAP=15.0`, `MAX_ATTEMPTS=3` | `[MEASURED-R from source]` |
+| Jitter formula, alag se | **Equal jitter** — `actual(n) = delay(n)/2 + random.uniform(0, delay(n)/2)` | `[MEASURED-R from source]` |
+| Retry write ka guard + `rowcount` | `where(Job.id==job_id, Job.status=='running')`; reaper-first ordering me **`rowcount = 0`** | `[MEASURED-R]` |
+| Measured inter-attempt gaps (job 98, `Etc/UTC`) | `4.071787 s`, `6.098167 s` | `[MEASURED-R]` |
+| Jitter spread (jobs 99–102) | round 1 `0.151462 s`, round 2 `2.114609 s`, round 3 `2.132550 s` — **aur ye teen numbers spread nahi hain, dekho M3** | `[MEASURED-R]` |
+| Bounded-out row | `id=98 status=failed attempts=3`, `job_executions` count `3` par ruka jabki worker zinda tha | `[MEASURED-R]` |
+| Log completeness (`P-18`) | **check nahi ho saka** — worker stdout capture chauthe din bhi delete ho gayi, repo me koi capture file nahi bachi | `[MEASURED-R]` |
 
-**M1 — `____`**
+---
+
+**M1 — job 98 ka poora lifecycle, ek hi clock me `[MEASURED-R]`**
 
 ```
-____
+ job_id |  worker_id   |          executed_at          |       gap
+--------+--------------+-------------------------------+-----------------
+     98 | worker-29604 | 2026-08-27 09:28:00.046357+00 |
+     98 | worker-29604 | 2026-08-27 09:28:04.118144+00 | 00:00:04.071787
+     98 | worker-29604 | 2026-08-27 09:28:10.216311+00 | 00:00:06.098167
+
+ id | type | status | attempts
+ 98 | boom | failed |        3
 ```
 
-**Closing reconciliation** — opening counts **Din 3 ke log se**:
+Gaps badh rahe hain, teen dispatch me ruk gaye, `attempts = 3`. **Ye hissa saaf hai.** Par gaps *kis cheez
+ke* number hain — wo M2 hai.
 
-| Line | Value |
-|---|---|
-| opening counts (Din 3 log) | `____` |
-| `+` aaj enqueue hui `boom` jobs (ids naam se) | `____` |
-| `=` closing counts, aur `psql` ka actual | `____` |
-| Match? | `____` |
-| `job_executions` delta — har attempt ek row | `____` |
+---
 
-Match na kare to finding (E5): `____`
+**M2 — gaps poll grid ke multiples hain, configured delay ke nahi `[MEASURED-R]`**
 
-**Cleanup:** worker stdout capture delete hua? `____` — output pehle upar copy hua? `____` · `boom` jobs ke
-ids (rows delete nahi hoti): `____`
+Worker ka period `poll_interval + pass_duration ≈ 2.03 s` (Din 2/3 me `2.013–2.020 s` measure hua tha).
+Aaj ke gaps usko do aur teen se guna karte hain:
 
-**`DECISIONS.md` me aaj kuch nahi.** `D-23` Din 6 pe likhi jaati hai, aaj ke measured delays ke saath.
+```
+gap 1 = 4.071787 s  ≈ 2 × 2.036
+gap 2 = 6.098167 s  ≈ 3 × 2.033
+```
+
+Aur formula kya *maangta* tha:
+
+```
+attempt n=1: delay=3.0  ->  actual ∈ [1.50, 3.00]
+attempt n=2: delay=6.0  ->  actual ∈ [3.00, 6.00]
+```
+
+Poll grid se pichhe ki taraf solve karo (dispatch ke turant baad mark hota hai, `handle_boom` instantly
+raise karta hai):
+
+```
+attempt 1 ka actual delay ∈ (2.01, 3.00]   -- kyunki t+2.03 wala poll MISS hua, t+4.07 wala HIT
+attempt 2 ka actual delay ∈ (4.07, 6.00]   -- kyunki t+4.07 wala MISS, t+6.10 wala HIT
+```
+
+**Yaani gap list growth confirm karti hai, delay measure nahi karti.** Har gap ek `2.03 s` chaudi window
+batata hai jisme asli delay pada tha. Ek implementation jo `2.02 s` aur `4.08 s` wait karti — yaani
+configured value se `33 %` kam — **bilkul yahi do gaps** deti. Ye `P-18` ka shape hai naye quantity par,
+aur `P-22` ka general form: number arithmetically perfect hai aur wo *kis cheez ka* number hai wo alag
+sawaal hai.
+
+**Aur jo evidence isko separate kar sakta tha wo destroy ho gaya, do baar:**
+- worker `Scheduling retry in {actual_delay:.2f}s` print karta hai — wo capture **delete** ho gayi.
+- `next_attempt_at` mark ke through **overwrite/clear** hota hai (success aur terminal dono par `None`), to
+  row terminal hone ke baad intended delay database me bacha hi nahi. Aaj `98`–`102` sab par
+  `next_attempt_at IS NULL` hai `[MEASURED-R]`.
+
+Do independent instruments the aur dono ek hi din me gum ho gaye.
+
+---
+
+**M3 — jitter spread spread nahi hai, wo poll ticks ki ginti hai `[MEASURED-R]`**
+
+Ye aaj ka sabse important output hai. Sirf spread ka number dekhne se lagta hai jitter kaam kar gaya
+(`2.115 s`, `2.133 s`). Round ke **andar consecutive steps** dekhne se ulta dikhta hai:
+
+```
+ round | job |     off_in_round | step_from_prev
+-------+-----+------------------+----------------
+     1 |  99 |         0.000000 |  (first)
+     1 | 100 |         0.047110 | 0.047110
+     1 | 101 |         0.082139 | 0.035029
+     1 | 102 |         0.151462 | 0.069323      <- 4 jobs, 151 ms window
+     2 | 101 |         0.000000 |  (first)
+     2 |  99 |         2.046103 | 2.046103      <- EK POLL PERIOD
+     2 | 100 |         2.081002 | 0.034899
+     2 | 102 |         2.114609 | 0.033607      <- 3 jobs, 68 ms window
+     3 | 101 |         0.000000 |  (first)
+     3 | 102 |         0.042248 | 0.042248
+     3 |  99 |         0.076086 | 0.033838      <- 3 jobs, 76 ms window
+     3 | 100 |         2.132550 | 2.056464      <- EK POLL PERIOD
+```
+
+`worker_id` sab rows par **`worker-35924`** — ek hi worker, to yahan koi second variable nahi hai
+`[MEASURED-R]`.
+
+**Structure padho, width nahi.** Round 2 aur 3 me sirf **do** distinct instants hain, aur unke beech ka
+faasla `2.046 s` / `2.056 s` hai — ek poll period, exactly. Un instants ke *andar* jobs `33–69 ms` par
+hain, jo worker ke serial claim loop ka time hai (`limit(1)`, ek claim per pass, success par sleep nahi —
+to worker saari claimable rows back-to-back drain karta hai).
+
+**To convoy toota nahi. Convoy dobara ban gaya, aur pehle se tighter.** Round 1 me 4 jobs `151 ms` me
+thi; round 2 me 3 jobs `68 ms` me, round 3 me 3 jobs `76 ms` me. `P-14` retry path ke andar wapas aa gaya.
+
+**Mechanism, aur ye arithmetic pehle likhi ja sakti thi:**
+
+```
+attempt 1 ka jitter range width = delay/2 = 1.50 s
+observation quantum             = 2.00 s
+1.50 < 2.00  ->  random draw ke लगभग saare values EK HI tick par round-up ho jaate hain
+```
+
+Equal jitter ki range **quantum se patli** hai, to randomness observation se pehle hi collapse ho jaati
+hai. Round 3 me range `3.00 s` thi (`delay(2)/2`), quantum se badi — aur wahan **do** ticks mile. Yaani
+ticks ki ginti range/quantum ratio follow karti hai, jo confirm karta hai ki dikh raha "spread" scheduling
+grid hai, policy nahi.
+
+---
+
+**M4 — `BASE = 3.0` quantum clear nahi karta, kyunki jitter usse aadha kar deta hai `[MEASURED-R]`**
+
+```
+POLL=2.0 BASE=3.0 MULT=2.0 CAP=15.0 MAX=3
+  attempt n=1: raw=  3.0  delay= 3.0  actual ∈ [1.50, 3.00]  width=1.50  cap inert   reachable
+  attempt n=2: raw=  6.0  delay= 6.0  actual ∈ [3.00, 6.00]  width=3.00  cap inert   reachable
+  attempt n=3: raw= 12.0  delay=12.0  actual ∈ [6.00, 12.00]           cap inert   NEVER computed
+  attempt n=4: raw= 24.0  delay=15.0  actual ∈ [7.50, 15.00]           CAP BINDS   NEVER computed
+```
+
+`BASE = 3.0` isliye chuna gaya tha ki `2.0 s` quantum clear ho. Par equal jitter ke baad attempt 1 ka
+**floor `1.50 s`** hai — quantum ke **neeche**. Range `[1.50, 3.00]` ka jo hissa `2.0` se neeche hai wo
+poll interval me chhup jaata hai: `(2.00 − 1.50) / 1.50 = 33 %` draws masked.
+
+**Quantum check jitter ke *floor* ke against chalna chahiye tha, `base` ke against nahi.** Clear karne ke
+liye `base/2 > poll`, yaani **`base > 4.0`**. Order of operations ki galti hai — `base` pehle chuna gaya,
+jitter baad me layer hua, aur justification dobara check nahi hui.
+
+---
+
+**M5 — `CAP` reachable hi nahi hai `[MEASURED-R]`**
+
+`MAX_ATTEMPTS = 3` par sirf `n=1` aur `n=2` delay compute karte hain (`3.0`, `6.0`). `n=3` terminal branch
+me jaata hai, to uska `12.0` kabhi compute nahi hota. Cap pehli baar `n=4` par bind karta hai
+(`raw=24.0 > 15.0`).
+
+**Yaani `BACKOFF_CAP_SECONDS = 15.0` ek aisa parameter hai jiski value kisi bhi code path ko affect nahi
+kar sakti.** `CAP` ko `3.0` ya `300.0` karo — behaviour identical. Aur Part C ki *"the cap engages"* row
+na pass ho sakti hai na fail — wo `P-18` ka parameter-level version hai. Cap **galat nahi** hai (bina cap
+growth unbounded hoti); wo abhi **inert** hai, aur report me usko chune hue parameter ki tarah likha gaya
+jaise wo kuch kar raha ho.
+
+---
+
+**M6 — Step 7 ka guard sahi hai, aur uska doosra half likha nahi gaya `[MEASURED-R]`**
+
+Reviewer probe, seeded row (`type='boom'`, `status='running'`, `attempts=1`, `claimed_at = now() − 45 s`):
+
+```
+  seeded job 104: status=running attempts=1 next_attempt_at=None
+  [reaper-35376] id=104 pre_status=running matched=1 post_status=pending
+  after reaper: status=pending attempts=1 claimed_at=None next_attempt_at=None
+  worker would have scheduled retry in 2.853s
+  RETRY MARK rowcount = 0
+  after rejected mark: status=pending attempts=1 next_attempt_at=None
+  db_now=2026-08-27 11:11:29.366976+00  CLAIM GATE SAYS CLAIMABLE NOW = True
+```
+
+`rowcount = 0` reproduce ho gaya — guard sahi hai, aur `attempts` ek failure ke liye do baar nahi bada.
+**Par report yahin ruk gayi, aur asli baat next line me hai:** mark reject hone se `next_attempt_at`
+**likha hi nahi gaya**, to row `pending` hai `next_attempt_at IS NULL` ke saath, aur claim gate
+`claimable = True` bolta hai **usi instant**. Jo `2.853 s` worker ne compute kiye the wo discard ho gaye.
+
+**Guard ne stale write reject ki aur uske saath us write ka *payload* bhi reject ho gaya.** Do writes ek
+statement me the — transition aur policy — aur guard transition-level hai. Bound bacha (increment claim par
+hai, Option A), backoff gaya. → **`P-25`**
+
+---
+
+**M7 — reclaim backoff ko construction se bypass karta hai `[MEASURED-R]`**
+
+Reviewer probe, job 105, worker ke apne statements se:
+
+```
+  [seeded running]     status=running attempts=1 claimed_at=11:17:53.856474+00 next_attempt_at=None
+  retry mark rowcount=1
+  [after retry mark]   status=pending attempts=1 claimed_at=11:17:53.856474+00
+                       next_attempt_at=11:18:23.895751+00  claimable=False
+  -> retry-waiting row claimed_at CLEAR NAHI karta
+
+  claim rowcount=1
+  [after claim]        status=running attempts=2 claimed_at=11:17:53.956011+00
+                       next_attempt_at=11:17:52.941574+00
+  -> claim next_attempt_at CLEAR NAHI karta (past value running row par bacha rehta hai)
+
+  [reaper-51860] id=105 pre_status=running matched=1 post_status=pending
+  [after reclaim]      status=pending attempts=2 claimed_at=None
+                       next_attempt_at=11:17:52.941574+00  claimable=True
+```
+
+Teen chhote facts, ek consequence:
+1. retry mark `claimed_at` clear nahi karta → ek retry-waiting `pending` row par `claimed_at` non-NULL
+   hai. Reaper ko `status='running'` chahiye, to wo match nahi karta — **aaj safe hai**. Par `claimed_at`
+   ka teesra meaning ban gaya (`P-19` par ek aur value).
+2. claim `next_attempt_at` clear nahi karta → `running` row apna purana past `next_attempt_at` carry
+   karti hai.
+3. reaper bhi `next_attempt_at` clear nahi karta → reclaim ke baad row `pending` hai past
+   `next_attempt_at` ke saath → **`claimable = True`, turant**.
+
+**To reaper ka reclaim hamesha bina backoff re-dispatch karta hai.** Ye arguably *thik* hai (reclaim ko
+fast hona chahiye), par likha nahi gaya tha, aur iska interaction Option A ke saath sharp hai: **lease
+flapping retry budget kharch karti hai, backoff ke bina.** `MAX_ATTEMPTS` dispatches bound karta hai, to
+ek slow-but-healthy job jo teen baar reclaim hui wo apna poora budget khatam kar chuki hai — bina ek baar
+fail hone ke. Job 95 ka shape exactly yahi hai.
+
+---
+
+**M8 — jo traps KEY ne naam se bataye the, wo avoid hue `[MEASURED-R from source]`**
+
+Ek line, aur ye earned hai:
+- increment **column expression** hai (`values(attempts=Job.attempts + 1)`), Python read-modify-write nahi
+  → lost update nahi ho sakta.
+- bound `current_attempts < MAX_ATTEMPTS` hai, `== MAX_ATTEMPTS` nahi → koi double-increment bound ko
+  skip nahi kar sakta.
+- claim gate me `next_attempt_at IS NULL` branch hai → 96 purani rows unclaimable nahi hui.
+- migration `9e4822cbf157` ka `upgrade()` body **non-empty** hai — Din 1 ki khaali revision dobara nahi hui.
+
+Chaar named traps, chaaron avoid. Ye code review ka clean hissa hai.
+
+---
+
+**Rendered SQL, verify kiya `[MEASURED-R]`:**
+
+```sql
+-- retry mark
+UPDATE jobs SET status=%(status)s, next_attempt_at=(now() + interval '4.5 seconds')
+ WHERE jobs.id = %(id_1)s AND jobs.status = %(status_1)s
+
+-- claim gate
+SELECT jobs.id FROM jobs
+ WHERE jobs.status = %(status_1)s
+   AND (jobs.next_attempt_at IS NULL OR jobs.next_attempt_at <= now())
+ ORDER BY jobs.created_at, jobs.id LIMIT %(param_1)s FOR UPDATE SKIP LOCKED
+```
+
+Do notes: `now()` = `transaction_timestamp()`, to delay mark-transaction ke **start** se naapa jaata hai,
+failure instant se nahi (yahan farq milliseconds ka hai). Aur `text(f"interval '{actual_delay} seconds'")`
+ek f-string hai jo SQL me jaati hai — aaj `actual_delay` `random.uniform` ka float hai to risk nahi, par
+habit ke taur par ye bound parameter hona chahiye (`func.make_interval(secs=...)` ya
+`cast(:d, Interval)`).
+
+---
+
+**Closing reconciliation** — opening counts **Din 3 ke log se** (post-probe line):
+
+| Line | Value | Label |
+|---|---|---|
+| opening (Din 3 close) | `86 succeeded / 9 failed / 1 pending / 0 running` = `96` · `job_executions 70` · `max(id) 97` · seq `97` | `[MEASURED-R]` |
+| `+` job **97** (reviewer probe, `sleep`) | `succeeded`, `attempts = 1` · `job_executions` **`+1`** | `[MEASURED-R]` |
+| `+` job **98** (Step 3/4, `boom`) | `failed`, `attempts = 3` · `job_executions` **`+3`** | `[MEASURED-R]` |
+| `+` jobs **99, 100, 101, 102** (Step 5, `boom`) | chaaron `failed`, `attempts = 3` · `job_executions` **`+12`** | `[MEASURED-R]` |
+| `+` job **103** (Step 7 seed, `boom`) | `failed`, `attempts = 3` · `job_executions` **`+2`** | `[MEASURED-R]` |
+| `=` expected close | `87 succeeded / 15 failed / 0 pending` = `102` · `job_executions 88` · `max(id) 103` · seq `103` | — |
+| `psql` actual (review, probes se pehle) | **exactly wahi** — `87 / 15 / 0`, `102`, `88`, `103`, `103` | `[MEASURED-R]` |
+| Match? | **haan, poori tarah.** `attempts` distribution bhi: `0 → 95`, `1 → 1`, `3 → 6` rows | `[MEASURED-R]` |
+| Job **75** | `failed`, hila nahi | `[MEASURED-R]` |
+| Jobs **44, 63, 65, 95** | chaaron `attempts = 0`, kuch retroactively nahi likha gaya | `[MEASURED-R]` |
+
+**`job_executions` ke `count(*) > 1` ke ab chaar causes hain, ids ke saath:**
+
+| Cause | Job ids | Kya proved hua |
+|---|---|---|
+| same-worker re-dispatch | `44` | ek hi `worker_id`, `6m54s` apart, Week 1 |
+| reclaim re-execution | `63`, `65` | do workers, ek **hafta** apart, Din 2 |
+| overlapping duplicate | `95` | do workers, **`14.783 s`** proved overlap, Din 3 |
+| **bounded retry (aaj)** | `98`, `99`, `100`, `101`, `102`, `103` | ek worker, teen dispatch, `attempts = 3` |
+
+`duplicate` shabd sirf `95` par lagta hai — wahi ek jagah overlap prove hua hai.
+
+**Review probes ne do rows add ki (`P-05`, rows delete nahi hoti):**
+
+| id | State | Kya hai |
+|---|---|---|
+| `104` | `pending`, `boom`, `attempts = 1`, `next_attempt_at NULL` | M6 ka Step-7 differential |
+| `105` | `pending`, `boom`, `attempts = 2`, `next_attempt_at` **past me** | M7 ka reclaim/backoff probe |
+
+Dono ne kabhi handler dispatch nahi kiya, to **`job_executions` `88` par unchanged hai**. Review ke baad
+actual: `102 + 2 = 104` rows, `max(id) 105`, seq `105`, `2 pending`, `attempts` distribution
+`0 | 95 · 1 | 2 · 2 | 1 · 3 | 6` `[MEASURED-R]`.
+
+**Din 5 ke liye ye landmine hai aur ye Din 5 ki BRIEF me naam se likha hai.** Dono `boom` hain aur dono
+`97` ki tarah **sabse purani claimable rows** hain, to Din 5 ka pehla worker unhe pehle claim karega.
+`105` `attempts = 2` par hai — uska **agla hi dispatch** bound cross karega, jo `dead_letter` ke liye ek
+ready-made fixture hai.
+
+**Cleanup:**
+
+| Kya | Status | Label |
+|---|---|---|
+| worker / reaper processes | **`0`** — char din me pehli baar sach me clean | `[MEASURED-R]` |
+| `idle in transaction` | `0` | `[MEASURED-R]` |
+| worker stdout capture | **delete ho gayi, aur `actual_delay` lines upar copy nahi hui** — chautha din. Aaj ye specifically mehnga pada: M2 aur M3 ke liye wahi ek instrument tha | `[MEASURED-R]` |
+| review probe scripts | `labs/probe_din4.py`, `labs/probe_din4b.py` — dono **delete** kar diye | `[MEASURED-R]` |
+| probe rows | `104`, `105` — rakhi gayi hain, upar naam se likhi hain | `[MEASURED-R]` |
+| leftover DB connection | ek `psql` backend **`2026-08-25 09:55:12+00`** se connected (`~2 din`), state `idle` — **koi lock nahi, koi snapshot nahi**, blast radius zero. **Terminate nahi kiya** (tumhara session hai) | `[MEASURED-R]` |
+
+**`DECISIONS.md` me aaj kuch nahi.** `D-23` Din 6 pe likhi jaati hai — aur ab uske paas do aisi cheezein
+hain jo kal nahi thi: M4 (`base` versus jitter floor) aur M5 (cap inert).
 
 ---
 
 ### 💡 What I Understood
 
-`____`
+> **Ye session ne establish kiya, mera wording nahi. Isko apne shabdon me likhna hai.**
+
+**1. Retry policy teen numbers hai aur teen numbers kaafi nahi — chautha number observer ka hai.** `base`,
+`multiplier`, `cap`, `max_attempts` sab chun liye, formula sahi likh diya, code sahi chala. Phir bhi teen
+claims galat nikle, aur teeno ek hi wajah se: **jo cheez naapi ja rahi thi wo naapne wale instrument se
+patli thi.** `2.0 s` poll interval ek observation quantum hai. Uske neeche kuch bhi — `1.5 s` ka jitter
+floor, `1.5 s` chaudi jitter range — mechanism me maujood hai aur measurement me **nahi**. Policy design
+karte waqt observer ka resolution policy ka hissa hai, uske baad ka detail nahi.
+
+**2. Spread ka number spread nahi hota jab tak structure na dekho.** `2.115 s` dekh ke "jitter kaam kar
+gaya" likhna aasan tha. `step_from_prev` column dekhne se wahi data ulta bolta hai: do clusters, `2.046 s`
+apart (ek poll period), aur clusters ke andar `33–69 ms`. `max − min` ek **width** hai; jo chahiye tha wo
+**distribution** thi. Do numbers ka farq ek distribution nahi banata.
+
+**3. Ek guard transition-level hota hai, par write me policy bhi baithi hoti hai.** M6 ka `rowcount = 0`
+sahi tha aur ussi statement me `next_attempt_at` bhi tha. Guard ne poori statement reject ki, to backoff
+bhi reject ho gaya — aur `attempts` pehle hi claim par bad chuka tha. Yaani reject hone par system ne
+`attempts` rakh liya aur delay phenk diya. **Ek statement me do concerns (state transition aur retry
+policy) daalne ka matlab hai ki unka failure mode share ho jaata hai.**
+
+**4. Do decisions independently chuni gayi thi aur wo independent nahi hain.** Increment claim par
+(Option A) + not-before ek alag column me (Option A), aur reaper dono ko touch nahi karta. Nateeja: reclaim
+`attempts` badhata hai (agle claim ke through) aur backoff bypass karta hai (past `next_attempt_at`). To
+**`MAX_ATTEMPTS` ab lease flapping ka bhi budget hai**, sirf failure ka nahi. Ye kisi ek decision ki cost
+nahi hai — ye dono ka **interaction** hai, aur cost table per-decision likhi gayi thi.
+
+**5. Ek inert parameter aur ek galat parameter same nahi hain, par report me same dikhte hain.** `CAP =
+15.0` ko chune hue value ki tarah likha gaya. Wo `MAX_ATTEMPTS = 3` par kisi code path tak pahunch hi nahi
+sakta. **Ek parameter jo reachable nahi hai, wo documentation hai, configuration nahi** — aur uske liye
+likha gaya verification check na pass ho sakta hai na fail.
 
 ---
 
-### 🧠 Self-Check (honest — `____` / `____` self-answered)
+### 🧠 Self-Check (honest — **`0 / 6` self-answered on the record**, aur ye `5/6` ke baad hai)
 
-`____`
+**Part B ka ek bhi jawab submit nahi hua.** Na answers, na file path. Din 3 ka problem *provenance* tha
+(jawab prose me day-close par aaye, mtime nahi tha, `E8`) — aaj **record par kuch bhi nahi hai**, to score
+`0/6` hai. Ye galat jawaab ka score nahi hai; ye data ke absence ka score hai, bilkul Din 1 aur Din 2 ki
+tarah.
+
+Aur ye specifically aaj mehnga pada, kyunki **chaar me se teen sawaal exactly wo galtiyan pakadte the jo
+hui:**
+
+| Q | Kya poochha | Aaj kya hua |
+|---|---|---|
+| Q4 | *jitter ka evidence ek job se kyu nahi milta? kitni jobs, kis waqt fail?* | 4 jobs, saath fail — setup **sahi** tha. Padhna galat hua |
+| Q5 | *pehla backoff poll interval se chhota hai to measured delay kis cheez ka number hai?* | `base = 3.0 > 2.0` chuna gaya, to sawaal "answered" maan liya gaya. Jitter ne floor `1.50 s` kar diya — **sawaal ka jawab "haan, aaj bhi poll interval ka" tha**, aur wo likha hi nahi gaya (M4) |
+| Q2 | *reaper ka `running → pending` aur retry ka — farq kahan dikhta hai?* | Report ne kaha guard ne distinguish kar diya. KEY ne pehle hi likha tha ki Option A ke saath **dono transitions `attempts` hilate hain, to farq mit jaata hai.** Ye M7 me measure hua |
+
+Jawab likhna hi wo variable tha jisne Din 3 ko `0/6 → 5/6` kiya. Aaj wo variable wapas hat gaya.
 
 **Corrections:**
 
-| # | I said | Actual | The transferable lesson |
+| # | I said | Actual `[MEASURED-R]` | The transferable lesson |
 |---|---|---|---|
-| `__` | `____` | `____` | `____` |
+| 1 | *"Equal Jitter completely broke the contention convoy and desynchronized retry dispatches"* | Convoy toota nahi, **tighter ban gaya**. Round 2 = 2 clusters `2.046 s` (ek poll period) apart, cluster ke andar `68 ms`. Round 3 = `76 ms` cluster + ek job `+2.13 s`. Round 1 ka cluster `151 ms` tha, yaani retry rounds **round 1 se zyada synchronised** the. Ek hi `worker-35924` | Jab tak observation quantum jitter range se chhota na ho, jitter observation se **pehle** collapse ho jaata hai. `range/quantum` ratio pehle likho, phir experiment chalao |
+| 2 | *"`BASE_BACKOFF_SECONDS = 3.0` clears 2.0 s poll quantum to avoid `P-22` masking"* | Equal jitter floor ko aadha karta hai: attempt 1 ka actual ∈ `[1.50, 3.00]`. Floor `1.50 < 2.00`, yaani range ka `33 %` masked. Clear karne ke liye `base > 4.0` | Quantum check **final delay** ke floor par chalta hai, `base` par nahi. Jitter ke *baad* justification dobara verify karo — order of operations |
+| 3 | *"Gap 1 (4.07 s) cleared the 2.0 s polling quantum"* · *"true monotone gaps rather than a flat 2.0 s quantum"* | Sach hai par claim se kamzor. `4.071787 ≈ 2 × 2.036`, `6.098167 ≈ 3 × 2.033` — dono **grid multiples** hain. Configured delay sirf ek `2.03 s` chaudi window me known hai: attempt 1 ∈ `(2.01, 3.00]`, attempt 2 ∈ `(4.07, 6.00]`. `33 %` chhoti implementation **yahi** gaps deti | Gap `> quantum` hona sirf ye batata hai ki delay quantum se bada tha. Wo delay ko **naapta nahi**. `>` aur `=` ka farq |
+| 4 | *"Stale retry write was rejected"* (Step 7 = clean pass) | `rowcount = 0` reproduce hua ✅. Par uske baad `next_attempt_at` `NULL` reh gaya aur claim gate ne **`claimable = True`** bola usi instant. Jo `2.853 s` compute hue the discard ho gaye. Guard ne `attempts` bachaya, backoff kho diya | Guard ka pass hona *sirf* transition ke baare me hai. Reject hui statement me jo aur values thi wo bhi reject hui — post-state padho, `rowcount` par mat ruko |
+| 5 | *"`BACKOFF_CAP_SECONDS = 15.0`"* ek chuna hua parameter ke taur par | `MAX_ATTEMPTS = 3` par sirf `n=1,2` delay compute karte hain (`3.0`, `6.0`). Cap pehli baar `n=4` (`raw 24.0`) par bind karta hai. **Kisi bhi code path se unreachable** — `3.0` ya `300.0`, behaviour identical. Part C ki *"cap engages"* row na pass na fail ho sakti hai | Parameter likhne ke baad poochho: *kaunsa input isko bind karayega, aur kya wo input reachable hai?* Unreachable parameter documentation hai, configuration nahi (`P-18` parameter par) |
+| 6 | *"Active python processes: 0 · idle in transaction: 0"* → close clean | Dono sach hain aur reproduce hue ✅ **char din me pehli clean process close.** Par ek `psql` backend `2026-08-25 09:55:12+00` se connected hai (`~2 din`, `idle`). Dono checks pass hue jabki wo baitha tha — is baar **harmless** (koi lock nahi), aur wahi point hai | `processes = 0` + `idle in transaction = 0` **saari** connections cover nahi karte. Teesra check: `select backend_start from pg_stat_activity where datname='relay'` |
+| 7 | Part B — report me kuch nahi | `0/6` on the record. `5/6` ke baad. Aur Q4/Q5/Q2 teeno exactly aaj ki teen galtiyan pakadte the | Jawab likhna hi wo ek variable hai jisne score badla. Wo variable process hai, effort nahi |
+
+**Jo sach me kaam kiya, ek line:** M8 ke chaaron named traps avoid hue — column-expression increment,
+`<` bound, `IS NULL` branch, aur non-empty migration body. Wo chaar KEY me naam se the aur chaaron par
+code sahi hai. Din 4 ka **code** clean hai; Din 4 ki **reading of its own output** nahi.
 
 ---
 
 ### 🚧 Unresolved / Follow-ups
 
-**New, from today:** `____`
+**New, from today:**
 
-**Deliberately open (owner ke saath):** `____`
+| Item | Kahan |
+|---|---|
+| Observation quantum jitter range se mota hai, to jitter measurement se pehle collapse ho jaata hai; aur usko separate karne wale dono instruments (stdout `actual_delay`, `next_attempt_at`) ek hi din me destroy hue | **`P-24`** |
+| Transition-level guard ne stale write reject ki aur uske saath us write ki policy (`next_attempt_at`) bhi — `attempts` bad chuka, backoff gaya | **`P-25`** |
+| `BACKOFF_CAP_SECONDS` kisi code path se unreachable hai, aur uske liye likha gaya check na pass na fail ho sakta hai | **`P-26`** |
+| Decision 1 (A) + Decision 2 (A) + reaper ka `attempts`/`next_attempt_at` na chhoona = reclaim `attempts` kharch karta hai aur backoff bypass karta hai. `MAX_ATTEMPTS` ab lease flapping ka budget bhi hai | `P-25` me note, par asli jagah **`D-23`** ka `Cost` (Din 6) |
+| `claimed_at` ka teesra meaning: retry-waiting `pending` row par non-NULL rehta hai | `P-19` par ek aur value |
 
-**Slipped (aur specifically kya chahiye):** `____`
+**Deliberately open (owner ke saath):**
+- `dead_letter` naam — **Din 5**. Aaj bounded-out `failed` par land karta hai, aur wo Week 1 ke genuinely-failed rows jaisa padhta hai (`98 failed/3` versus `75 failed/0`). Split jaan-boojh ka hai.
+- Fencing token — **Din 5**. M6 ne sirf reaper-first ordering test kiya. Worker-B-re-claims-first ordering guard ko satisfy karegi (`rowcount = 1`) aur untested hai (`P-21`).
+- `base`/`multiplier`/`cap`/`max_attempts` ki defence — **`D-23`, Din 6**. Ab M4 aur M5 uske inputs hain.
+- `echo=True` — Week 4.
 
-**Carried forward, unchanged:** `____`
+**Slipped (aur specifically kya chahiye):**
+- **Part B, chauthi baar shape badal ke.** Chahiye: `docs/daily/week_02/DIN_05_ANSWERS.md`, step chalne se **pehle** likha, aur day close par uska **path**.
+- **Capture cleanup, chautha din.** Chahiye: `Select-String -Path <capture> -Pattern 'Scheduling retry in'` ka output log me, **file delete karne se pehle**.
+- **Paanch written Week 2 answers — aathvi consecutive slip.**
+- `DDIA_CH8_LINKS.md` lines **10–13** (reviewer-written, Din 3) apne shabdon me confirm karna. Aaj lines **14–16** khud likhi gayi — **pehli baar, aur ye earned hai** — par 14 aur 15 me wahi overclaim hai jo corrections 1 aur 3 me hai, to reviewer note append kar diya gaya hai.
+- Din 3 ke paanch job ids (`89, 90, 92, 93, 94`) ka role abhi bhi likha nahi hai.
+
+**Carried forward, unchanged:**
+- `P-23` — `super_slow` kisi commit me nahi hai. Aaj `worker.py` touch hua par `payload`-driven duration ka decision **likha nahi gaya**, na haan na na. Wo abhi bhi drift hai.
+- `P-21` — heartbeat re-claimed lease reject nahi kar sakta, untested.
+- `2026-08-24` ka koi record nahi.
+- Week 1 Din 7 ka log entry nahi hai.
 
 ---
 
 ### ❓ Question / Next Thought
 
-`____`
+**Aaj ke teeno galat claims ek hi shape ke the, aur wo shape kal Din 5 par dobara aa raha hai.** `dead_letter`
+ek `ADD CONSTRAINT ... NOT VALID` + `VALIDATE CONSTRAINT` hai, aur uska poora argument ek **duration** ke
+baare me hai: `ACCESS EXCLUSIVE` lock kitni der hold hua. Aaj `2.0 s` quantum ne `1.5 s` ki cheez chhupa
+di. Kal ki cheez `104` rows par **milliseconds** me hogi.
+
+To kal ka pehla sawaal ye hai: **`NOT VALID` ka fayda naapne ke liye tumhara observer kitna tez hona
+chahiye, aur wo observer kya hai?** Agar answer *"maine migration se pehle aur baad me `select now()`
+chalaya"* hai, to tum `2.0 s` wali galti milliseconds par dohra rahe ho — kyunki us window me lock
+*hold* hua ya *turant* release ho gaya, dono ek hi elapsed time dete hain. Aur `104` rows par `VALIDATE`
+itna tez hoga ki *dono* migrations "instant" dikhengi. **Ek check jo dono ko alag kar sake wo lock ko
+`pg_locks` me se ek doosre connection se dekhega jabki migration chal rahi hai** — yaani observer ko
+migration ke *andar* ghusna padega, uske dono taraf khade hone se kaam nahi chalega.
+
+Aur uska corollary jo aaj se seedha aata hai: **agar ek parameter ya ek fayda measurement me nahi dikhta,
+to do possibilities hain — wo maujood nahi hai, ya observer mota hai.** Aaj teen baar pehli assume karke
+doosri sach thi (M2, M3), aur ek baar parameter genuinely maujood nahi tha (M5, cap). Un dono ko alag
+karna hi kal ka kaam hai.
 
 ---
 
