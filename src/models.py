@@ -66,7 +66,7 @@ class Job(Base):
 
     __table_args__ = (
         CheckConstraint(
-            "status IN ('pending', 'running', 'succeeded', 'failed')",
+            "status IN ('pending', 'running', 'succeeded', 'failed', 'dead_letter')",
             name="jobs_status_check",
         ),
     )

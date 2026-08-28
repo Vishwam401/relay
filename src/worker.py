@@ -11,11 +11,14 @@ from src.models import Job, JobExecution
 
 POLL_INTERVAL_SECONDS = 2.0
 HEARTBEAT_INTERVAL_SECONDS = 10.0
+
 MAX_ATTEMPTS = 3
-BASE_BACKOFF_SECONDS = 3.0
+BASE_BACKOFF_SECONDS = 5.0
 BACKOFF_MULTIPLIER = 2.0
 BACKOFF_CAP_SECONDS = 15.0
+
 WORKER_ID = f"worker-{os.getpid()}"
+
 SHUTDOWN_REQUESTED = False
 
 
@@ -184,9 +187,9 @@ async def run_worker() -> None:
                         f"[{WORKER_ID}] Job {job_id} failed attempt {current_attempts}/{MAX_ATTEMPTS}: {exc}. Scheduling retry in {actual_delay:.2f}s (new_status='pending')."
                     )
                 else:
-                    new_status = "failed"
+                    new_status = "dead_letter"
                     print(
-                        f"[{WORKER_ID}] Job {job_id} reached max_attempts ({MAX_ATTEMPTS}): {exc}. Marking terminal 'failed'."
+                        f"[{WORKER_ID}] Job {job_id} reached max_attempts ({MAX_ATTEMPTS}): {exc}. Marking terminal 'dead_letter'."
                     )
             finally:
                 stop_event.set()
