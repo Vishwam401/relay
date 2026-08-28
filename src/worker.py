@@ -56,7 +56,8 @@ async def send_heartbeat(job_id: int, stop_event: asyncio.Event) -> None:
 
 
 async def handle_sleep(payload: dict) -> None:
-    await asyncio.sleep(2.0)
+    duration = float(payload.get("seconds", 2.0))
+    await asyncio.sleep(duration)
 
 
 async def handle_boom(payload: dict) -> None:
@@ -64,8 +65,9 @@ async def handle_boom(payload: dict) -> None:
 
 
 async def handle_slow(payload: dict) -> None:
-    print(f"[{WORKER_ID}] [SLOW HANDLER] Work started...")
-    await asyncio.sleep(8.0)
+    duration = float(payload.get("seconds", 8.0))
+    print(f"[{WORKER_ID}] [SLOW HANDLER] Work started ({duration}s)...")
+    await asyncio.sleep(duration)
     print(f"[{WORKER_ID}] [SLOW HANDLER] Work completed.")
 
 
