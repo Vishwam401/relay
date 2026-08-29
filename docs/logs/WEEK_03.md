@@ -782,12 +782,22 @@ saath jo usko **specifically** chahiye. Do me se ek — dono nahi, koi nahi bhi 
 | Build | Side-effecting handler, duration `payload` se | `____` | `____` | `____` |
 | Build | `UNIQUE` side effect ki identity pe | `____` | `____` | `____` |
 | Build | Conflict-safe insert, `rowcount` padha hua | `____` | `____` | `____` |
-| Build | Galat version (`SELECT`-phir-`INSERT`) **chalaya hua** | `____` | `____` | `____` |
+| Build | Dedup row ka **matlab** likha hua + uska khula hole | `____` | `____` | `____` |
+| Build | Galat version (`SELECT`-phir-`INSERT`) **chalaya hua**, **constraint-free fixture** pe | `____` | `____` | `____` |
+| Build | Constraint **wapas lagi hui** (agar downgrade route liya) | `____` | `____` | `____` |
 | Build | Crash point `payload` se, crash **asli** | `____` | `____` | `____` |
+| Build | **Post-mark crash** ka mechanism (worker-level hook / bahar se `kill`) | `____` | `____` | `____` |
+| Build | Har crash case: apna job, reaper **band**, pre-reaper snapshot, phir reaper | `____` | `____` | `____` |
 | Build | `idempotency_key` + `UNIQUE` | `____` | `____` | `____` |
 | Build | `POST /jobs` replay behaviour, **ek** enforcement point | `____` | `____` | `____` |
-| Build | Property test, aur uska isolation ka faisla | `____` | `____` | `____` |
+| Build | **Wahi key + alag payload** ka behaviour (fingerprint compare) | `____` | `____` | `____` |
+| Build | Duplicate `POST` ka path **abort-safe** (`rollback()` / `ON CONFLICT ... RETURNING`) | `____` | `____` | `____` |
+| Build | Property test **Layer A** — deterministic model, genuinely shrinkable | `____` | `____` | `____` |
+| Build | Property test **Layer B** — asli witnesses, **separate test DB** pe | `____` | `____` | `____` |
+| Build | Property ka scope durable effect fact pe (ya `completed_at` ka owner) | `____` | `____` | `____` |
 | Build | Property test **red ho sakti hai** — verify kiya hua | `____` | `____` | `____` |
+| Build | **Guarantee ka wording** — local effect tak limited, external `[NO EVIDENCE]` | `____` | `____` | `____` |
+| Build | Roadmap ka outbox **build** item `deferred (Week 4)` mark kiya hua | `____` | `____` | `____` |
 | Measured | Din 1 ka side effect count (+ do `worker_id` + prove hua overlap) | `____` | `____` | `____` |
 | Measured | Din 2 ka side effect count, Din 1 ke against | `____` | `____` | `____` |
 | Measured | `ON CONFLICT DO NOTHING` ka `rowcount` | `____` | `____` | `____` |
