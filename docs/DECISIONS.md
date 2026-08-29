@@ -714,6 +714,100 @@ HINT:   New enum values must be committed before they can be used.
 
 *(Test artefacts were rolled back / dropped; `t_enumtest` and `tt_enumtest` do not exist.)*
 
+**Amendment — Week 2 Din 5/Din 6: `dead_letter` landed, Cost 4's pattern held, and the condition it was
+missing now has a name.** Nothing above is edited. Cost 4 was written on Week 1 Din 1 as a prediction about a
+migration that had not been written yet; this records how much of it was right.
+
+**1. Which option ran, and whether `NOT VALID`'s benefit was actually obtained.** Two migrations, not one
+`[MEASURED-R]`:
+
+| Revision | Statement | `convalidated` after |
+|---|---|---|
+| `15a05eeb0f79` | `DROP CONSTRAINT` + `ADD CONSTRAINT jobs_status_check CHECK (... five values) NOT VALID` | `false` |
+| `682e01d87be9` | `ALTER TABLE jobs VALIDATE CONSTRAINT jobs_status_check` | `true` |
+
+Re-read on Din 6, independently: `jobs_status_check`, `convalidated = t`,
+`CHECK ((status = ANY (ARRAY['pending','running','succeeded','failed','dead_letter'])))`, `alembic_version =
+682e01d87be9` `[MEASURED]`. **The entire deliverable of the split is that one boolean changing twice** — there
+is no other observable difference at `104` rows.
+
+**And the missing condition in Cost 4 is this: `NOT VALID`'s benefit is a property of transaction
+*boundaries*, not of the keyword.** Alembic wraps `upgrade()` in a single transaction, and
+`ADD CONSTRAINT ... NOT VALID` holds `AccessExclusiveLock` for the rest of **its** transaction
+`[MEASURED-R, from a rolled-back probe]`. So a single-migration version would have written `NOT VALID`,
+held `ACCESS EXCLUSIVE` until commit, and run the validation scan underneath it — the keyword present, the
+benefit absent. Cost 4 above prescribes the two statements and never says they must land in **two
+transactions**. That omission is the kind `P-04` is about: the recipe was right and the condition that makes
+it work was unstated.
+
+**2. The lock queue, measured for the first time — and split into two halves that must not be merged.** Week 1
+Din 3 attempted this and failed (nothing was queueing, so the lock was granted instantly); Din 5 ran three
+sessions with the observer reading from **inside** the wait `[MEASURED-R]`:
+
+```
+HOLDER   pid=3038  ACCESS SHARE held inside an open transaction (a plain SELECT)
+WAITER   pid=3039  requesting ACCESS EXCLUSIVE on jobs
+pg_stat_activity:  3038 state=idle in transaction  wait=Client/ClientRead
+                   3039 state=active              wait=Lock/relation
+pg_locks on jobs:  3038 AccessShareLock      granted=True
+                   3039 AccessExclusiveLock  granted=False
+WAITER   LockNotAvailableError: canceling statement due to lock timeout   (lock_timeout = 9s)
+```
+
+**Measured:** the queue forms, and **a plain `SELECT` in an open transaction blocks the whole DDL** —
+`wait_event_type = Lock`, a named lock mode with `granted = false` behind one with `granted = true`. That
+closes an item `LEARNING_LOG.md` had carried since Week 1 Din 1 as inference only.
+
+**Declared substitution, because this is where the expensive lie would be:** the waiter was
+`LOCK TABLE jobs IN ACCESS EXCLUSIVE MODE`, **not the migration**. The lock *mode* is identical, so the
+conflict and queueing mechanism is identical. What it does **not** measure is **how long the real
+`ADD CONSTRAINT` holds that lock** — and the hold duration is the entire Option A versus Option B number.
+That remains **`[INFERRED]`**. It is microseconds at `104` rows and honestly waits for a large table.
+
+**3. `downgrade`'s truth, both halves, and one of them reports success while doing nothing.**
+`[MEASURED-R]`
+
+- **`downgrade -1` from head is a no-op that succeeds.** `682e01d87be9`'s `downgrade()` is `pass`, and that is
+  honest — Postgres has no statement to un-validate a constraint. Result: `alembic_version` moves to
+  `15a05eeb0f79`, `convalidated` stays `t`, the definition stays five-valued, and **nothing in the output
+  shows the divergence.** Version and schema can now disagree with a clean exit code. Not fixable; the habit
+  is the fix — after any `downgrade`, read `alembic_version` **and** `pg_constraint`, never the exit code.
+- **The next `downgrade -1` fails, and that is the finding.** With a `dead_letter` row present the four-value
+  constraint cannot come back:
+  `psycopg.errors.CheckViolation: check constraint "jobs_status_check" of relation "jobs" is violated by some
+  row` — **and the error does not name the offending rows** (`104`, `105`; they come from a separate
+  `select id from jobs where status = 'dead_letter'`). DDL rolled back fully. Classification: **reversible in
+  shape, conditional on data.** Also: head came back via an **`upgrade`**, not a rollback, because the first
+  no-op downgrade had already committed.
+
+**4. Cost 1 now has more places to apply — and the count that was going around is wrong, so here it is from
+source.** Cost 1 says an illegal transition is stopped only where a guard is written. Read from
+`src/worker.py` and `src/reaper.py` on Din 6 `[MEASURED from source]`:
+
+| Writer | Writes | Guard |
+|---|---|---|
+| claim (`worker.py`) | `status='running'`, `claimed_at`, `attempts+1` | `WHERE id = :id AND status = 'pending'` + the `next_attempt_at` gate, `rowcount` read |
+| reaper reclaim (`reaper.py`) | `status='pending'`, `claimed_at=NULL` | `WHERE id = :id AND status = 'running' AND <the full expiry predicate re-asserted>`, `rowcount` read |
+| the mark (`worker.py`) | `status` ∈ {`succeeded`, `pending`, `dead_letter`, `failed`}, `next_attempt_at` | `WHERE id = :id AND status = 'running'`, `rowcount` read |
+| heartbeat (`worker.py`) | **`claimed_at` only — not `status`** | `WHERE id = :id AND status = 'running'`, `rowcount` read |
+| shutdown | **nothing** | — (Option A, and the absence is a decision — see `D-22`) |
+
+So the widely-repeated *"`status` writers went one → five this week"* is imprecise. **Three code sites write
+`status`** (claim, reaper, one mark statement), and the mark emits **four different values** from one guarded
+statement — which is why it feels like five. The heartbeat is a fourth guarded writer to the same row but its
+`SET` list is `claimed_at`; it is guarded **on** `status` without writing it. The audit surface Cost 1
+describes is therefore **three statements**, all three currently guarded and all three reading `rowcount`.
+Getting this count right matters in both directions: overstating it invents work, understating it misses a
+writer.
+
+**5. The transition graph Cost 1 governs is no longer a line, and that is the real change.** `running` is now
+reachable from `pending` **after** having been `running` before (reaper reclaim), so a compare-and-set on the
+value `'running'` can match a *different generation* of the same row. Measured consequence on Din 3: worker
+A's mark returned `rowcount = 1` on work worker **B** was executing `[MEASURED-R]`. The guard did nothing
+wrong — it asked *"is the value `running`"*, never *"whose"*. Compare-and-set on a recurring value cannot
+distinguish generations; the structural answer is a fencing token, and it is **not built**. This is the
+sharpest limit on `D-06`'s chosen mechanism and it did not exist while the graph was acyclic.
+
 ---
 
 ## D-07: `attempts integer NOT NULL DEFAULT 0` is added now, in Week 1, although retries arrive in Week 2
@@ -871,6 +965,68 @@ Secondary benefit: the default cannot be forgotten, so manual `psql` inserts dur
 
 **Revisit when:** Week 2 adds retries (Cost 2 forces an attempt/claim identifier), or Week 4 defines job retention (forces the FK/cascade question), or the duplicate query gets slow enough to measure (then index `job_id`, with `EXPLAIN ANALYZE`, alongside `P-03`).
 
+**Amendment — Week 2 Din 6: Cost 2 has expired, it expired earlier than this entry predicted, and the part
+that grew is not the part that was predicted.** Nothing above is edited.
+
+**Cost 2 said** `count(*) > 1` stops being a duplicate test *"the moment Week 2's retry legitimately produces
+several rows for one job"*, and named the fix as another column. **What actually happened:** it expired on
+**Din 2/Din 3** — the reaper's `running → pending`, i.e. the *second `status` writer* — **two days before
+retry landed on Din 4.** So the prediction was right about the mechanism (an `UPDATE`-driven re-dispatch makes
+a second row legitimate) and wrong about the schedule, and the schedule is what mattered: the identifier was
+scheduled *with* the retry logic and was already needed *before* the reaper.
+
+**What the query means now: it is a question, not an answer.** `count(*) > 1` says only *"this job was
+dispatched to a handler more than once"*. Turning that into a verdict needs three more values read
+alongside — the rows' `worker_id`, their `executed_at`, and the job's `attempts` — and even then the word
+**duplicate** only applies where **overlap was proved**. That is **one** job id in the entire table.
+
+**Five distinct causes, by id `[MEASURED-R unless noted]`:**
+
+| # | Cause | Job ids | What separates it from the others |
+|---|---|---|---|
+| 1 | same-worker re-dispatch | `44` | one `worker_id` (`worker-12940`), `6m54s` apart, `2026-08-17` — Week 1, and never noticed at the time |
+| 2 | reclaim re-execution after a crash | `63`, `65` | two different `worker_id`, **a week** apart, Din 2's reclaim finally executing. Sequential, so not a duplicate |
+| 3 | **overlapping execution — the only true duplicate** | `95` | two `worker_id`, **`14.783 s` of proved overlap** in one clock, Din 3. Worker A's mark returned `rowcount = 1` on B's work |
+| 4 | bounded retry after a handler exception | `98`–`103`, and `104` | one `worker_id`, sequential dispatches, terminal at `attempts = 3`. Legitimate by design (`D-23`) |
+| 5 | bound-crossed re-dispatch | `108` | reclaim of a bound-crossed row → one **extra** dispatch, `attempts = 4`, `P-27`. The handler ran before the bound was evaluated |
+
+**The database distinguishes none of these five.** `attempts` was `0` on `44`, `63`, `65` and `95` at the time
+`[MEASURED-R]`, and it is still `0` on all four — nothing was written retroactively. Causes 1–3 are therefore
+invisible in `jobs` entirely, and causes 4–5 are only visible because `attempts` happens to be non-zero for an
+unrelated reason.
+
+**Cost 1 got a second confirmation and a third shape.** The entry already recorded that the instrument counts
+**dispatch**, not claims and not completions. Din 3 made the missing end expensive rather than theoretical:
+`executed_at` is the dispatch instant committed *before* the handler body, so proving job 95's overlap needed a
+**second** endpoint that only stdout had — and those captures were deleted at day close. **The week's headline
+number cannot be recomputed from the database.** `[MEASURED-R]` Priced in `D-22` Cost 10, with the verdict
+there: a nullable `completion` column is deferred to **Week 3**, because it adds another writer to the row the
+reaper is already racing.
+
+**The identifier question, and it gets the same answer in both places it is asked.** `LEARNING_LOG.md` carries
+it as a `D-22`-shaped question (*does the identifier need to exist before the reaper rather than with the retry
+logic?*). **Answer: yes, and it is already late** — see `D-22` Cost 11 for the same deferral, so the two
+entries do not drift. **Not added on Din 6**, deliberately: Din 6 has no `src/` or schema change, and the
+identifier's shape (attempt number vs claim id vs the dedup key itself) should be decided **with** Week 3's
+idempotency key rather than invented a week earlier and then reconciled. **Owner: Week 3.** What it must be
+able to answer, written down now so the decision is not re-derived: *given two rows for one `job_id`, were they
+the same claim or different ones, and did their intervals overlap?*
+
+**One layer up, and it is `failed = 15`'s problem too.** A summary count stops meaning one thing the moment a
+status value's contract changes mid-week — `dead_letter` arrived on Din 5 and **did not rename history**. Read
+independently on Din 6 `[MEASURED]`, the fifteen `failed` rows are **three** shapes, not the two the plan
+expected:
+
+| Shape | ids | Meaning |
+|---|---|---|
+| unknown `type`, `attempts = 0` | `8`, `23`, `58` (`does_not_exist`), `75` (`send_receipt`) | no handler was registered. **Today's code still produces this**, and that branch never consults `attempts` |
+| Week 1 handler failure, `attempts = 0` | `5`, `20` (`sleep`), `6`, `21`, `57` (`boom`) | the handler raised, before retry logic existed. No counter had been incremented yet |
+| bounded out before `dead_letter` existed, `attempts = 3` | `98`–`103` (all `boom`) | **today's code would call these `dead_letter`** |
+
+Renaming them would falsify the log, so they stay. The point of writing it here is that `failed` is a count
+over three contracts, and the next reader of *"failed 15"* would otherwise take it for *"jobs that failed
+once."*
+
 ---
 
 ## What was deliberately NOT decided today
@@ -881,19 +1037,420 @@ Recording these so that "not yet decided" is never mistaken for "overlooked":
 |---|---|---|
 | Index for the claim query | Week 4 | To be **measured** with `EXPLAIN ANALYZE`. Guessing today would freeze an assumption into the schema. Tracked as `P-03` |
 | `idempotency_key` + unique constraint | Week 3 | Its scope (what forms the key, what TTL applies) becomes clear only after Din 4's duplicate-POST experiment |
-| `lease_expires_at`, heartbeat columns | Week 2 | Din 5 must first produce a stuck job and observe it. Designing the fix before seeing the failure means copying a solution rather than understanding it |
-| `max_attempts`, `next_run_at`, `last_error` | Week 2 | Semantics depend on the backoff strategy, which is not yet designed. See D-07 |
-| `updated_at` | Week 2 | No consumer exists yet; the reaper will justify it |
-| `dead_letter` status value | Week 2 | Add via the `NOT VALID` + `VALIDATE CONSTRAINT` pattern in D-06's Cost section |
+| ~~`lease_expires_at`, heartbeat columns~~ | ~~Week 2~~ | ✅ **Resolved Week 2 Din 1/Din 3, and the answer was *neither column*.** The lease is an **event** (`claimed_at`), so the duration lives in the reaper's predicate instead of on the row; the heartbeat re-writes `claimed_at` rather than adding a column. `D-22` prices both, including the cost this shape imposed: the duration had to be chosen on Din 2, ahead of evidence |
+| ~~`max_attempts`, `next_run_at`, `last_error`~~ | ~~Week 2~~ | 🟡 **Partly resolved Week 2 Din 4.** `next_run_at` landed as **`next_attempt_at timestamptz NULL`** (migration `9e4822cbf157`) — `D-23`. `max_attempts` was **not** added as a column; it is `MAX_ATTEMPTS = 3` in Python, which is why `dead_letter` had to become self-describing (`D-23` Cost 8). **`last_error` is still unadded** — `dead_letter` is a verdict with no diagnosis. Owner: Week 4 |
+| `updated_at` | Week 2 → **Week 4** | **Still not added, and the reaper did not justify it after all** — it keys on `claimed_at`, not on a generic mtime. Reconsider when an operator-facing view needs *"when did this row last move?"* across all five status values |
+| ~~`dead_letter` status value~~ | ~~Week 2~~ | ✅ **Resolved Week 2 Din 5**, via exactly the two-step pattern in `D-06` Cost 4 — `15a05eeb0f79` (`NOT VALID`, `convalidated = false`) then `682e01d87be9` (`VALIDATE`, `convalidated = true`). See `D-06`'s amendment for the condition Cost 4 was missing, the first measurement of the lock queue, and `downgrade`'s two different outcomes |
 | ~~Payload size limit and where to enforce it~~ | ~~Din 2~~ | ✅ **Resolved Din 2** — 266,240-byte body bound in HTTP middleware, `413`. See `D-05` Cost #4 amendment. Residual gap: `P-08` |
 | ~~`type` validation placement (API vs worker)~~ | ~~Din 2–3~~ | ✅ **Resolved Din 3** — API bounds shape; the real invariant (*a handler is registered*) is now checked by the worker's registry at claim time. Measured: unregistered type → claimed once, `failed` once, no hot loop. `D-04`'s position unchanged; its priced cost is the deploy-ordering hazard in the Din 3 amendment |
 | Shutdown observation latency vs poll interval | Week 2 | `P-10`. The loop sleeps the interval in one `await`, so the shutdown flag is seen up to a full interval late. Fix is slicing the sleep or waiting on an `asyncio.Event`; safe at 2 s inside Docker's 10 s grace, so deferred with the rest of shutdown hardening |
 | ~~`ORDER BY (created_at, id)` tiebreak on the claim query~~ | ~~Din 4, before seeding~~ | ✅ **Resolved Din 4, Step 0** — claim query now orders by `(created_at, id)`. It was load-bearing: the ten seeded jobs did share one `created_at`, and the reconstruction in the Din 4 log (`M4`) is only possible because job order was deterministic |
 | FK `job_executions.job_id → jobs(id)`, and an index on `job_id` | Week 4 (retention), or when the duplicate query gets slow | `D-21`. FK's three branches are all unattractive until a retention policy exists: plain FK blocks the delete, `CASCADE` deletes the audit trail with its subject, `SET NULL` orphans by design. Index deferred for `P-03`'s reason — measure, do not guess |
-| An attempt number / claim id on `job_executions` | Week 2, with retries | `P-11`. `count(*) > 1` stops meaning "duplicate" the moment a retry legitimately writes a second row |
-| A claim timestamp on `jobs` (`claimed_at` / `lease_expires_at`) | Week 2 | Din 4 made the gap concrete: a stuck `running` row carries no answer to *"how long has this been running?"* — `created_at` is enqueue time, not claim time. Do not add it before Din 5 has looked at a real stuck job |
-| `signal.SIGBREAK` registration in the worker | Week 2 | Only `SIGINT` is live on Windows today; `SIGTERM` is registered and correct for Docker but undeliverable natively. Decides whether `Ctrl+Break` is graceful or fatal |
+| An attempt number / claim id on `job_executions` | ~~Week 2, with retries~~ → **Week 3, with the dedup key** | 🔴 **Still not added, and it is now overdue rather than deferred.** `P-11` expired on Week 2 **Din 3** — the reaper, not retry — so this slipped past the week it was scheduled in. Five causes of `count(*) > 1` now exist and the database separates none of them. Full verdict and reasoning in `D-21`'s amendment; the same deferral with the same owner is in `D-22` Cost 11 |
+| ~~A claim timestamp on `jobs` (`claimed_at` / `lease_expires_at`)~~ | ~~Week 2~~ | ✅ **Resolved Week 2 Din 1** — `claimed_at timestamptz NULL`, migration `75a845575d2e`, written in the claim `UPDATE`. `NULL` was left un-backfilled deliberately (a backfilled value would be fiction for jobs 41/63/65 and `downgrade` cannot un-invent it), which is why the reaper's predicate carries a permanent `IS NULL` branch. `D-22`, `P-19` |
+| ~~`signal.SIGBREAK` registration in the worker~~ | ~~Week 2~~ | ✅ **Resolved Week 1 Din 5 / confirmed Week 2** — `SIGBREAK` is registered where the platform has it (`hasattr(signal, "SIGBREAK")`) in both `worker.py` and `reaper.py`; delivered, handler ran, exit `0`, no stuck job `[R]`. A real `Ctrl+C` keypress is still untimed, but every line after the flag is set is identical |
 | DB-level bound on `type` length | Week 4 | `D-04` Cost #3's `CHECK (length(type) <= 100)` is still unapplied. Din 2 bounded it at the API layer only, so `psql` inserts bypass it |
 | Stream-level body limit (`Content-Length`-independent) | Week 4 | `P-08`. Record the fix's own overshoot bound (limit + one chunk) when it lands |
 | Response fields `type` / `created_at` on `GET /jobs/{id}` | When a consumer needs them | Measured to be near-free (row-store; same heap page). Excluded only for response-surface reversibility, not cost |
 
+
+---
+
+# The two Week 2 architecture decisions (Din 6)
+
+*(Written on Week 2 Din 6, `2026-08-29`. Numbered `D-22`/`D-23` because `D-09`..`D-20` belong to
+`roadmap/BACKEND_ROADMAP_PART2.md` and `D-01`..`D-08` plus `D-21` are taken. Grepped on the day of
+assignment, not on the day the plan was written — output in `logs/WEEK_02.md`, Din 6.)*
+
+> **Provenance convention, same as `D-01`/`D-02`.** Every `Cost` and `Rejected` line ends in exactly one
+> tag: `[MEASURED]` (measured by the user on this machine, number in `logs/WEEK_02.md`), `[MEASURED-R]`
+> (measured by the reviewer — usable as evidence about the system, **not** as a number the user can defend
+> without re-running it), `[INFERRED]` (reasoned from mechanism or source, not observed), `[NO EVIDENCE]`
+> (judgement, and labelled as such). **An untagged line reads as `[MEASURED]`, which is this file's most
+> expensive default.**
+>
+> **No new decision is taken here.** Every choice below was made on Din 1–5 and is copied with its date.
+> What Din 6 adds is the `Cost` field, which could not be written before the measurements existed.
+>
+> **Nothing in these two entries is written as an elimination.** The lease and the reaper **narrow** the
+> stranded-work window. Contract #2 (*side effects are not duplicated*) is **unprotected** until Week 3.
+
+---
+
+## D-22: lease duration `30 s`, heartbeat interval `10 s`, and no handler timeout — one decision with three numbers, and only one of them is measured
+
+**Problem:** Din 2 shipped the reaper, so Relay now has to answer *"is this worker dead, or slow?"* — and it
+cannot. `P-16` is the row-level form of that: `status = 'running'` is one value covering a worker that is
+executing and a worker that died mid-handler. The only available substitute for observing liveness is a
+**deadline**, and a deadline is a guess with a two-sided cost:
+
+- **Lease shorter than the handler** → the reaper reclaims live work and Relay *manufactures* duplicate
+  execution.
+- **Lease longer than the handler** → stranded work sits in `running` for that much longer before anything
+  looks at it.
+
+This is **one** decision and not two, because of `P-15`: Relay does not bound its handlers. The lease
+therefore has no upper bound to be safely shorter than, and the shutdown path has no budget it can promise
+to fit inside. Any lease number is implicitly also a statement about handler duration.
+
+**Options — where the lease lives:**
+- (a) event column `claimed_at`, with the duration in the reaper's predicate
+- (b) deadline column `lease_expires_at`, written at claim time
+
+**Options — the duration:**
+- (a) pick a number now with headroom over the known handlers
+- (b) derive it from a measured maximum handler duration
+- (c) per-`type` lease, read from a config or lookup table
+
+**Options — keeping a legitimately long handler alive:**
+- (a) no heartbeat; require `lease > slowest handler`
+- (b) heartbeat pushes `claimed_at` forward while the handler runs
+- (c) bound the handler with a timeout, making the lease derivable
+
+**Options — the lease on graceful shutdown:**
+- (A) do nothing; let the in-flight handler finish
+- (B) release the lease (`running → pending`) so the work is re-dispatched immediately
+- (C) extend the lease before exiting
+
+**Chose:** (a) `claimed_at` (Din 1) · duration **`30 s`** (a), chosen Din 2 · heartbeat **`10.0 s`** (b),
+chosen Din 3 · **no handler timeout** — (c) deliberately not taken, `P-15` stays open · shutdown **Option A**
+(Din 5).
+
+**Why the event column.** `claimed_at` records a fact (*this row was claimed at this instant*);
+`lease_expires_at` records a policy (*this row is mine until then*). A fact does not go stale when the policy
+changes, so changing the lease is a change to queries and not to data. The price is structural and it landed
+immediately: the duration is now a term in **every** reader's predicate, which is how a number the plan
+deferred to Din 6 ended up being chosen on Din 2, before any evidence existed.
+
+```sql
+-- deadline column: duration is not in the query
+WHERE lease_expires_at < now()
+-- event column (chosen): duration is in every query that asks the question
+WHERE claimed_at IS NULL OR claimed_at < now() - interval '30 seconds'
+```
+
+**Why the `IS NULL` branch is not optional.** `NULL < now() - interval '30 seconds'` evaluates to `UNKNOWN`,
+which is falsy in a `WHERE` clause, so the expiry term alone silently skips every row whose lease was never
+written. Measured as a differential on Din 1: `claimed_at < now()` returned `0`, and
+`(claimed_at IS NULL OR claimed_at < now())` returned `3` `[MEASURED]`. That branch is also what makes a
+future writer who forgets to set `claimed_at` recoverable rather than permanently stuck — and it is the
+branch that did **all** of Din 2's reclaiming.
+
+**Cost:**
+
+1. **The `30 s` was chosen on Din 2, ahead of measurement, and Din 2's own run did not test it.** All three
+   reclaims (jobs 41, 63, 65) matched the `IS NULL` branch; not one `running` row in the database had a
+   non-null `claimed_at`, so the expiry branch matched **zero** rows and the number was exercised by nothing.
+   `[MEASURED-R]` for the reclaim outcomes, `[INFERRED from the Step 2 pre-reclaim dump]` for which branch
+   fired. The honest provenance sentence is *"chosen on Din 2 ahead of measurement, first measured on Din 3."*
+2. **The lease is shorter than a handler Relay permitted to exist, and that produced the week's duplicate.**
+   Job 95: handler `45.026 s` against a `30 s` lease, two distinct workers, **overlap `14.783 s`** derived
+   with zero clock conversions, and worker A's mark returned `rowcount = 1` on work worker B was still
+   executing. `[MEASURED-R]` This is the entry's central cost and it is not a bug in any guard — all three
+   compare-and-sets were correct at the instant they ran.
+3. **Reclaim latency is bounded by `lease + one reaper period`, not by `lease`.** `1.798192 s` on a seeded
+   row, with the pass `226 ms` before expiry correctly matching nothing and the next pass catching it;
+   independently corroborated at `≤ 207.098 ms` from job 95's expiry-to-re-claim gap. `[MEASURED-R]` Both
+   readings are single-candidate: the reaper's period is `poll + pass duration` and pass duration grows with
+   candidate count, so this number is not a load figure. `[INFERRED]`
+4. **The reaper's whole pass shares one `now()`.** `reap_stuck_jobs()` runs its `SELECT` and every per-row
+   `UPDATE` inside one `session.begin()`, and `now()` is transaction-start time — measured identical across a
+   `1.509786 s` gap while `clock_timestamp()` advanced. `[MEASURED-R]` So rows that expire *during* a pass
+   are not picked up until the next one. The bias is towards **under**-reclaim, which is today's safe
+   direction — by luck, not by design.
+5. **The heartbeat narrows the expiry window and does not close it.** Run 2 (job 96, same shape as job 95)
+   pushed `claimed_at` to `40.295 s` past dispatch across four heartbeats, the lease never expired, and one
+   execution row was written. `[MEASURED-R]` But the mechanism rests entirely on the handler yielding to the
+   event loop: `handle_slow` is `asyncio.sleep`, so it yields; a CPU-bound or synchronously blocking handler
+   sends **no** heartbeat, and Relay does not bound handlers. `P-21`'s statement of this is the one worth
+   keeping: **the heartbeat's coverage is inverse to the severity of the failure a lease exists to catch.**
+6. **The effective margin is `lease − interval − scheduling delay`, not `lease − interval`.** `10.0 s` was
+   chosen as `lease / 3` on Din 3 and nothing about the value was measured; what was measured is what it
+   *achieved* on one job. `[NO EVIDENCE]` for `10 s` being right. Write cost: one extra `UPDATE` per running
+   job per interval, on top of the reaper's own poll. `[INFERRED]`
+7. **The heartbeat's guard rejects a *released* lease and is untested against a *re-claimed* one.** Reviewer
+   probe on job 97: reaper reclaimed the row, the heartbeat `UPDATE` then returned `rowcount = 0` and
+   `claimed_at` stayed `NULL` — a released lease cannot be resurrected. `[MEASURED-R]` The dangerous ordering
+   is the other one: reaper reclaims → worker B claims → **worker A's** heartbeat fires against a row that is
+   `running` again, expected `rowcount = 1`, after which the reaper can never rescue B's work.
+   `[NO EVIDENCE]` — never produced. Same generation blindness as Cost 2's mark: a compare-and-set on a
+   **recurring** value cannot ask *whose* `running` this is. The structural answer is a fencing token and it
+   is not built.
+8. **Shutdown Option A's cost was never paid, so this line is `[INFERRED]` and must stay that way.** Din 5
+   ran the shutdown experiment with `handle_slow`'s default `8.0 s` against the `30 s` lease (jobs 106/107,
+   `payload = {}`), so the lease could not expire: no reclaim, no second claim, no contested mark, and the
+   `10.0 s` heartbeat never fired either — `claimed_at` sits `24.6 ms` / `24.7 ms` after dispatch, against
+   `40.295 s` on Din 3's job 96. `[MEASURED-R]` The claim *"graceful shutdown narrows the stranded-work
+   window and does not close the duplicate one"* is therefore **`[INFERRED]`**: the run happened, its subject
+   did not. What was actually re-confirmed is Week 1 Din 5's result — handler completes, no new claim after
+   the signal, exit clean. `[MEASURED-R]`
+9. **Option A means the shutdown path writes no `status` at all, and that absence is a decision.** A worker
+   exiting mid-handler under a supervisor with a grace period shorter than the handler degrades into the
+   crash path, which is `P-15`, and the row's recovery then depends on Cost 2's window rather than on
+   anything shutdown did. `[INFERRED]`
+10. **Completion evidence is a `print`, not a row, and that turned from a judgement into a blocker.**
+    `job_executions.executed_at` is the **dispatch** instant, committed before the handler body runs, so
+    proving job 95's overlap needed a second endpoint that only stdout had — and those captures were deleted
+    at day close. `[MEASURED-R]` Measured consequence: **the week's headline number cannot be recomputed from
+    the database.** Verdict, taken here rather than carried a fourth time: **deferred to Week 3, with the
+    dedup work**, because the cheap fix (one nullable `completed_at`) adds another writer to the row the
+    reaper is already racing, and Week 3 is where that race gets a fencing/idempotency answer. Owner: Week 3.
+11. **`P-11`'s `D-22`-shaped question — *does an attempt/claim identifier on `job_executions` need to exist
+    before the reaper rather than with the retry logic?* — is answered `yes`, and it is already late.** The
+    instrument became ambiguous on **Din 3**, one week ahead of the retry logic it was scheduled against:
+    `count(*) > 1` was true for four job ids via three structurally different mechanisms while `attempts` was
+    `0` on all four. `[MEASURED-R]` The identifier is still **not** added. Same deferral, same owner, in
+    `D-21`'s amendment: **Week 3**, decided with the idempotency key so the two do not invent competing
+    identities.
+12. **The handler that produced Cost 2 exists in no commit.** `git log --all -S"super_slow"` returns nothing;
+    jobs `93`–`96` carry `type = 'super_slow'` with no handler behind them, and `HEAD`'s registry is
+    `sleep`/`boom`/`slow`. `[MEASURED-R]` `P-23` closed the *mechanism* half on Din 5 — handlers now read
+    `payload.get("seconds", default)`, committed in `399febb` — but **no row in `jobs` carries a `seconds`
+    key**, so only the default branch has ever run. `[MEASURED-R]` Recorded here rather than papered over:
+    **the centrepiece ran on an uncommitted working-tree state and does not re-run as it was.** The
+    replacement is a payload-driven `slow`, which is the `Revisit when` run below.
+
+**Rejected:**
+
+- **(b) `lease_expires_at` deadline column** — keeps the duration out of every predicate, which is genuinely
+  cleaner, and would have prevented the duration from being chosen a week early. Rejected because it stores a
+  policy in a column: changing the lease then leaves in-flight rows carrying the old deadline, so the change
+  needs a data migration or a mixed-policy period. `[INFERRED]` Becomes the right shape the moment the lease
+  is per-`type`, because then the duration genuinely belongs to the row.
+- **(b) derive the duration from a measured maximum handler duration** — there is no such maximum. Relay does
+  not bound handlers, and Din 3 demonstrated a `45 s` handler existing purely because someone wrote one.
+  `[MEASURED-R]` A derived lease requires (c) below to exist first, which is exactly the dependency this
+  entry is recording.
+- **(c) per-`type` lease** — the right answer once `type` has configuration behind it, which `D-04` schedules
+  for Week 4 with the lookup table. Rejected today as scope: it needs a place to put per-type config and a
+  decision about the default for an unknown `type`. `[NO EVIDENCE]`
+- **(c) handler timeout (`asyncio.wait_for`)** — this is the structurally correct fix and it is deliberately
+  not Week 2's. It would bound shutdown, make the lease derivable rather than chosen, and turn `P-15` from an
+  open hazard into a parameter. Its price is a new question with no obvious answer: **what is the status of a
+  timed-out handler?** Retryable (so a slow-but-healthy job burns its budget, `D-23` Cost 4) or terminal (so a
+  legitimately long job is dead-lettered for being slow). That question needs `D-23`'s bound and Week 3's
+  dedup to exist first. `[INFERRED]` `P-15` stays open with an owner.
+- **Shutdown Option B (release the lease on shutdown)** — returns the work immediately instead of waiting for
+  the lease to expire, and it is tempting for exactly that reason. Rejected because it writes `pending` while
+  the handler is **still running**, which converts a *possible* duplicate into a *scheduled* one, and it adds
+  another `status` writer racing the reaper on the same row. `[INFERRED]`
+- **Shutdown Option C (extend the lease before exiting)** — extends a deadline the process is about to stop
+  being able to defend, so it moves stranded work further out with no upper bound and no one renewing it.
+  `[INFERRED]`
+- **A `5 s` lease** — would have made duplicate execution trivially easy to produce, and Din 3 explicitly
+  kept `30 s` untouched so that the day's duplicate count would be evidence **about `30 s`** rather than
+  about a lease chosen to fail. `[MEASURED-R]` — the `45 s` handler was the moved variable instead.
+
+**Revisit when:**
+
+- **The one run that closes Cost 8, and it is cheap:** one `slow` job with `payload {"seconds": 45}`,
+  `SIGBREAK` at `T = 3 s`, worker and reaper both live, worker stdout captured and **copied into the log
+  before deletion**. That single run closes Cost 8, `P-21`'s untested half (Cost 7's dangerous ordering), and
+  `P-25`'s rejection on the terminal write. **Owner: Week 3 Din 1, or a named catch-up slot.** It was
+  deliberately not run on Din 6 — adding execution rows to a chain being closed mixes a measurement day into
+  a writing day.
+- A handler timeout lands → the lease becomes derivable and Cost 1's provenance sentence can be replaced.
+- The reaper ever has more than one candidate per pass under load → Cost 3's latency figure needs re-measuring
+  with `pass duration` as a variable, Week 4 with metrics.
+- A fencing token or generation counter is designed (Week 3) → Cost 7 and Cost 2's `rowcount = 1` both change
+  shape, and `D-06`'s compare-and-set stops being the only transition guard.
+
+---
+
+## D-23: bounded retry — increment on claim, `next_attempt_at` column, `base = 5.0 s` exponential with equal jitter, and the bound is on retry *scheduling*, not on dispatches
+
+**Problem:** Contract #3 says retries are **bounded**, not an infinite loop. Three sub-decisions hide in that
+and separating them into three entries would orphan each one's reason: **where `attempts` is incremented**,
+**where "not before" is stored**, and **what the delay is**. They interact — the increment point decides what
+the bound counts, and the not-before column decides who can bypass the delay.
+
+**Options — increment point:**
+- (a) on **claim**, inside the claim statement's row lock
+- (b) on **failure**, in the mark statement
+
+**Options — storing "not before":**
+- (a) a new column `next_attempt_at timestamptz NULL`
+- (b) derive it from `claimed_at + f(attempts)` — no new column
+- (c) a separate `retry_schedule` table
+
+**Options — the delay:**
+- (a) fixed
+- (b) exponential
+- (c) exponential + jitter (full / equal / decorrelated)
+
+**Chose:** (a) increment on claim · (a) new column `next_attempt_at`, migration `9e4822cbf157` · (c)
+exponential with **equal** jitter. All three on Din 4; `BASE` revised on Din 5.
+
+**The formulas, verbatim, because a paraphrase of a backoff formula is worthless:**
+
+```python
+# src/worker.py
+MAX_ATTEMPTS = 3
+BASE_BACKOFF_SECONDS = 5.0      # was 3.0 on Din 4; changed on Din 5, reason below
+BACKOFF_MULTIPLIER   = 2.0
+BACKOFF_CAP_SECONDS  = 15.0
+
+delay(n)  = min(BASE * MULT ** (n - 1), CAP)          # exponential, capped
+actual(n) = delay(n) / 2 + random.uniform(0, delay(n) / 2)   # equal jitter
+```
+
+The claim gate and the retry mark, as rendered by SQLAlchemy `[MEASURED-R]`:
+
+```sql
+-- claim gate: the IS NULL branch is mandatory, for D-22's three-valued-logic reason
+SELECT jobs.id FROM jobs
+ WHERE jobs.status = 'pending'
+   AND (jobs.next_attempt_at IS NULL OR jobs.next_attempt_at <= now())
+ ORDER BY jobs.created_at, jobs.id LIMIT 1 FOR UPDATE SKIP LOCKED
+
+-- retry mark: one statement, transition and policy together
+UPDATE jobs SET status='pending', next_attempt_at=(now() + interval '4.5 seconds')
+ WHERE jobs.id = %(id_1)s AND jobs.status = %(status_1)s
+```
+
+**Why increment on claim.** `values(attempts=Job.attempts + 1)` is a column expression inside the claim's own
+transaction and row lock, so it is a single atomic statement and no Python read-modify-write can lose an
+update. Its consequence is the point: **an attempt can never be lost to a crash.** A worker `kill -9`'d
+mid-handler has already spent its attempt, so the reaper's reclaim cannot produce an unbounded retry loop —
+which is `P-01`'s hazard expressed at row level.
+
+**Why `BASE` moved from `3.0` to `5.0` on Din 5, and why that is *derived* and not measured.** The worker's
+observation quantum is its poll period, measured at `2.013–2.020 s` `[MEASURED-R]`. Equal jitter **halves the
+floor**, so the quantum check has to run against `delay/2`, not against `base`:
+
+```
+base = 3.0 -> attempt-1 range [1.50, 3.00], floor 1.50 < 2.0 quantum -> (2.00 - 1.50)/1.50 = 33 % of draws masked
+base = 5.0 -> attempt-1 range [2.50, 5.00], floor 2.50 > 2.0 quantum -> 0 % masked
+```
+
+`0 %` masked at `base = 5.0` is **arithmetic**, derivable at a desk, and it is correct. It is **not** a
+re-measurement: Din 5 produced exactly **one** inter-attempt gap (job 104, `6.130075 s`, which solves back
+against the poll grid to a configured delay in `(4.10, 6.13]`), and no multi-job distribution was re-run.
+`[MEASURED-R]` So `P-24`'s arithmetic half is closed by construction and its **convoy** half still rests on
+Din 4's rows.
+
+**`BACKOFF_CAP_SECONDS = 15.0` is inert, and it is written as inert.** At `MAX_ATTEMPTS = 3` only `n = 1` and
+`n = 2` ever compute a delay (`5.0`, `10.0`); `n = 3` takes the terminal branch. The cap first binds at
+`n = 4` (`raw = 24.0`), and attempt 4 does not exist as a *scheduled* retry. So `15.0` could be `3.0` or
+`300.0` with identical behaviour. `[MEASURED-R]` `P-26`. Verdict: **reserved for a future `MAX_ATTEMPTS`,
+crossing point `n = 4`** — not tuned, and not evidence of anything.
+
+**Why jitter, in two lines with two different tags.** Relay's own argument is `[MEASURED]`: equal handler
+durations synchronise workers into a convoy, measured at 4 µs separation across three consecutive rounds
+(`P-14`). The general thundering-herd argument — synchronised retries from many clients re-colliding — is
+read, not derived here, and is `[INFERRED]`. Equal jitter over full jitter because it keeps a **floor**: full
+jitter can schedule a retry almost immediately, which throws away the backoff's purpose on the attempt where
+it matters most.
+
+**The sentence this entry is not allowed to contain.** *"`MAX_ATTEMPTS = 3` bounds `attempts`"* is **false**,
+and the counterexample is a row in the table this document's own week-close chain counts. Job `108` sits at
+`attempts = 4` — `[MEASURED-R]` on Din 5 and re-read independently on Din 6, where the `attempts`
+distribution is `0|95 · 1|3 · 3|8 · 4|1` `[MEASURED]`. It got
+there through committed code: the reaper reclaimed a bound-crossed `running` row, **the claim gate consults
+`status` and `next_attempt_at` and never `attempts`**, the worker printed `attempt=4/3`,
+`record_execution()` committed, `handle_boom` ran, and **then** `dead_letter` was written. The bound is
+evaluated in the failure branch — *after* the handler.
+
+**Decision taken here, and it is a decision rather than phrasing: accept the overdraft.** The honest form is
+**"`MAX_ATTEMPTS` bounds retry *scheduling*; a row that re-enters the queue at the bound costs one more full
+dispatch, handler body included."** The alternative — moving `AND attempts < :max` into the claim gate — makes
+the bound-crossed row **unclaimable** and immediately raises *then who terminalises it?* That is a sweep, a
+new `status` writer with its own guard and `rowcount` check, and it is **not a Week 2 change**. Owner if ever
+taken: Week 3, alongside dedup.
+
+**Cost:**
+
+1. **The bound is not a row-level invariant.** *"`attempts` never exceeds `MAX_ATTEMPTS`"* is false; the true
+   statement is *"the worker stops **scheduling** retries once `attempts >= MAX_ATTEMPTS`, at the next live
+   dispatch."* Measured on job `108`: reclaimed at `attempts = 3`, claimed as `attempt=4/3`, `+1`
+   `job_executions` row, `dead_letter` at `attempts = 4`. `[MEASURED-R]` `P-27`. For `boom` that extra
+   dispatch is harmless; for any handler with a side effect it is **one more side effect after the bound**.
+2. **This is an interaction of three independently defensible choices, not a bug in any one of them.**
+   increment-on-claim (this entry) + a not-before column that no writer except the mark clears (this entry) +
+   terminal-writer-in-the-worker (`D-22`'s neighbourhood, Din 5 Option A). Each option's own `Cost` line was
+   right; their joint behaviour was in none of them. `[MEASURED-R]`
+3. **The reaper's reclaim re-dispatches with no backoff at all, by construction.** The retry mark does not
+   clear `claimed_at`; the claim does not clear `next_attempt_at`; the reaper clears neither. So a reclaimed
+   row is `pending` carrying a **past** `next_attempt_at`, and the claim gate says `claimable = True` at that
+   instant. `[MEASURED-R]` Combined with Cost 1: **`MAX_ATTEMPTS` is a budget for dispatches of any origin,
+   including lease flapping, and the flapping path spends it with zero delay.** A slow-but-healthy job
+   reclaimed three times exhausts its budget without ever failing — job 95's Din 3 shape spends two of three.
+4. **A guard that correctly rejects a stale transition also discards the policy that transition was
+   carrying.** Reviewer probe, job 104: reaper first, then the retry mark → `rowcount = 0`, `attempts` did not
+   move twice (correct), **and** `next_attempt_at` was never written, because transition and policy live in
+   the same statement. The row is `pending` with `next_attempt_at IS NULL` and the claim gate returns
+   `claimable = True` immediately; the `2.853 s` the worker had computed is gone. `[MEASURED-R]` `P-25`.
+5. **Jitter narrower than the observation quantum cannot be measured, and both instruments that could have
+   separated them were destroyed the same day.** Din 4's "spread" of `2.115 s` / `2.133 s` is **two poll
+   ticks**, with jobs clustered `68 ms` and `76 ms` inside a tick — **tighter than the un-jittered round 1's
+   `151 ms`**, i.e. the convoy re-formed inside the retry path. `[MEASURED-R]` `P-24`. The two instruments
+   that would have shown intended delay were the worker's `Scheduling retry in {actual_delay:.2f}s` line
+   (capture deleted) and `next_attempt_at` (cleared by both terminal branches).
+6. **The measured gap list confirms growth and does not measure the delay.** Job 98's gaps `4.071787 s` /
+   `6.098167 s` are `≈ 2 ×` and `≈ 3 ×` the `~2.03 s` poll period. `[MEASURED-R]` An implementation waiting
+   `33 %` less than configured produces the same two numbers. Any future delay claim needs an instrument
+   finer than the poll interval, not more arithmetic.
+7. **`job_executions.count(*) > 1` now has five distinct causes, so it is a question and not an answer.**
+   Full list with ids in `D-21`'s amendment. Retry (`98`–`104`) is cause four and the bound-crossed
+   re-dispatch (`108`) is cause five; both are this entry's. `[MEASURED-R]`
+8. **`dead_letter` is a verdict, not a diagnosis.** The exception is recorded nowhere — not in `jobs`, not in
+   `job_executions`. An operator can tell from `psql` alone that a row bounded out, without knowing
+   `MAX_ATTEMPTS`, which is a real gain over reading `status = 'failed'` **plus** `attempts` against a
+   constant living in Python. What they still cannot tell is **why**. `[MEASURED-R from source]` `last_error`
+   remains unadded and deferred.
+9. **The unknown-`type` branch never consults `attempts`, which is a second route around the bound.** It
+   writes `failed` directly. Inert today only because the four `super_slow` rows (`93`–`96`) are all terminal.
+   `[MEASURED-R from source]`
+10. **The delay interval is built by f-string interpolation into SQL.**
+    `text(f"interval '{actual_delay} seconds'")` is safe today because `actual_delay` is a
+    `random.uniform` float, but the habit is wrong and the fix is one line
+    (`func.make_interval(secs=...)` or a bound parameter). `[MEASURED-R from source]`
+11. **`now()` in the retry mark is transaction-start time**, so the delay is measured from the mark
+    transaction's `BEGIN` and not from the failure instant. Milliseconds here; the same mechanism is
+    load-bearing in `D-22` Cost 4. `[MEASURED-R]`
+12. **One new nullable column, and its meaning overlaps `claimed_at`'s.** `P-19` counts the values
+    `claimed_at` now carries; a retry-waiting `pending` row keeps the last dispatch instant in it, and the
+    reaper misses that row only because its *other* term is `status = 'running'` — safety by conjunction,
+    which is a property of the current predicate rather than of the data. `[MEASURED-R]`
+
+**Rejected:**
+
+- **(b) increment on failure** — reads more natural (*"count the failures"*) and is the wrong shape here: the
+  crash that never reaches the mark statement is **exactly** the case retries exist for, so the counter would
+  not advance in the one situation where an unbounded loop is possible. Increment-on-claim trades honesty
+  about *what happened* (it counts dispatches, including ones whose handler was never entered) for a bound
+  that cannot be escaped by dying. `[INFERRED]` — and Cost 1 is the bill for that trade.
+- **(b) derive not-before from `claimed_at + f(attempts)`** — saves a column and couples the retry schedule to
+  the lease column, which the claim, the reaper and the heartbeat all write. Any change to lease bookkeeping
+  would then silently move every pending retry. `[INFERRED]` Also unreadable in `psql`: *"when is this row
+  next eligible?"* becomes arithmetic over three values instead of one column to select.
+- **(c) separate `retry_schedule` table** — a join on the hottest query in the system for one nullable
+  timestamp, plus a second row to keep consistent with the first across crashes. `[NO EVIDENCE]` Becomes
+  arguable only if a retry needs its own history (per-attempt error, per-attempt scheduled time), which is
+  `job_executions`' job with the identifier `D-21` still owes.
+- **(a) fixed delay** — no reason to prefer it: it neither reduces load under a persistent failure nor breaks
+  synchronisation. `[INFERRED]`
+- **(b) exponential without jitter** — Relay's own `P-14` is the measured counter-argument, and Din 4 then
+  showed the convoy re-forming *inside* the retry path even **with** jitter, because the jitter was narrower
+  than the quantum. `[MEASURED-R]` Removing jitter would make that permanent rather than accidental.
+- **Full jitter (`uniform(0, delay)`)** — removes the floor, so an attempt can be retried almost immediately
+  and the backoff stops backing off on the attempt where it matters most. `[INFERRED]` Decorrelated jitter
+  was not evaluated at all — `[NO EVIDENCE]`.
+- **Moving `AND attempts < :max` into the claim gate** — the clean-looking fix for Cost 1, rejected **today**
+  and not on the merits: it needs a sweep to terminalise the now-unclaimable row, i.e. another `status`
+  writer with its own guard and `rowcount` check, on the day the week's numbers freeze. Owner: Week 3.
+  `[INFERRED]`
+
+**Revisit when:**
+
+- **`MAX_ATTEMPTS` changes** — the cap stops being inert at `n = 4` (`P-26`), and Cost 1's overdraft gets one
+  dispatch more expensive.
+- **The poll interval changes** — the `base/2 > poll` arithmetic must be re-derived, not assumed. It has
+  already been got wrong once in the other direction (`base` chosen against the quantum, jitter layered on
+  afterwards, justification not re-checked).
+- **A handler with a real side effect exists** — Cost 1 stops being a curiosity. That is Week 3's idempotency
+  key, and the overdraft is one of the two reasons it is needed (the other is `D-22` Cost 2).
+- **An attempt/claim identifier lands on `job_executions`** (Week 3, with the dedup key) — Cost 7 becomes an
+  answerable query instead of a five-way question.
+- **A delay needs to be claimed as measured** — then the instrument comes first: `Scheduling retry` lines
+  copied into the log **before** any capture is deleted, or a `scheduled_at` recorded on the evidence row.
