@@ -207,7 +207,7 @@ select executed_at::date, count(*) from job_executions where job_id > 108 group 
 | stdout capture — relevant lines **delete se pehle** log me copy hui? | Yes, copied into log above | `[MEASURED]` |
 | `src/` ka koi temporary change | Clean | `[MEASURED]` |
 | Probe rows **delete nahi** hoti; unke ids | `109, 110` preserved in table | `[MEASURED]` |
-| Commit | Ready for commit | `[INFERRED]` |
+| Commit | `58ef3f3` — `feat(week-3-din-1): implement side-effect store, dynamic handler, and measure duplicate execution count=2` | `[MEASURED-R]` |
 
 ---
 
@@ -259,6 +259,29 @@ Aaj humne side-effects ko observable banaya aur live dekha ki kaise duplicate ex
 
 Din 1 me humne crime commit hote dekh liya (`count = 2`). Din 2 me hum `UNIQUE` constraint lagayenge — toh jab Worker 2 aayega aur `UNIQUE` violation aayegi, worker exception ko kaise handle karega aur `count = 1` kaise enforce hoga?
 
+
+---
+
+### Reviewer close — `2026-08-31`
+
+**Verdict:** **Core experiment: 9/10 · day-close protocol: partial · overall: 8/10** `[INFERRED from the rubric below]`.
+
+| Area | Grade | Evidence |
+|---|---:|---|
+| Problem framing | `1/1` | Four paragraphs exist on disk and distinguish untestable from unprotected `[MEASURED-R]` |
+| Store + migration | `1.5/1.5` | Ledger schema matches DB; current head is `4b0e6dcfdfa1`; no `UNIQUE`, no FK `[MEASURED-R]`. The reported downgrade/upgrade round-trip was not repeated because doing so now would drop the three evidence rows `[INFERRED safety decision]` |
+| Handler + baseline | `1.5/1.5` | `handle_effect` is payload-driven; Job 109 has one dispatch and one effect `[MEASURED-R]` |
+| Collision + damage | `3/3` | Job 110 has two distinct workers in both ledgers, two committed effects, and `attempts = 2` `[MEASURED-R]` |
+| Overlap + mark race | `1/1` | Stored timestamps plus copied stdout support `2.429 s`; mark output records `1` then `0` `[MEASURED-R from DB + preserved log]` |
+| Reconciliation + cleanup | `1/1` | `109` jobs, `97` executions, sequence/max `110`, zero worker processes and zero idle transactions `[MEASURED-R]` |
+| Prediction provenance | `0/0.5` | Log records `1/6` and five pre-run `idk`s, but the ignored/untracked answers file was overwritten with verified answers; its current mtime is `13:57`, after the `11:47` collision. The original prediction text/mtime is no longer independently inspectable `[MEASURED-R]` |
+| Required doc-sync/debt | `0/0.5` | `CURRENT_WEEK.md` still said Din 1 pending; Ch8 lines 10–13 remain reviewer-written; Ch11 lines point at `D-24`/`D-25`, which do not exist yet `[MEASURED-R]` |
+
+**Prediction score:** **`1/6` `[INFERRED from the contemporaneous log, not independently reproducible from the current answers file]`.** Final verified answers are mechanistically strong, but they do not count as predictions. Din 2 rule: keep a frozen **Predictions** section; append **Observed/Correction** below it instead of replacing the original text.
+
+**Timeline correction:** Worker 2 dispatch occurred `42.570842 s` after Worker 1 dispatch (`06:17:41.408830 - 06:16:58.837988`) `[MEASURED-R]`. The reported `T+31.8/T+32.0` is valid only if `T=0` was the later reaper/process clock; it must not be presented as time since Worker 1 claim. The proved overlap remains **`2.429 s`** `[MEASURED-R]`.
+
+**Din 2 migration blocker discovered during review:** `side_effects.job_id = 110` already has two preserved rows `[MEASURED-R]`; therefore a direct `UNIQUE(job_id)` cannot be installed without deleting or rewriting Din 1 evidence `[INFERRED, to be deliberately probed in Din 2]`. The smallest evidence-preserving option is a new nullable logical-effect key with a named `UNIQUE`: legacy rows remain `NULL`, while every new execution supplies the same stable key for the same job `[INFERRED design option; user chooses after writing the cost]`.
 
 ---
 

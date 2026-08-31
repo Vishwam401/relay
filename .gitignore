@@ -52,3 +52,6 @@ design/
 
 # Scratch files & test payloads
 large*.json
+*.jpg
+*.png
+*.jpeg
