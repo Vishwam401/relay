@@ -96,3 +96,30 @@ class JobExecution(Base):
         nullable=False,
         server_default=func.now(),
     )
+
+
+class SideEffect(Base):
+    __tablename__ = "side_effects"
+
+    id: Mapped[int] = mapped_column(
+        BigInteger,
+        primary_key=True,
+        autoincrement=True,
+    )
+
+    job_id: Mapped[int] = mapped_column(
+        BigInteger,
+        nullable=False,
+    )
+
+    worker_id: Mapped[str] = mapped_column(
+        Text,
+        nullable=False,
+    )
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+

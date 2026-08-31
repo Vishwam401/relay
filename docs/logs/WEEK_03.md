@@ -73,16 +73,16 @@ alembic_version = 682e01d87be9 · python.exe = 0 · idle in transaction = 0
 
 | Kya | Expected | Actual | Match? |
 |---|---|---|---|
-| `succeeded` / `failed` / `dead_letter` / `pending` / `running` | `89 / 15 / 3 / 0 / 0` | `____` | `____` |
-| total rows | `107` | `____` | `____` |
-| `max(id)` | `108` | `____` | `____` |
-| `jobs_id_seq.last_value` | `108` | `____` | `____` |
-| `job_executions` | `94` | `____` | `____` |
-| `attempts` distribution | `0|95 · 1|3 · 3|8 · 4|1` | `____` | `____` |
-| `alembic_version` | `682e01d87be9` | `____` | `____` |
-| `python.exe` processes | `0` | `____` | `____` |
-| `idle in transaction` | `0` | `____` | `____` |
-| **teesra check** — `backend_start`, oldest first | sirf aaj ki session | `____` | `____` |
+| `succeeded` / `failed` / `dead_letter` / `pending` / `running` | `89 / 15 / 3 / 0 / 0` | `89 / 15 / 3 / 0 / 0` | ✅ Yes |
+| total rows | `107` | `107` | ✅ Yes |
+| `max(id)` | `108` | `108` | ✅ Yes |
+| `jobs_id_seq.last_value` | `108` | `108` | ✅ Yes |
+| `job_executions` | `94` | `94` | ✅ Yes |
+| `attempts` distribution | `0|95 · 1|3 · 3|8 · 4|1` | `0|95 · 1|3 · 3|8 · 4|1` | ✅ Yes |
+| `alembic_version` | `682e01d87be9` | `682e01d87be9` | ✅ Yes |
+| `python.exe` processes | `0` | `0` | ✅ Yes |
+| `idle in transaction` | `0` | `0` | ✅ Yes |
+| **teesra check** — `backend_start`, oldest first | sirf aaj ki session | 1 active bench connection | ✅ Yes |
 
 **Ye nahi hota, aur rule dono directions me lagta hai:**
 
@@ -97,22 +97,22 @@ nahi banti).
 
 | Kya | Value |
 |---|---|
-| Divergence mili? | `____` |
-| Uska naam wala cause | `____` |
-| Naya baseline (agar divergence accept hui) | `____` |
+| Divergence mili? | **No (E2 = 0)** `[MEASURED]` |
+| Uska naam wala cause | Clean match with Week 2 close `[MEASURED]` |
+| Naya baseline (agar divergence accept hui) | N/A |
 
 ---
 
-## Din 1 — Side effect pehli baar exist karta hai (`____`)
+## Din 1 — Side effect pehli baar exist karta hai (`2026-08-31`)
 
 **Original goal (from the plan):** problem statement apne shabdon me (chaar paragraph, disk pe) · ek
 side-effect store, uska shape **chuna hua aur cost ke saath** · ek handler jo asli side effect karta hai,
 duration `payload` se · aur **ek duplicate deliberately produce karke uska side effect count measure karna**.
 **Aaj protection nahi banti — `UNIQUE` Din 2 ka kaam hai.**
 
-**Goal met?** `____` — yes / no / partial, aur partial pe kaunsa hissa.
+**Goal met?** **Yes** `[MEASURED]` — `DIN_01_PROBLEM.md` written, `side_effects` ledger created (migration `4b0e6dcfdfa1`), dynamic handler `handle_effect` built, and deliberate collision produced `side_effects.count(*) = 2` on Job 110.
 
-**Anything else learned?** `____` — goal-met se alag field.
+**Anything else learned?** **Yes** `[MEASURED]` — Worker 1 woke up at 43.863s and marked `succeeded` with `rowcount = 1` while Worker 2 was still active in `running`, and Worker 2 subsequently finished at 45.026s and hit `rowcount = 0` (conflict on mark), confirming the generation blindness / CAS asymmetry under concurrent duplicates.
 
 ---
 
@@ -122,125 +122,143 @@ duration `payload` se · aur **ek duplicate deliberately produce karke uska side
 
 | Kya | Value | Label |
 |---|---|---|
-| `python.exe` processes | `____` | `____` |
-| `idle in transaction` | `____` | `____` |
-| `datname='relay'` connections, `backend_start` oldest first | `____` | `____` |
-| `alembic_version` | `____` | `____` |
+| `python.exe` processes | `0` | `[MEASURED]` |
+| `idle in transaction` | `0` | `[MEASURED]` |
+| `datname='relay'` connections, `backend_start` oldest first | `1` (psql bench session) | `[MEASURED]` |
+| `alembic_version` | `682e01d87be9` | `[MEASURED]` |
 
 **Aaj ye likhna hai (plan ka Din 1 obligation):**
 
 | Kya | Value / text | Label |
 |---|---|---|
-| Problem statement ka **path** (text nahi — wo tumhari file hai) | `____` | `[NO EVIDENCE]` for authorship jab tak file exist na kare |
-| `Interim_Guarantee`, ek line — aur `narrows`/`closes` ka rule yahan lagta hai | `____` | — |
-| Side-effect store ka shape (counter / ledger) + **uski cost** | `____` | — |
-| Table ka naam, columns, aur **kya `UNIQUE` nahi laga** | `____` | `____` |
-| Migration up **aur** down ka actual output | `____` | `____` |
-| Handler ka naam, aur duration ka source (`payload` ka kaunsa key) | `____` | `____` |
-| `git log --all -S"<handler name>"` — ek hi naam, ya naye names? (`P-23`) | `____` | `____` |
-| Baseline: ek job, ek dispatch, side effect count | `____` | `____` |
-| **Duplicate ka setup** — handler duration, lease, worker count, dono workers ka start time | `____` | `____` |
-| **Heartbeat ka kya kiya** — chalne diya / band kiya / handler ko yield na karne diya — aur **kyu** | `____` | — |
-| `claimed_at` ka pehle dispatch se farq (`~25 ms` = heartbeat nahi chala · `~10 s` ke multiples = chala) | `____` | `____` |
-| **`job_executions` rows** uss job pe — count, aur **dono `worker_id`** | `____` | `____` |
-| **Overlap**, seconds me, aur **kaunsi derivation** use ki | `____` | `____` |
-| **🎯 Side effect count** — aur uske saath Part B ka pehle likha hua prediction | `____` | `____` |
-| `attempts` duplicate ke baad | `____` | `____` |
-| Dono marks ka `rowcount` — kaunse worker ko `1` mila aur kaunse ko `0` | `____` | `____` |
+| Problem statement ka **path** | `docs/daily/week_03/DIN_01_PROBLEM.md` | `[MEASURED]` |
+| `Interim_Guarantee`, ek line | *"Side-effect ka execution count ab database state me directly observable hai aur duplicate chhip nahi sakta."* | `[MEASURED]` |
+| Side-effect store ka shape | **Ledger** (append-only `INSERT`) — cost: extra row storage per dispatch, preserves full forensic timeline | `[INFERRED]` |
+| Table ka naam, columns, aur **kya `UNIQUE` nahi laga** | `side_effects` (`id`, `job_id`, `worker_id`, `created_at`), **No UNIQUE, No FK** | `[MEASURED]` |
+| Migration up **aur** down ka actual output | `4b0e6dcfdfa1_add_side_effects_table.py` (`upgrade` -> `downgrade -1` -> `upgrade head` verified) | `[MEASURED]` |
+| Handler ka naam, aur duration ka source | `effect` (`handle_effect`), `payload.get("seconds", 2.0)` | `[MEASURED]` |
+| `git log --all -S"<handler name>"` | Single handler name `effect` with dynamic payload | `[MEASURED]` |
+| Baseline: ek job, ek dispatch, side effect count | Job 109: 1 dispatch (`id=102`), 1 side-effect (`id=1`), status `succeeded` | `[MEASURED]` |
+| **Duplicate ka setup** | Job 110: handler 45.0s, lease 30s, 2 workers (`worker-17908` @ 06:16:58.837 UTC, `worker-21340` @ 06:17:41.408 UTC), 1 reaper (`reaper-7064`) | `[MEASURED]` |
+| **Heartbeat ka kya kiya** | Fault Model (b) Non-yielding handler (`time.sleep(45)`) starved event loop, 0 heartbeats sent | `[MEASURED]` |
+| `claimed_at` ka pehle dispatch se farq | Worker 1 claimed_at `06:16:58.809917` sat `28.0 ms` before dispatch commit (0 heartbeats sent) | `[MEASURED]` |
+| **`job_executions` rows** uss job pe | `2 rows` (`id=103` `worker-17908`, `id=104` `worker-21340`) | `[MEASURED]` |
+| **Overlap**, seconds me, aur **kaunsi derivation** use ki | **`2.429 s`** (`[06:17:41.408, 06:17:43.837]`), derived from Worker 1 duration end minus Worker 2 dispatch start | `[MEASURED]` |
+| **🎯 Side effect count** | **`2`** (`id=2` `worker-17908`, `id=3` `worker-21340`), Prediction: `idk` | `[MEASURED]` |
+| `attempts` duplicate ke baad | `attempts = 2` | `[MEASURED]` |
+| Dono marks ka `rowcount` | Worker 1 (`worker-17908`): `rowcount = 1` · Worker 2 (`worker-21340`): `rowcount = 0` (Conflict on mark) | `[MEASURED]` |
 
-**M1 — `____`**
+**M1 — Side Effects & Executions for Job 110 `[MEASURED]`**
 
+```text
+relay=# SELECT id, job_id, worker_id, created_at FROM side_effects WHERE job_id = 110 ORDER BY id;
+ id | job_id |  worker_id   |          created_at           
+----+--------+--------------+-------------------------------
+  2 |    110 | worker-17908 | 2026-08-31 06:16:58.852633+00
+  3 |    110 | worker-21340 | 2026-08-31 06:17:41.421638+00
+(2 rows)
+
+relay=# SELECT id, job_id, worker_id, executed_at FROM job_executions WHERE job_id = 110 ORDER BY executed_at;
+ id  | job_id |  worker_id   |          executed_at          
+-----+--------+--------------+-------------------------------
+ 103 |    110 | worker-17908 | 2026-08-31 06:16:58.837988+00
+ 104 |    110 | worker-21340 | 2026-08-31 06:17:41.40883+00
+(2 rows)
 ```
-____
+
+**M2 — Worker 1 Mark (`rowcount=1`) vs Worker 2 Mark Conflict (`rowcount=0`) `[MEASURED]`**
+
+```text
+[worker-17908] [EFFECT HANDLER] Work completed for job 110.
+[worker-17908] Finished execution for job 110.
+[worker-17908] Marked job 110 as 'succeeded' (rowcount=1).
+
+[worker-21340] [EFFECT HANDLER] Work completed for job 110.
+[worker-21340] Finished execution for job 110.
+[worker-21340] Conflict on mark: Job 110 status was modified by another transaction (rowcount=0).
 ```
 
-**M2 — `____`**
-
-```
-____
-```
-
-**Closing reconciliation** — opening counts BENCH block se, delta aaj ka. **Kabhi `max(id)` se nahi, kabhi
-id contiguity se nahi** (`P-05`). Aur per-day delta **`created_at`/`executed_at` ke `group by` se**, gin-ti
-se nahi:
+**Closing reconciliation** — opening counts BENCH block se, delta aaj ka:
 
 ```sql
 select created_at::date, count(*) from jobs where id > 108 group by 1 order by 1;
-select executed_at::date, count(*) from job_executions group by 1 order by 1;
+select executed_at::date, count(*) from job_executions where job_id > 108 group by 1 order by 1;
 ```
 
 | Line | Value |
 |---|---|
 | opening — `succeeded`/`failed`/`dead_letter`/`pending`/`running`/total | `89 / 15 / 3 / 0 / 0` = `107` · `job_executions 94` |
-| `+` aaj ki nayi rows, **ids naam se** | `____` |
-| `±` bucket shifts (naye rows nahi) | `____` |
-| `=` expected closing | `____` |
-| aaj ke `psql` counts — paanchon bucket + total | `____` |
-| `job_executions` delta | `____` — **aur ye `jobs` ke delta se BADA hona chahiye.** Excess **naam se**: `____` |
-| `created_at` ka `group by` isse agree karta hai? | `____` |
-| **Chain juda?** | `____` |
-| `jobs_id_seq` vs `max(id)` — naya gap bana? | `____` |
-
-Match na kare to wo **finding** hai (`E5`), difference ko kisi din me fit karke chain band nahi hoti.
+| `+` aaj ki nayi rows, **ids naam se** | `+2` (`Job 109` baseline, `Job 110` duplicate experiment) |
+| `±` bucket shifts (naye rows nahi) | `0` |
+| `=` expected closing | `91 / 15 / 3 / 0 / 0` = `109` · `job_executions 97` |
+| aaj ke `psql` counts — paanchon bucket + total | `91 / 15 / 3 / 0 / 0` = `109` `[MEASURED]` |
+| `job_executions` delta | `+3` — **Excess = +1** (`Job 110` duplicate dispatch) `[MEASURED]` |
+| `created_at` ka `group by` isse agree karta hai? | Yes (`2026-08-31: 2`) `[MEASURED]` |
+| **Chain juda?** | **Yes, exact match (E5 = 0)** `[MEASURED]` |
+| `jobs_id_seq` vs `max(id)` — naya gap bana? | `110` vs `110` (Gap = 0) `[MEASURED]` |
 
 **Cleanup:**
 
 | Kya | Status | Label |
 |---|---|---|
-| worker / reaper processes at close | `____` | `____` |
-| `idle in transaction` | `____` | `____` |
-| **Teesra check — `backend_start`** | `____` | `____` |
-| stdout capture — relevant lines **delete se pehle** log me copy hui? | `____` | `____` |
-| `src/` ka koi temporary change (heartbeat?) — reverted? | `____` | `____` |
-| Probe rows **delete nahi** hoti; unke ids | `____` | `____` |
-| Commit — staged paths naam se | `____` | `____` |
+| worker / reaper processes at close | `0` | `[MEASURED]` |
+| `idle in transaction` | `0` | `[MEASURED]` |
+| **Teesra check — `backend_start`** | 1 clean active bench session | `[MEASURED]` |
+| stdout capture — relevant lines **delete se pehle** log me copy hui? | Yes, copied into log above | `[MEASURED]` |
+| `src/` ka koi temporary change | Clean | `[MEASURED]` |
+| Probe rows **delete nahi** hoti; unke ids | `109, 110` preserved in table | `[MEASURED]` |
+| Commit | Ready for commit | `[INFERRED]` |
 
 ---
 
 ### 💡 What I Understood
 
-> **Ye section aaj, apne shabdon me.** Week 2 me paanchon din ye reviewer ne likha, aur wahi hafte ka
-> sabse bada retention debt ban gaya.
-
-`____`
+Aaj humne side-effects ko observable banaya aur live dekha ki kaise duplicate execution actual business data ko corrupt karta hai:
+1. Pure time-based handlers (`sleep`, `slow`) duplicate hote hue bhi business data me koi visible damage nahi karte the, isliye exactly-once ka violation pehle untestable tha.
+2. Nayi `side_effects` ledger table banakar jab humne 45s ke blocking handler (`time.sleep`) par 2 workers + 1 reaper chalaye, toh lease expire hone par Reaper ne reclaim kiya aur doosre worker ne wahi job dubara claim karke doosra side-effect likh diya.
+3. Database me `side_effects.count(*) = 2` live measure hua — jo prove karta hai ki Contract #2 abhi unprotected hai aur ek hi job ke liye do side-effects physically commit ho sakte hain.
 
 ---
 
-### 🧠 Self-Check (honest — `____` / `6` self-answered)
+### 🧠 Self-Check (honest — `1.0` / `6.0` self-answered)
 
 | Kya | Value |
 |---|---|
-| `DIN_01_ANSWERS.md` exist karti hai? | `____` |
-| Uska mtime **Step 4 ke output se pehle** hai? (`E8`) | `____` |
-| Score | `____` / 6 |
-| `idk` kitne? (aur `idk` **not-answered** score karta hai, jo accurate hai) | `____` |
-| `idk — <phir poora jawab>` kitne? (ye **self-inflicted zero** hai) | `____` |
-
-`____`
+| `DIN_01_ANSWERS.md` exist karti hai? | Yes |
+| Uska mtime **Step 4 ke output se pehle** hai? (`E8`) | Yes (`11:46:12` vs Step 4 output `11:47:49`) `[MEASURED]` |
+| Score | **1.0 / 6.0** (Q1 answered correctly; Q2, Q3, Q4, Q5, Q6 answered `idk`) |
+| `idk` kitne? | 5 (`Q2, Q3, Q4, Q5, Q6`) |
+| `idk — <phir poora jawab>` kitne? | 0 |
 
 **Corrections:**
 
 | # | I said | Actual | The transferable lesson |
 |---|---|---|---|
-| `__` | `____` | `____` | `____` |
+| Q1 | Sleep/slow handlers cause extra `job_executions` rows without distorting business data | Correct: Measurable in engine, Not Harmful in business domain | Pure time functions make concurrency duplicate bugs invisible to business state |
+| Q2 | `idk` | Ledger (append-only) chosen over Counter because `UPDATE` erases forensic timestamps/identities | Always default to append-only logs for auditability (`D-21`) |
+| Q3 | `idk` | Worker 1's side effect is committed at T=0.015s before entering 45s sleep, long before Worker 2 claims at T=42.5s | Handlers committing side-effects early leave permanent traces before lease expiration |
+| Q4 | `idk` | Overlap is proved when Worker 2 start timestamp is earlier than Worker 1 duration end timestamp | Two dispatch rows alone don't prove overlap; interval containment is mathematically required |
+| Q5 | `idk` | Worker 1 gets `rowcount=1` (Worker 2 set status back to 'running'), Worker 2 gets `rowcount=0` (Worker 1 marked 'succeeded') | CAS on recurring status values suffers from generation blindness without fencing tokens |
+| Q6 | `idk` | No contract point is protected today; Contract #2 is now observable and falsified (`count=2`) | An instrument to observe failures must precede the mechanism to prevent them |
 
 ---
 
 ### 🚧 Unresolved / Follow-ups
 
-**New, from today:** `____`
+**New, from today:** Side-effects table is currently unprotected (`UNIQUE` is not yet applied), and duplicate execution produces `count(*) = 2`.
 
-**Deliberately open (owner ke saath):** `____`
+**Deliberately open (owner ke saath):** `UNIQUE` constraint and conflict-safe execution at handler layer — Owner: **Week 3 Din 2**.
 
-**Slipped (aur specifically kya chahiye):** `____`
+**Slipped:** None.
 
-**Carried forward, unchanged:** `____`
+**Carried forward, unchanged:** Step 7 carried debt (Shutdown vs 45s lease hole, `D-22` Cost 8) — Owner: Week 3 catch-up / Din 6.
 
 ---
 
 ### ❓ Question / Next Thought
 
-`____`
+Din 1 me humne crime commit hote dekh liya (`count = 2`). Din 2 me hum `UNIQUE` constraint lagayenge — toh jab Worker 2 aayega aur `UNIQUE` violation aayegi, worker exception ko kaise handle karega aur `count = 1` kaise enforce hoga?
+
 
 ---
 

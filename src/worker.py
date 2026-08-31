@@ -7,7 +7,7 @@ from collections.abc import Callable, Coroutine
 from typing import Any
 from sqlalchemy import func, insert, or_, select, text, update
 from src.database import async_session
-from src.models import Job, JobExecution
+from src.models import Job, JobExecution, SideEffect
 
 POLL_INTERVAL_SECONDS = 2.0
 HEARTBEAT_INTERVAL_SECONDS = 10.0
@@ -55,27 +55,51 @@ async def send_heartbeat(job_id: int, stop_event: asyncio.Event) -> None:
                     print(f"[{WORKER_ID}] Heartbeat sent for job {job_id}")
 
 
-async def handle_sleep(payload: dict) -> None:
+async def handle_sleep(payload: dict, job_id: int = 0) -> None:
     duration = float(payload.get("seconds", 2.0))
     await asyncio.sleep(duration)
 
 
-async def handle_boom(payload: dict) -> None:
+async def handle_boom(payload: dict, job_id: int = 0) -> None:
     raise RuntimeError("Simulated handler failure: BOOM!")
 
 
-async def handle_slow(payload: dict) -> None:
+async def handle_slow(payload: dict, job_id: int = 0) -> None:
     duration = float(payload.get("seconds", 8.0))
     print(f"[{WORKER_ID}] [SLOW HANDLER] Work started ({duration}s)...")
     await asyncio.sleep(duration)
     print(f"[{WORKER_ID}] [SLOW HANDLER] Work completed.")
 
 
-REGISTRY: dict[str, Callable[[dict], Coroutine[Any, Any, None]]] = {
+async def handle_effect(payload: dict, job_id: int) -> None:
+    async with async_session() as session:
+        async with session.begin():
+            await session.execute(
+                insert(SideEffect).values(
+                    job_id=job_id,
+                    worker_id=WORKER_ID,
+                )
+            )
+    print(f"[{WORKER_ID}] [EFFECT HANDLER] Side-effect written for job {job_id}.")
+
+    duration = float(payload.get("seconds", 2.0))
+    block = bool(payload.get("block", False))
+    if block:
+        import time
+        print(f"[{WORKER_ID}] [EFFECT HANDLER] Blocking event loop ({duration}s)...")
+        time.sleep(duration)
+    else:
+        await asyncio.sleep(duration)
+    print(f"[{WORKER_ID}] [EFFECT HANDLER] Work completed for job {job_id}.")
+
+
+REGISTRY: dict[str, Callable[..., Coroutine[Any, Any, None]]] = {
     "sleep": handle_sleep,
     "boom": handle_boom,
     "slow": handle_slow,
+    "effect": handle_effect,
 }
+
 
 
 async def record_execution(job_id: int, worker_id: str) -> None:
@@ -168,7 +192,7 @@ async def run_worker() -> None:
                     f"[{WORKER_ID}] Executing job {job_id} (type={job_type}, attempt={current_attempts}/{MAX_ATTEMPTS})..."
                 )
                 await record_execution(job_id, WORKER_ID)
-                await handler(payload)
+                await handler(payload, job_id)
                 print(f"[{WORKER_ID}] Finished execution for job {job_id}.")
                 new_status = "succeeded"
             except Exception as exc:
