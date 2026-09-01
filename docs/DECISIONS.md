@@ -1454,3 +1454,33 @@ taken: Week 3, alongside dedup.
   answerable query instead of a five-way question.
 - **A delay needs to be claimed as measured** — then the instrument comes first: `Scheduling retry` lines
   copied into the log **before** any capture is deleted, or a `scheduled_at` recorded on the evidence row.
+
+---
+
+## D-25: execute-time dedup uses a stable nullable effect key, a named database `UNIQUE`, and conflict-safe insert
+
+**Problem:** A lease expiry makes two executions of one job legal. Relay needs both executions to be allowed while preventing the same **local ledger effect** from being committed twice.
+
+**Options:**
+- (a) application `SELECT` then conditional `INSERT`
+- (b) bare `INSERT` under `UNIQUE`, handle `UniqueViolation`
+- (c) `INSERT ... ON CONFLICT ON CONSTRAINT ... DO NOTHING`, then read `rowcount`
+- (d) key by `(job_id, attempts)` rather than stable logical identity
+
+**Chose:** (c), with nullable `effect_key = "job:{job_id}"` and named constraint `uq_side_effects_effect_key`. The row is the local database effect itself, not a reservation for an external action and not a claim-generation record.
+
+**Evidence:** Job 112 had two recorded executions from distinct workers and one keyed effect; stdout recorded insert rowcounts `{1,0}` `[MEASURED]`. Reviewer rerun in a disposable database produced four dispatches across two workers and one keyed effect, with every replay returning `rowcount=0` `[MEASURED-R]`. A constraint-free barrier probe made both sessions read `0`, both insert, and finish at `2` `[MEASURED-R]`.
+
+**Cost:**
+1. Protection starts only for non-null keyed rows. Three historical rows remain `NULL`; ordinary PostgreSQL uniqueness treats those nulls as distinct `[MEASURED]`.
+2. `job:{id}` encodes **one logical effect per job**. A future job needing two legitimate effect kinds would have them collapsed unless identity expands deliberately `[INFERRED]`.
+3. This enforces a local table invariant. It does not atomically cover email, HTTP, payment, or any side effect outside this Postgres transaction `[INFERRED]`.
+4. Duplicate execution still happens and still consumes execution evidence, CPU, handler time, and attempts. The mechanism narrows duplicate damage; it does not eliminate duplicate work `[MEASURED/INFERRED]`.
+5. Downgrade is shape-reversible but destroys stored logical keys. Re-upgrading makes all surviving rows `NULL`; therefore lifecycle probes belong in a disposable database `[MEASURED-R]`.
+
+**Rejected:**
+- (a) because the constraint-free two-session probe finished at `2`; a read and later write do not form one atomic decision `[MEASURED/MEASURED-R]`.
+- (b) because an expected duplicate would enter the generic handler exception boundary, conflate dedup with failure, and select retry/dead-letter policy; the final status would still depend on the guarded mark winning `[INFERRED from source]`.
+- (d) because attempts changed across duplicate deliveries, producing different keys and bypassing dedup `[MEASURED]`.
+
+**Revisit when:** Din 3 measures the effect-commit/status-mark crash seam; Din 4 adds enqueue identity; or one job legitimately owns more than one logical effect kind. `D-24` remains reserved for the broader enqueue-versus-execute idempotency decision after both layers are measured.

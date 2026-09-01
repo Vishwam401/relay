@@ -400,6 +400,36 @@ Din 2 me humne execute layer par dedup achieve kar liya (`side_effects.count = 1
 
 ---
 
+### Reviewer close — Din 2 (`2026-09-01`)
+
+**Final grade: `8.0 / 10` `[INFERRED from the rubric below]`. Prediction score: `2.0 / 6.0` `[INFERRED, partial-credit rubric]`.**
+
+| Rubric | Score | Reviewer evidence |
+|---|---:|---|
+| Additive schema + migration lifecycle | `1.5/1.5` | Named `UNIQUE(effect_key)`, nullable/no-default column, direct `UNIQUE(job_id)` failure, upgrade/down/up, and three legacy `NULL` rows independently reproduced in disposable DB `[MEASURED-R]` |
+| Conflict-safe writer + direct verdict | `1.5/1.5` | `ON CONFLICT ON CONSTRAINT ... DO NOTHING`; independent worker stdout contained `rowcount=1` then repeated `rowcount=0` `[MEASURED-R]` |
+| Differential duplicate-execution proof | `2.0/2.0` | Persisted Job 112 still has attempts `2`, two execution rows, two workers in the recorded evidence, and one keyed effect. Independent rerun produced **4 dispatches across 2 workers and still 1 keyed effect** `[MEASURED-R]` |
+| Constraint-free negative control | `1.0/1.0` | Two sessions both read `0`, both inserted with rowcount `1`, final `probe_total=2`; fixture dropped `[MEASURED-R]` |
+| Reconciliation + cleanup | `1.0/1.0` | `111` jobs, `100` executions, `5` effects, sequence/max `112`, head `dbe13b69056d`, zero worker/reaper processes, zero idle transactions `[MEASURED-R]` |
+| Documentation precision | `0.5/1.0` | Evidence table is useful, but `NULL != NULL`, “zero concurrency protection”, and “fully proved” are over-broad; corrections below `[INFERRED]` |
+| Prediction provenance + seal close | `0.5/1.0` | Answers file creation predates Step 4 and frozen/observed blocks are separate, but file is ignored, last-write is post-run, and all six `After KEY` blocks remain pending `[MEASURED-R]` |
+
+**What the evidence supports:** new **non-null keyed local ledger effects** use one stable job-derived identity; in the recorded collision and the independent rerun, repeated dispatches committed one row. This **narrows** duplicate damage for that table invariant. It does not prove arbitrary external effects, legacy `NULL` rows, multiple logical effects per job, every interleaving, or crash boundaries `[INFERRED]`.
+
+**Corrections to retain:**
+
+1. SQL me `NULL != NULL` likhna imprecise hai. `NULL = NULL` ka result `UNKNOWN` hota hai; ordinary PostgreSQL uniqueness `NULLS DISTINCT` semantics use karti hai, isliye multiple `NULL`s coexist hue `[INFERRED mechanism; coexistence MEASURED-R]`.
+2. Separate `SELECT`-then-`INSERT` **iss invariant ko** concurrent transactions me enforce nahi karta. “Application checks provide zero concurrency protection” universal claim nahi hai; single atomic application-issued statement ya external idempotency arbiter alag shapes hain `[INFERRED]`.
+3. Q6 ka “job pending/dead_letter ho jayega” guaranteed nahi. Exception policy intended status choose karti hai, phir guarded `UPDATE ... WHERE status='running'` ko win karna hota hai; `rowcount=0` hua to doosre writer ka status rehta hai `[INFERRED from source]`.
+4. `effect_key = job:{id}` ka matlab **at most one keyed ledger effect per job** hai. Agar ek job ke do legitimate logical effect kinds aaye, current key unko collapse karegi. Month 1 ke current single-effect handler me accepted boundary; general solution nahi `[INFERRED]`.
+5. Original `13.565 s` overlap ka end-point raw stdout/capture repository me nahi hai. Persisted execution rows + log quotation claim ko support karte hain, but exact duration independently recompute nahi ho sakti. Independent rerun ne overlap/dedup mechanism reproduce kiya, original number nahi `[MEASURED-R]`.
+
+**Prediction grading provenance:** Q1 full; Q2 partial (`1` correct, conflict result wrong); Q3 wrong; Q4/Q5 `idk`; Q6 directional partial but final guarded-mark nuance missing. Is partial-credit convention se `2.0/6.0` defensible hai; whole-question-only scoring hota to `1/6` hota `[INFERRED]`. Creation time `14:50:20 +05:30` Step 4 se pehle hai, last write `15:50:39` observations ke baad; ignored file history prediction text ko tamper-proof nahi banati `[MEASURED-R]`.
+
+**Reviewer probe cleanup / incident note:** disposable target ke liye `DATABASE_URL` override set kiya gaya tha, lekin Alembic `env.py` us variable ko read nahi karta; `alembic.ini` ka fixed `relay` URL use hua. Reviewer down/up ne keyed values temporarily `NULL` kiye. Pre-probe catalog snapshot se exact rows restore ki gayi (`id=4 → job:111`, `id=5 → job:112`), then counts, keys, constraint, revision, and zero-idle state reverified. Final production state opening state se exactly match karti hai `[MEASURED-R]`. Is failure mode ko `P-28` me record kiya gaya; temporary database `relay_review_din2`, probe table, and four child workers removed `[MEASURED-R]`.
+
+---
+
 ## Din 3 — 🎯 Crash side effect ke BEECH me (`____`)
 
 **Original goal (from the plan):** crash point `payload` se controllable, crash **asli** (`os._exit()` /
