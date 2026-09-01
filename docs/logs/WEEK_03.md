@@ -45,7 +45,7 @@ Week 2 tak wo *untestable* bhi tha.**
 |---|---|
 | Din 1 | **Ek side effect**, aur uska count `2` |
 | Din 2 | **Ek `UNIQUE`**, aur wahi count `1` |
-| Din 3 | **Do states jo `jobs` me identical dikhti hain** aur side-effect store me alag |
+| Din 3 | **Do rows jinka recovery-relevant `jobs` projection (`status`, `attempts`, lease presence, execution count) same dikhta hai** aur side-effect store me alag |
 | Din 4 | **Do dedup layers**, alag scope ke saath (`P-07` band hoti hai) |
 | Din 5 | **Ek property**, aur uske known limits |
 | Din 6 | `D-24`, `D-25`, aur wo line jo decide karti hai: *protected* ya *narrowed* |
@@ -469,7 +469,7 @@ transaction me **kyu nahi**).
 
 | Kya | Value / text | Label |
 |---|---|---|
-| **Do states jo `jobs` me identical dikhti hain** — wo actually identical thi? | `____` | `____` |
+| **Do rows jinka recovery-relevant `jobs` projection (`status`, `attempts`, lease presence, execution count) same dikhta hai** — wo projection actually same tha? IDs/payload/timestamps exclude karo | `____` | `____` |
 | Aur side-effect store me wo **alag** dikhi? | `____` | `____` |
 | `1` aaya — **dedup ki wajah se ya handler dobara chala hi nahi?** (`job_executions` count separate karta hai) | `____` | `____` |
 | **Outbox ka faisla** — side effect + mark ek transaction me? Do reason, aur ek aisa side effect jise transaction me rakha hi nahi ja sakta | `____` | — |

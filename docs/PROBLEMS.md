@@ -1388,6 +1388,8 @@ Four readings:
 
 During review, `downgrade 4b0e6dcfdfa1` then `upgrade head` ran against `relay` and temporarily dropped/re-added `effect_key`, turning the two keyed rows into `NULL`. A pre-probe catalog snapshot held the exact original values, so rows `id=4/job=111` and `id=5/job=112` were restored to `job:111` and `job:112`. Final counts, keys, named constraint, Alembic head, worker count, and idle-transaction count all match the opening snapshot `[MEASURED-R]`.
 
+A corrected lifecycle rerun later targeted the disposable `relay_review_din2` database and reproduced the intended down/up behavior `[MEASURED-R; raw capture not retained]`. In particular, the raw `select current_database()` transcript was not retained, so this is reviewer observation rather than durable transcript evidence.
+
 **Why this matters:** a migration probe is allowed to be destructive inside a disposable database. Target ambiguity moves that blast radius to the one database whose evidence the probe was meant to protect. Exit code `0` and a correct revision graph say nothing about target identity.
 
 **Required invariant before the next migration lifecycle probe:** print/read the actual target database from the migration connection, and make runtime plus Alembic configuration share one source of truth. Until that is implemented, disposable runs must override Alembic's `sqlalchemy.url` explicitly (not only `DATABASE_URL`) and verify `select current_database()` before any downgrade.

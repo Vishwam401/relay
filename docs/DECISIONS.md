@@ -1469,18 +1469,18 @@ taken: Week 3, alongside dedup.
 
 **Chose:** (c), with nullable `effect_key = "job:{job_id}"` and named constraint `uq_side_effects_effect_key`. The row is the local database effect itself, not a reservation for an external action and not a claim-generation record.
 
-**Evidence:** Job 112 had two recorded executions from distinct workers and one keyed effect; stdout recorded insert rowcounts `{1,0}` `[MEASURED]`. Reviewer rerun in a disposable database produced four dispatches across two workers and one keyed effect, with every replay returning `rowcount=0` `[MEASURED-R]`. A constraint-free barrier probe made both sessions read `0`, both insert, and finish at `2` `[MEASURED-R]`.
+**Evidence:** Job 112 had two recorded executions from distinct workers and one keyed effect; stdout recorded insert rowcounts `{1,0}` `[MEASURED]`. Reviewer rerun in a disposable database produced four dispatches across two workers and one keyed effect, with every replay returning `rowcount=0` `[MEASURED-R; raw capture not retained]`. A constraint-free barrier probe made both sessions read `0`, both insert, and finish at `2` `[MEASURED-R]`.
 
 **Cost:**
-1. Protection starts only for non-null keyed rows. Three historical rows remain `NULL`; ordinary PostgreSQL uniqueness treats those nulls as distinct `[MEASURED]`.
+1. Protection starts only for non-null keyed rows `[INFERRED from schema]`. Three historical `NULL` rows coexisted with the two keyed rows `[MEASURED]`; ordinary PostgreSQL uniqueness treating those nulls as distinct is the mechanism `[INFERRED from database semantics]`.
 2. `job:{id}` encodes **one logical effect per job**. A future job needing two legitimate effect kinds would have them collapsed unless identity expands deliberately `[INFERRED]`.
 3. This enforces a local table invariant. It does not atomically cover email, HTTP, payment, or any side effect outside this Postgres transaction `[INFERRED]`.
-4. Duplicate execution still happens and still consumes execution evidence, CPU, handler time, and attempts. The mechanism narrows duplicate damage; it does not eliminate duplicate work `[MEASURED/INFERRED]`.
+4. Job 112 still had two executions and attempts advanced across the duplicate delivery `[MEASURED]`. Duplicate delivery can also consume CPU and handler time `[INFERRED from mechanism]`. The mechanism narrows duplicate damage; it does not eliminate duplicate work `[INFERRED]`.
 5. Downgrade is shape-reversible but destroys stored logical keys. Re-upgrading makes all surviving rows `NULL`; therefore lifecycle probes belong in a disposable database `[MEASURED-R]`.
 
 **Rejected:**
 - (a) because the constraint-free two-session probe finished at `2`; a read and later write do not form one atomic decision `[MEASURED/MEASURED-R]`.
 - (b) because an expected duplicate would enter the generic handler exception boundary, conflate dedup with failure, and select retry/dead-letter policy; the final status would still depend on the guarded mark winning `[INFERRED from source]`.
-- (d) because attempts changed across duplicate deliveries, producing different keys and bypassing dedup `[MEASURED]`.
+- (d) because attempts changed across the measured duplicate deliveries `[MEASURED]`; if attempts were part of the key, those claims would produce different keys and bypass logical-effect dedup `[INFERRED]`.
 
 **Revisit when:** Din 3 measures the effect-commit/status-mark crash seam; Din 4 adds enqueue identity; or one job legitimately owns more than one logical effect kind. `D-24` remains reserved for the broader enqueue-versus-execute idempotency decision after both layers are measured.
