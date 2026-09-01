@@ -285,15 +285,15 @@ Din 1 me humne crime commit hote dekh liya (`count = 2`). Din 2 me hum `UNIQUE` 
 
 ---
 
-## Din 2 — Dedup at execute: constraint kaam karti hai (`____`)
+## Din 2 — Dedup at execute: constraint kaam karti hai (`2026-09-01`)
 
 **Original goal (from the plan):** side effect ki identity pe **`UNIQUE`** · insert conflict-safe aur uska
 `rowcount`/exception **padha hua** · Din 1 ka run **bilkul wahi** dobara, ek variable badla (dedup) · aur
 phir **wo galat version chalao** (`SELECT`-phir-`INSERT`) taki `D-25` ka `Rejected` **measured** ho.
 
-**Goal met?** `____`
+**Goal met?** Yes `[MEASURED]` — Side-effect identity constraint added via additive migration, conflict-safe insert with `rowcount` tracking implemented, identical 45s collision reproduced with 2 executions and 13.565s overlap yielding strictly `side_effects.count = 1` (vs Din 1 count = 2), and negative control `SELECT`-then-`INSERT` measured racy count = 2.
 
-**Anything else learned?** `____`
+**Anything else learned?** PostgreSQL standard `UNIQUE` constraint ignores `NULL` equality (`NULL != NULL`), allowing legacy unkeyed rows to coexist safely while strictly enforcing uniqueness on new non-null keys. Application-level `if not exists` checks provide zero concurrency protection.
 
 ---
 
@@ -301,80 +301,102 @@ phir **wo galat version chalao** (`SELECT`-phir-`INSERT`) taki `D-25` ka `Reject
 
 | Kya | Value | Label |
 |---|---|---|
-| Opening check (teeno) | `____` | `____` |
-| Din 1 ka baseline abhi bhi wahan hai? (uss job ka execution count + side effect count) | `____` | `____` |
-| **Side effect ki identity** — key kis cheez pe hai, aur kyu | `____` | — |
-| Din 1 ka `attempts` (jo `2` tha) ne kaunsa option **kaata** | `____` | — |
-| Migration up + down ka output | `____` | `____` |
-| `INSERT ... ON CONFLICT DO NOTHING` ka **`rowcount`** conflict pe | `____` | `____` |
-| `UNIQUE` + `NULL` ka behaviour (agar key nullable hai) | `____` | `____` |
-| **Duplicate PHIR BHI hua?** — do `worker_id`, overlap seconds me | `____` | `____` |
-| **🎯 Side effect count** — Din 1 ke number ke **against** | `____` | `____` |
-| Constraint ne kaam kiya iska direct evidence (`rowcount = 0` print / `UniqueViolation` verbatim) | `____` | `____` |
-| **Galat version** (`SELECT`-phir-`INSERT`) ka side effect count | `____` | `____` |
-| Agar race reproduce **nahi** hui: kitni koshish, window kitni chaudi, kya badalna padta | `____` | `____` |
-| `UniqueViolation` handler me uncaught hui to job ka `status` kahan gaya | `____` | `____` |
+| Opening check (teeno) | 109 jobs (91 succeeded / 15 failed / 3 dead_letter), 97 executions, 3 effects (job 109: 1, job 110: 2), alembic 4b0e6dcfdfa1, 0 python, 0 idle tx | `[MEASURED]` |
+| Din 1 ka baseline abhi bhi wahan hai? (uss job ka execution count + side effect count) | Job 110: executions = 2, side_effects = 2 intact | `[MEASURED]` |
+| **Side effect ki identity** — key kis cheez pe hai, aur kyu | `effect_key = f"job:{job_id}"` with named `uq_side_effects_effect_key` — delivery/attempt-independent stable identity | `[INFERRED]` |
+| Din 1 ka `attempts` (jo `2` tha) ne kaunsa option **kaata** | `(job_id, attempts)` composite key reject hui kyunki retries/reclaims attempts badha deti hain jisse uniqueness bypass ho jati | `[INFERRED]` |
+| Migration up + down ka output | Revision `dbe13b69056d` added `effect_key` + named constraint; downgrade to `4b0e6dcfdfa1` and upgrade back to `dbe13b69056d` verified clean | `[MEASURED]` |
+| `INSERT ... ON CONFLICT DO NOTHING` ka **`rowcount`** conflict pe | `rowcount = 0` on duplicate conflict; `rowcount = 1` on initial insert | `[MEASURED]` |
+| `UNIQUE` + `NULL` ka behaviour (agar key nullable hai) | Multiple `NULL` rows coexist without conflict; non-null keys enforce strict uniqueness | `[MEASURED]` |
+| **Duplicate PHIR BHI hua?** — do `worker_id`, overlap seconds me | Yes: `worker-3492` & `worker-19572`, overlap = `13.565 s` (`[09:34:30.455, 09:34:44.020 UTC]`) | `[MEASURED]` |
+| **🎯 Side effect count** — Din 1 ke number ke **against** | **`side_effects.count(*) = 1`** on Job 112 (vs Din 1 Job 110 count = `2`) | `[MEASURED]` |
+| Constraint ne kaam kiya iska direct evidence (`rowcount = 0` print / `UniqueViolation` verbatim) | `[worker-19572] [EFFECT HANDLER] Side-effect deduped for job 112 (rowcount=0).` | `[MEASURED]` |
+| **Galat version** (`SELECT`-phir-`INSERT`) ka side effect count | `probe_total = 2` on `side_effects_check_then_insert_probe` (both read 0, both inserted) | `[MEASURED]` |
+| Agar race reproduce **nahi** hui: kitni koshish, window kitni chaudi, kya badalna padta | Race cleanly reproduced on first attempt via interleaved barrier reads before commits | `[MEASURED]` |
+| `UniqueViolation` handler me uncaught hui to job ka `status` kahan gaya | Caught by generic worker handler error boundary -> backoff retry or dead_letter if attempts exhausted | `[INFERRED]` |
 
-**M1 — `____`**
+**M1 — Step 4 Collision Evidence (Job #112):**
 
-```
-____
+```text
+Job 112: status='succeeded', attempts=2, claimed_at='2026-09-01 09:34:30.413 UTC'
+Executions (2):
+  - id=106 | job_id=112 | worker_id=worker-3492  | executed_at=2026-09-01 09:33:59.016 UTC
+  - id=107 | job_id=112 | worker_id=worker-19572 | executed_at=2026-09-01 09:34:30.455 UTC
+Side Effects (1):
+  - id=5   | job_id=112 | worker_id=worker-3492  | effect_key=job:112 | created_at=2026-09-01 09:33:59.022 UTC
+Insert Rowcounts: Worker 1 = 1 (written), Worker 2 = 0 (deduped)
+Mark Rowcounts: Worker 1 = 1 (succeeded), Worker 2 = 0 (conflict on mark)
 ```
 
 **Closing reconciliation** — opening counts **Din 1 ke log se**:
 
 | Line | Value |
 |---|---|
-| opening | `____` |
-| `+` nayi rows, ids naam se | `____` |
-| `=` expected closing | `____` |
-| `psql` actual | `____` |
-| `job_executions` delta, aur excess naam se | `____` |
-| `created_at`/`executed_at` `group by` agree karta hai? | `____` |
-| **Chain juda?** | `____` |
+| opening | 109 jobs (91 succeeded / 15 failed / 3 dead_letter), 97 executions, 3 effects |
+| `+` nayi rows, ids naam se | `+2` jobs (Job 111 baseline, Job 112 collision), `+3` executions (105 on 111, 106 & 107 on 112), `+2` effects (id=4 on 111, id=5 on 112) |
+| `=` expected closing | 111 jobs (93 succeeded / 15 failed / 3 dead_letter), 100 executions, 5 effects |
+| `psql` actual | 111 jobs (93 succeeded / 15 failed / 3 dead_letter), 100 executions, 5 effects `[MEASURED]` |
+| `job_executions` delta, aur excess naam se | Delta = `+3`, Excess = `+1` (Execution 107 on Job 112 duplicate) |
+| `created_at`/`executed_at` `group by` agree karta hai? | Yes: `jobs` group by = 2 (`2026-09-01`), `job_executions` group by = 3 (`2026-09-01`) `[MEASURED]` |
+| **Chain juda?** | ✅ Yes — `max(id) = 112`, `jobs_id_seq = 112`, Gap = 0 `[MEASURED]` |
 
-**Cleanup:** `____`
+**Cleanup:**
+- Lingering python workers/reaper: 0 `[MEASURED]`
+- `idle in transaction`: 0 `[MEASURED]`
+- Probe table `side_effects_check_then_insert_probe`: Dropped `[MEASURED]`
+- Alembic head: `dbe13b69056d` `[MEASURED]`
 
 ---
 
 ### 💡 What I Understood
 
-> **Aaj, apne shabdon me.**
-
-`____`
+Aaj humne Contract #2 ko database level par physically enforce karke dekha:
+1. Application-level checks (`if not exists` / `SELECT-then-INSERT`) concurrency me completely fail hote hain kyunki dono concurrent transactions ke `SELECT` aur `COMMIT` ke beech ek race window hoti hai jisme dono ko `count = 0` dikhta hai aur dono duplicate row likh dete hain (`probe_total = 2`).
+2. True Dedup sirf tab possible hai jab Database Engine (PostgreSQL B-Tree Unique Index) atomicity ko arbitrate kare via `INSERT ... ON CONFLICT (constraint) DO NOTHING`.
+3. Jab Worker 2 ne wahi job dubara execute karne ki koshish ki, Postgres ne use error throw karne ke bajaye `rowcount = 0` diya, jisse Worker 2 bina phate aage badh gaya aur database me side-effect **strictly 1 baar** hi commit hua (`side_effects.count = 1`).
+4. Key identity hamesha attempt-independent aur delivery-independent honi chahiye (`job_id`). `(job_id, attempts)` composite key dedup ko bypass karwa deti hai kyunki retries par attempts badh jata hai.
 
 ---
 
-### 🧠 Self-Check (honest — `____` / `6` self-answered)
+### 🧠 Self-Check (honest — `2.0` / `6.0` self-answered)
 
 | Kya | Value |
 |---|---|
-| Answers file ka mtime uss step se pehle? | `____` |
-| Score | `____` / 6 |
-
-`____`
+| `DIN_02_ANSWERS.md` exist karti hai? | Yes |
+| Uska mtime **Step 4 ke output se pehle** hai? (`E8`) | Yes — Predictions frozen in Step 0 before Step 1 execution |
+| Score | **2.0 / 6.0** (Q1 answered correctly; Q2 part marks for rowcount=1, missed rowcount=0 vs exception; Q3, Q4, Q5 answered idk/wrong; Q6 predicted retry direction) |
+| `idk` kitne? | 2 (`Q4, Q5`) |
 
 **Corrections:**
 
 | # | I said | Actual | The transferable lesson |
 |---|---|---|---|
-| `__` | `____` | `____` | `____` |
+| Q1 | Unique key sirf job_id par honi chahiye, attempt badhne se composite key fail ho jayegi | Correct: Stable logical identity independent of delivery attempts | Retries change delivery metadata; effect identity must anchor on business intent |
+| Q2 | Worker 1 gets rowcount=1, Worker 2 gets Python exception | Worker 1 gets rowcount=1, Worker 2 gets `rowcount=0` (NO exception with `ON CONFLICT DO NOTHING`) | `ON CONFLICT DO NOTHING` turns uniqueness violations into clean DML no-ops without transaction abort |
+| Q3 | Migration reject hogi kyunki Postgres me 2 NULL equal maane jaate hain | Migration accepted: In standard SQL/PostgreSQL `NULL != NULL`, so multiple NULLs do not conflict | Unique constraints only enforce distinctness on non-null values |
+| Q4 | `idk` | Race window exists between Session A's `SELECT` and Session A's `COMMIT`. Interleaved reads before commits cause both to insert | Concurrency cannot be guarded by separate read and write statements |
+| Q5 | `idk` | 2 executions + 2 distinct workers + measured overlap interval + `{1, 0}` rowcounts + final `count = 1` | Dedup proof requires proving that duplicate execution happened AND was suppressed at effect layer |
+| Q6 | Shayad retry karega | Correct: Generic handler exception boundary catches `UniqueViolation` and retries until attempts exhausted | Unhandled integrity errors cause false retries and poison DLQ |
 
 ---
 
 ### 🚧 Unresolved / Follow-ups
 
-**New, from today:** `____`
+**New, from today:** None — Execute-layer dedup is fully proved and measured.
 
-**Deliberately open (owner ke saath):** `____`
+**Deliberately open (owner ke saath):**
+- Mid-handler crash window (crash between side-effect commit and status mark) — Owner: **Week 3 Din 3**.
+- API Enqueue Idempotency Key (`idempotency_key`, `P-07`) — Owner: **Week 3 Din 4**.
 
-**Slipped:** `____`
+**Slipped:** None.
+
+**Carried forward, unchanged:** Step 7 carried debt (Shutdown vs 45s lease hole, `D-22` Cost 8) — Owner: Week 3 catch-up / Din 6.
 
 ---
 
 ### ❓ Question / Next Thought
 
-`____`
+Din 2 me humne execute layer par dedup achieve kar liya (`side_effects.count = 1`). Lekin agar worker side-effect row commit karne ke **theek baad aur job status mark karne se theek pehle** crash ho jaye (`SIGKILL`), toh database me kya state bachegi aur use kaise handle karenge?
 
 ---
 

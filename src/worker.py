@@ -6,6 +6,7 @@ import sys
 from collections.abc import Callable, Coroutine
 from typing import Any
 from sqlalchemy import func, insert, or_, select, text, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from src.database import async_session
 from src.models import Job, JobExecution, SideEffect
 
@@ -72,15 +73,25 @@ async def handle_slow(payload: dict, job_id: int = 0) -> None:
 
 
 async def handle_effect(payload: dict, job_id: int) -> None:
+    effect_key = f"job:{job_id}"
     async with async_session() as session:
         async with session.begin():
-            await session.execute(
-                insert(SideEffect).values(
+            stmt = (
+                pg_insert(SideEffect)
+                .values(
                     job_id=job_id,
+                    effect_key=effect_key,
                     worker_id=WORKER_ID,
                 )
+                .on_conflict_do_nothing(constraint="uq_side_effects_effect_key")
             )
-    print(f"[{WORKER_ID}] [EFFECT HANDLER] Side-effect written for job {job_id}.")
+            result = await session.execute(stmt)
+            inserted_count = result.rowcount
+
+    if inserted_count == 1:
+        print(f"[{WORKER_ID}] [EFFECT HANDLER] Side-effect written for job {job_id} (rowcount={inserted_count}).")
+    else:
+        print(f"[{WORKER_ID}] [EFFECT HANDLER] Side-effect deduped for job {job_id} (rowcount={inserted_count}).")
 
     duration = float(payload.get("seconds", 2.0))
     block = bool(payload.get("block", False))

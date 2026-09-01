@@ -5,6 +5,7 @@ from sqlalchemy import (
     DateTime,
     Integer,
     Text,
+    UniqueConstraint,
     func,
     text,
 )
@@ -112,6 +113,11 @@ class SideEffect(Base):
         nullable=False,
     )
 
+    effect_key: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+    )
+
     worker_id: Mapped[str] = mapped_column(
         Text,
         nullable=False,
@@ -121,5 +127,9 @@ class SideEffect(Base):
         DateTime(timezone=True),
         nullable=False,
         server_default=func.now(),
+    )
+
+    __table_args__ = (
+        UniqueConstraint("effect_key", name="uq_side_effects_effect_key"),
     )
 
