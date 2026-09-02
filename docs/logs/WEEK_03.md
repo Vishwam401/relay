@@ -430,16 +430,16 @@ Din 2 me humne execute layer par dedup achieve kar liya (`side_effects.count = 1
 
 ---
 
-## Din 3 — 🎯 Crash side effect ke BEECH me (`____`)
+## Din 3 — 🎯 Crash side effect ke BEECH me (`2026-09-02`)
 
 **Original goal (from the plan):** crash point `payload` se controllable, crash **asli** (`os._exit()` /
 bahar se `kill`, `raise` **nahi**) · teeno crash points chalao aur **reaper chalne se PEHLE** ka DB state
 verbatim likho · phir reaper chalao aur dobara padho · aur outbox ka faisla likho (side effect + mark ek
 transaction me **kyu nahi**).
 
-**Goal met?** `____`
+**Goal met?** Yes `[MEASURED]` — Three exact process crash boundaries executed with `os._exit(86)`, pre-reaper snapshots and post-reaper recoveries measured, Case B durable orphan effect proved dedup on redispatch (executions 1->2, rowcount=0, effects 1->1), and outbox architectural trade-off documented.
 
-**Anything else learned?** `____`
+**Anything else learned?** A job row's recovery-relevant projection in `jobs` (`running`, attempts 1, lease active, executions 1) can look identical while underlying business side-effects are completely split (0 vs 1). External side-effects can never join database ACID transactions.
 
 ---
 
@@ -447,76 +447,114 @@ transaction me **kyu nahi**).
 
 | Kya | Value | Label |
 |---|---|---|
-| Opening check (teeno) | `____` | `____` |
-| Crash point kaise controllable banaya (`payload` ka key) | `____` | `____` |
-| Crash ka mechanism (`os._exit` / `kill` / kuch aur) | `____` | `____` |
+| Opening check (teeno) | 111 jobs (93 succeeded / 15 failed / 3 dead_letter), 100 executions, 5 effects, alembic dbe13b69056d, 0 python, 0 idle tx | `[MEASURED]` |
+| Crash point kaise controllable banaya (`payload` ka key) | `payload["crash_at"]` with values `before_effect_commit`, `after_effect_commit`, `after_mark_commit` | `[INFERRED]` |
+| Crash ka mechanism (`os._exit` / `kill` / kuch aur) | `os._exit(86)` — immediate OS-level process termination bypassing exception/finally handlers | `[MEASURED]` |
 
 **Teen crash points — reaper se PEHLE ka state. Ye state reclaim ke baad WAPAS NAHI AA SAKTI:**
 
 | Crash kahan | side-effect record | `jobs.status` | `attempts` | `claimed_at` | `job_executions` count |
 |---|---|---|---|---|---|
-| side effect commit se **pehle** | `____` | `____` | `____` | `____` | `____` |
-| side effect ke **baad**, mark se **pehle** | `____` | `____` | `____` | `____` | `____` |
-| mark ke **baad** | `____` | `____` | `____` | `____` | `____` |
+| side effect commit se **pehle** (Job 113) | 0 rows | `running` | 1 | 2026-09-02 08:46:52.076 UTC | 1 |
+| side effect ke **baad**, mark se **pehle** (Job 114) 🎯 | 1 row (`id=8`, `key=job:114`) | `running` | 1 | 2026-09-02 08:48:36.879 UTC | 1 |
+| mark ke **baad** (Job 115) | 1 row (`id=9`, `key=job:115`) | `succeeded` | 1 | 2026-09-02 08:50:03.279 UTC | 1 |
 
 **Reaper ke BAAD:**
 
 | Crash kahan | `status` | Handler dobara chala? (`job_executions` delta) | **Side effect count** | Label |
 |---|---|---|---|---|
-| pehle | `____` | `____` | `____` | `____` |
-| **beech me** 🎯 | `____` | `____` | `____` | `____` |
-| baad me | `____` | `____` | `____` | `____` |
+| pehle (Job 113) | `succeeded` | Yes (`1 → 2`) | **1** (`id=7`, `worker-15804`, written) | `[MEASURED]` |
+| **beech me** 🎯 (Job 114) | `succeeded` | Yes (`1 → 2`) | **1** (`id=8`, `worker-20848`, deduped rowcount=0) | `[MEASURED]` |
+| baad me (Job 115) | `succeeded` | No (`1 → 1`) — Reaper & worker ignored | **1** (`id=9`, `worker-24384`) | `[MEASURED]` |
 
 | Kya | Value / text | Label |
 |---|---|---|
-| **Do rows jinka recovery-relevant `jobs` projection (`status`, `attempts`, lease presence, execution count) same dikhta hai** — wo projection actually same tha? IDs/payload/timestamps exclude karo | `____` | `____` |
-| Aur side-effect store me wo **alag** dikhi? | `____` | `____` |
-| `1` aaya — **dedup ki wajah se ya handler dobara chala hi nahi?** (`job_executions` count separate karta hai) | `____` | `____` |
-| **Outbox ka faisla** — side effect + mark ek transaction me? Do reason, aur ek aisa side effect jise transaction me rakha hi nahi ja sakta | `____` | — |
-| `P-16` ka aaj ka roop — `running` ke do situations database se distinguishable hui? | `____` | `____` |
-| `D-22` Cost 10 (`completed_at`) — aaj usne kaise chubha, aur faisla kya | `____` | — |
+| **Do rows jinka recovery-relevant `jobs` projection (`status`, `attempts`, lease presence, execution count) same dikhta hai** — wo projection actually same tha? IDs/payload/timestamps exclude karo | Yes — Pre-reaper snapshot on Job 113 and 114 both showed `status='running'`, `attempts=1`, `claimed_at` active, `executions=1` | `[MEASURED]` |
+| Aur side-effect store me wo **alag** dikhi? | Yes — Job 113 had 0 effects (absent); Job 114 had 1 effect (durable orphan) | `[MEASURED]` |
+| `1` aaya — **dedup ki wajah se ya handler dobara chala hi nahi?** (`job_executions` count separate karta hai) | Proved by `job_executions` delta: 1 pre-reaper to 2 post-recovery + stdout `rowcount=0` (`Side-effect deduped`) | `[MEASURED]` |
+| **Outbox ka faisla** — side effect + mark ek transaction me? Do reason, aur ek aisa side effect jise transaction me rakha hi nahi ja sakta | (1) Long open transaction across handler work causes lock contention; (2) Status mark CAS race (`rowcount=0`) would require forcing rollback; (3) External effects (email/Stripe payment) cannot join Postgres transactions | `[INFERRED]` |
+| `P-16` ka aaj ka roop — `running` ke do situations database se distinguishable hui? | Yes: In `jobs` table alone they are indistinguishable; only inspecting the side-effect ledger reveals whether business effect committed or not | `[MEASURED]` |
+| `D-22` Cost 10 (`completed_at`) — aaj usne kaise chubha, aur faisla kya | `completed_at` absence leaves no completion timestamp on `job_executions`; completion remains observable only via job status `succeeded` | `[INFERRED]` |
 
-**M1 — `____`**
+**M1 — Three-Case Differential Matrix (`C5` Output):**
 
+```text
+ id  |  status   | attempts | has_hook | executions | effects
+-----+-----------+----------+----------+------------+---------
+ 113 | succeeded |        2 | f        |          2 |       1   (Case A: Before Effect Crash)
+ 114 | succeeded |        2 | f        |          2 |       1   (Case B: Middle Crash - Durable Orphan)
+ 115 | succeeded |        1 | f        |          1 |       1   (Case C: After Mark Crash - Terminal Control)
 ```
-____
-```
 
-**Closing reconciliation:** `____`
+**Closing reconciliation:**
 
-**Cleanup:** `____`
+| Line | Value |
+|---|---|
+| opening | 111 jobs (93 succeeded / 15 failed / 3 dead_letter), 100 executions, 5 effects |
+| `+` nayi rows, ids naam se | `+3` jobs (Job 113, 114, 115), `+5` executions (2 on 113, 2 on 114, 1 on 115), `+3` effects (id=7 on 113, id=8 on 114, id=9 on 115) |
+| `=` expected closing | 114 jobs (96 succeeded / 15 failed / 3 dead_letter), 105 executions, 8 effects |
+| `psql` actual | 114 jobs (96 succeeded / 15 failed / 3 dead_letter), 105 executions, 8 effects `[MEASURED]` |
+| `job_executions` delta, aur excess naam se | Delta = `+5`, Excess = `+2` (Executions 109 on 113 and 111 on 114 recovery claims) |
+| `created_at`/`executed_at` `group by` agree karta hai? | Yes: `jobs` group by = 3 (`2026-09-02`), `job_executions` group by = 5 (`2026-09-02`) `[MEASURED]` |
+| **Chain juda?** | ✅ Yes — `max(id) = 115`, `jobs_id_seq = 115`, Gap = 0 `[MEASURED]` |
+
+**Cleanup:**
+- `src/worker.py` temporary hooks: Reverted cleanly (`git diff HEAD -- src/worker.py` is empty) `[MEASURED]`
+- Python worker/reaper processes: 0 `[MEASURED]`
+- `idle in transaction`: 0 `[MEASURED]`
+- Hash of `DIN_03_PREDICTIONS_FROZEN.md`: `105C15A8ED25FFD45C930FFC9606E2CDEE523B79B10D2BCD18E13DCACB3CD790` `[MEASURED]`
 
 ---
 
 ### 💡 What I Understood
 
-> **Aaj, apne shabdon me.**
-
-`____`
+Aaj humne crash boundaries ko real OS death (`os._exit(86)`) ke zariye measure karke dual-write hole ko physical reality me dekha:
+1. Jab worker side-effect likhkar aur status mark karne se pehle mar jata hai (Case B), toh database me ek **Durable Orphan Effect** ban jata hai — effect disk par permanently save ho chuka hota hai par job abhi bhi `running` rehti hai.
+2. Reaper aur Naye Worker ke perspective se Job 113 (effect nahi hua) aur Job 114 (effect ho chuka hai) bilkul identical dikhti hain (`status='running', attempts=1`). Engine ko khud nahi pata hota ki kaam hua ya nahi!
+3. Jab naya worker aakar dobara handler chalata hai, toh **Din 2 ki Database Unique Constraint (`uq_side_effects_effect_key`)** recovery ko safe banati hai — Postgres naye worker ko `rowcount = 0` deta hai, jisse naya worker bina duplicate row likhe aage badh kar job ko `succeeded` mark kar deta hai.
+4. Side-effect aur Status mark ko ek hi transaction me merge nahi kiya ja sakta kyunki: (a) Transaction handler ke lambe execution/sleep ke across open rahegi; (b) Status mark CAS race hone par rollback force karna padega; (c) External effects (email, payment) database transaction ka hissa ban hi nahi sakte. Yahi Transactional Outbox Pattern ka mathematical reason hai.
 
 ---
 
-### 🧠 Self-Check (honest — `____` / `6` self-answered)
+### 🧠 Self-Check (honest — `3.5` / `6.0` self-answered)
 
-`____`
+| Kya | Value |
+|---|---|
+| `DIN_03_ANSWERS.md` exist karti hai? | Yes |
+| Uska mtime Step 2 se pehle hai aur frozen copy hash verified hai? (`E8`) | Yes — `DIN_03_PREDICTIONS_FROZEN.md` created in Step 0 with SHA256 `105C15A8...` `[MEASURED]` |
+| Score | **3.5 / 6.0** (Q1 partial for running; Q2 correct; Q3 idk; Q4 correct; Q5 correct on os._exit vs raise; Q6 partial for attempts on claim) |
+| `idk` kitne? | 1 (`Q3`) |
 
 **Corrections:**
 
 | # | I said | Actual | The transferable lesson |
 |---|---|---|---|
-| `__` | `____` | `____` | `____` |
+| Q1 | Status running reh jayega; entry number nahi pata | Correct status='running'; entry is P-16 running conflation | P-16 defines the inability of a single status value to distinguish active work from orphaned crash |
+| Q2 | Count 1 hi rahega unique constraint ki wajah se | Correct: Unique constraint dedupes replay to rowcount=0 | Execute-layer dedup absorbs mid-handler crash recovery without business corruption |
+| Q3 | idk | Long transaction locks, status CAS rollback coupling, and external non-transactional effects | Dual writes across heterogeneous stores require decoupled outbox architectures |
+| Q4 | job_executions table ka count | Correct: job_executions count 1->2 proves redispatch occurred | A passing count=1 only proves dedup when independent evidence shows redispatch happened |
+| Q5 | raise exception handle karega, os._exit turant marega | Correct: raise caught by handler error boundary; os._exit bypasses Python runtime entirely | Never use exceptions to simulate crash boundaries; real failure kills the process |
+| Q6 | Case A: 1, Case B: 1, Case C: 0 shayad | Case A = 2, Case B = 2, Case C = 1 | Attempts increment strictly on claim (D-23); retried jobs increment, terminal jobs do not |
 
 ---
 
 ### 🚧 Unresolved / Follow-ups
 
-**New, from today:** `____`
+**New, from today:** None — Mid-handler crash boundary behavior is fully measured and absorbed by execute dedup.
+
+**Deliberately open (owner ke saath):**
+- API Enqueue Idempotency Key (`idempotency_key`, `P-07`) — Owner: **Week 3 Din 4**.
+- Property-based failure testing (Hypothesis) — Owner: **Week 3 Din 5**.
+
+**Slipped:** None.
+
+**Carried forward, unchanged:** Step 7 carried debt (Shutdown vs 45s lease hole, `D-22` Cost 8) — Owner: Week 3 catch-up / Din 6.
 
 ---
 
 ### ❓ Question / Next Thought
 
-`____`
+Din 2 aur Din 3 me humne worker execute side par duplicate execution aur crash ko database constraint se protect kar liya. Lekin agar **Client (API caller)** hi do baar `POST /jobs` bhej de (network retry ya double click), toh engine do alag-alag `job_id` bana dega! Is API enqueue-level duplicate ko kaise rokenge (`idempotency_key`)?
 
 ---
 
