@@ -201,6 +201,12 @@ So the window cannot be closed by making the post-commit path shorter. Removing 
 - **What is the dedup window?** `D-03` noted a PK has none. A separate column needs an explicit answer: minutes, hours, forever? And what happens to a replay that arrives after the window closes?
 - **What should a duplicate request receive?** `202` with the *original* `job_id` (idempotent, pretends nothing happened) or `409 Conflict` (honest, but now the client must handle a second code path)? These are different contracts, not different implementations.
 
+**Week 3 Din 4 amendment (`2026-09-03`): local enqueue gap narrowed, boundaries retained.** Relay now accepts an optional caller-minted key, stores a stable SHA-256 fingerprint of cleaned `type` plus compact sorted-key payload JSON, and lets `uq_jobs_idempotency_key` arbitrate conflicting inserts `[MEASURED-R from source + disposable API reproduction]`. Same key/same fingerprint returned `202` with the original job id; same key/changed payload returned `409 idempotency_key_mismatch`; two unkeyed requests remained distinct `[MEASURED-R]`. A deterministic race showed the winner in `Timeout/PgSleep`, the contender in `Lock/transactionid`, both returning the same job id with one stored row `[MEASURED-R]`.
+
+The four earlier open choices now have local answers: **caller** mints the optional key; the window lasts **while the keyed row is retained**; a valid replay receives **`202-original`**; concurrent contenders are arbitrated by PostgreSQL uniqueness and the loser may wait for the winner's transaction verdict `[INFERRED contract choices + MEASURED-R race]`. This narrows the lost-acknowledgement duplicate window for callers that preserve and resend the key; it does **not** eliminate duplicates when the key is omitted/lost, after retention deletes the row, across a future caller namespace collision, or at external side effects `[INFERRED boundary]`. The database also does not enforce key/fingerprint pairing for direct writers; that invariant is application-owned today `[INFERRED from catalog]`.
+
+`P-07` is therefore **resolved for Relay's current opt-in local enqueue path, not globally closed** `[INFERRED status]`. Time-based expiry/cleanup and future caller scoping remain Week 4/later work. Formal enqueue-versus-execute decision publication remains reserved for Din 6 as `D-24`; Din 4 supplied measured input only `[MEASURED-R file audit]`.
+
 ---
 
 ## P-08 — The payload limit is enforced by a header the sender controls
@@ -1395,3 +1401,20 @@ A corrected lifecycle rerun later targeted the disposable `relay_review_din2` da
 **Required invariant before the next migration lifecycle probe:** print/read the actual target database from the migration connection, and make runtime plus Alembic configuration share one source of truth. Until that is implemented, disposable runs must override Alembic's `sqlalchemy.url` explicitly (not only `DATABASE_URL`) and verify `select current_database()` before any downgrade.
 
 **Owner:** Week 4 configuration hardening, or earlier if Din 4 adds a migration. This is not a reason to build outbox/fencing early; it is a migration safety prerequisite.
+
+
+---
+
+## P-29 — Final rows cannot prove the crash hook or that a negative-control process was alive
+
+**Status: MEASURED-R on Week 3 Din 3 review.** The Din 3 BRIEF required the temporary hook diff, native exit codes, SQL/COMMIT ordering, reaper target line, and—for Case C—startup PID, an independent live-process read, and repeated idle passes/polls. The weekly log retains exact state summaries and the final `2/2/1 · 2/2/1 · 1/1/1` matrix, but not those raw lines `[MEASURED-R file audit]`.
+
+**The failure:** a final unchanged Case C count is compatible with two different realities: live recovery components correctly excluded a terminal row, or no recovery component ran at all `[INFERRED]`. Likewise, a terminal row cannot reveal whether `os._exit(86)` ran after COMMIT or whether some later path produced the same state `[INFERRED from stored schema]`. Reverting temporary hooks was correct cleanup, but deleting the only placement/ordering transcript before copying its decisive lines removed auditability `[INFERRED]`.
+
+A fresh isolated reviewer run reproduced all three boundaries: execution-record COMMIT before Case A exit, effect COMMIT before Case B exit, mark COMMIT before Case C exit, live Case C reaper for four empty passes, live worker for three empty polls, and role matrix `2/2/1 · 2/2/1 · 1/1/1` `[MEASURED-R]`. That validates the current-code mechanism; it does not retroactively prove the missing original transcript `[INFERRED]`.
+
+**Related correction:** persisted Job `115` owns side-effect `id=10`, not the logged `id=9`; current rows and sequence show `7,8,10` with `side_effects_id_seq=10` `[MEASURED-R]`. The missing value is consistent with Case B's conflict consuming a sequence value `[INFERRED from chronology]`, and the fresh run directly measured a conflict advancing `2→3` while row count stayed unchanged `[MEASURED-R]`.
+
+**Required invariant for future fault/concurrency days:** before deleting captures or reverting instrumentation, copy the smallest differential transcript into the weekly log: source diff/hash, each native exit, write→COMMIT→hook order, target reclaim/claim line, and for every negative control one startup PID + independent live-process observation + at least three cycles + explicit absence of the target line `[INFERRED process rule]`. Final-state SQL remains necessary but is not a substitute `[INFERRED]`.
+
+**Owner:** immediate protocol from Din 4 onward; no production `src/` feature is required to close this. Preserve the concurrent POST outcomes and sequence movement in the Din 4 log before cleanup `[INFERRED]`.

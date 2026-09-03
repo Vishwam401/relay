@@ -65,11 +65,22 @@ class Job(Base):
         nullable=True,
     )
 
+    idempotency_key: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+    )
+
+    request_fingerprint: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+    )
+
     __table_args__ = (
         CheckConstraint(
             "status IN ('pending', 'running', 'succeeded', 'failed', 'dead_letter')",
             name="jobs_status_check",
         ),
+        UniqueConstraint("idempotency_key", name="uq_jobs_idempotency_key"),
     )
 
 
