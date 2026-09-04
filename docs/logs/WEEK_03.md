@@ -811,16 +811,16 @@ Din 4 me humne ek deterministic 2-client race dekhi jisme trigger lagakar race c
 
 ---
 
-## Din 5 — Property test: evidence, opinion nahi (`____`)
+## Din 5 — Property test: evidence, opinion nahi (`2026-09-04`)
 
 **Original goal (from the plan):** property ka **wording** pehle likhna (code se pehle), aur uske do hisse
 iss hafte ke measurements ke hisaab se theek karna (`har job` ka scope, aur `= 1` vs `<= 1` — `P-27`) ·
 Hypothesis se random **interleavings** · test isolation ka faisla (107 purani rows, aur wo **delete nahi**
 hoti) · aur **dedup hata ke test red hona verify karna**.
 
-**Goal met?** `____`
+**Goal met?** Partial `[INFERRED]` — Model-level effect-safety test, mutation kill, and PostgreSQL uniqueness were established `[MEASURED]`, but Layer B used custom test-side SQL rather than production `src.worker` and C6 ran concurrent coroutines in one process rather than two worker processes `[MEASURED]`.
 
-**Anything else learned?** `____`
+**Anything else learned?** Deduplication and fencing protect orthogonal failure domains: dedup ensures business side-effects commit at most once across retries/redispatches (`effects <= 1`), but CAS status updates (`WHERE status='running'`) are generation-blind without fencing tokens, allowing stale workers to mark succeeded behind the back of active claimants (`stale_mark_rowcount = 1`).
 
 ---
 
@@ -828,30 +828,46 @@ hoti) · aur **dedup hata ke test red hona verify karna**.
 
 | Kya | Value / text | Label |
 |---|---|---|
-| Opening check (teeno) | `____` | `____` |
-| **Property ka wording, subah likha hua** | `____` | — |
-| **Property ka wording, shaam ka** — aur jo badla, wo kis measurement se badla | `____` | — |
-| Scope: `har job` ya `wo jobs jinka handler ek baar poora chala`? Aur wo kis column se pata chalta hai | `____` | — |
-| `= 1` ya `<= 1`? (`P-27`) Aur kaunsa asli contract hai | `____` | — |
-| Test isolation ka faisla (separate DB / rollback per example / key prefix) + cost | `____` | — |
-| `jobs` ka `count(*)` test se **pehle** aur **baad** | `____` | `____` |
-| Hypothesis ki **example count** | `____` | `____` |
-| Kitne examples me **do dispatch** hue (warna test ne duplicate dekha hi nahi — `P-12`) | `____` | `____` |
-| **Dedup hata ke test red hui?** — ye aaj ka sabse zaroori check hai | `____` | `____` |
-| Property fail hui? **Shrunk counterexample verbatim** | `____` | `____` |
-| Property paas hui **bina** fencing token ke? | `____` | `____` |
-| **Ek concrete interleaving jo dedup se bachta hai par fencing se rukta hai** (Week 4 ka input) | `____` | `____` |
-| Property ke **known limits** — kya ye test check **nahi** karta | `____` | — |
+| Opening check (teeno) | 119 jobs (97 succeeded / 15 failed / 4 pending / 3 dead_letter), max/seq=125, 107 executions, 9 effects, seq=12, w3d4_enqueue_idempotency, 0 python, 0 idle tx, probe_dbs=0 | `[MEASURED]` |
+| **Property ka wording, subah likha hua** | `For any sequence of worker claims, crashes, lease expirations, and reaper redispatches, the number of durable committed side effects for any logical job identity must never exceed one (safety), and must equal exactly one for any job whose handler reached committed effect execution (conditional exactness).` | — |
+| **Property ka wording, shaam ka** — aur jo badla, wo kis measurement se badla | `For all non-null local ledger effect keys job:<id> across any sequence of claims, crashes, lease expirations, and redispatches, durable committed side effects <= 1 (safety); if a legal effect-write transaction completes, durable committed side effects = 1 (conditional exactness). Badla: Completion evidence is absent (job_executions is dispatch evidence, status='succeeded' is generation-blind); scope is explicitly restricted to non-null local ledger keys and write boundaries.` | — |
+| Scope: `har job` ya `wo jobs jinka handler ek baar poora chala`? Aur wo kis column se pata chalta hai | Non-null effect keys `job:<id>` jo effect-write transaction boundary tak pahuche; boom/dead_letter excluded. Schema me `completed_at` column absent hai (`job_executions` me sirf `executed_at` hai), isliye scope handler completion nahi balki legal effect-write transaction boundary hai. | — |
+| `= 1` ya `<= 1`? (`P-27`) Aur kaunsa asli contract hai | Safety contract `<= 1` asli contract hai. P-27 overdraft se 4th attempt/dispatch generate hone par bhi effect count `<= 1` hi rehta hai. Conditional exactness `= 1` sirf completed write boundaries par laagu hota hai. | — |
+| Test isolation ka faisla (separate DB / rollback per example / key prefix) + cost | Separate physical disposable DB (`relay_din5_<PID>_<8hex>`); rollback cannot contain child subprocess commits, prefixing does not constrain worker claim query; cost: migration and cleanup plumbing. | — |
+| `jobs` ka `count(*)` test se **pehle** aur **baad** | Evidence DB `relay`: pre=119, post=119 (Delta = 0). Disposable DB: created at 0, peak at 4, dropped at close. | `[MEASURED]` |
+| Hypothesis ki **example count** | `all_sequence_examples = 200, redispatch_examples = 100` | `[MEASURED]` |
+| Kitne examples me **do dispatch** hue (warna test ne duplicate dekha hi nahi — `P-12`) | `100 / 100` (100% of forced-redispatch examples reached `dispatches >= 2` by construction) | `[MEASURED]` |
+| **Dedup hata ke test red hui?** — ye aaj ka sabse zaroori check hai | Yes, exit code 1; `DIN5_MUTANT='no_dedup'` immediately broke assertion `effect_count <= 1`. | `[MEASURED]` |
+| Property fail hui? **Shrunk counterexample verbatim** | `shrunk_trace=['claim(worker-1)', 'effect_write()', 'crash()', 'reclaim()', 'claim(worker-2)', 'effect_write()']; dispatches=2; effect_writes=2; effect_count=2` | `[MEASURED]` |
+| Property paas hui **bina** fencing token ke? | Yes (Layer A model and Layer B pg_witness both passed `effect_count <= 1` without fencing). | `[MEASURED]` |
+| **Ek concrete interleaving jo dedup se bachta hai par fencing se rukta hai** (Week 4 ka input) | `claim:A -> effect:A -> reclaim -> claim:B -> mark:A(stale, rowcount=1) -> effect:B(dedup, rowcount=0) -> mark:B(current owner, rowcount=0)` | `[MEASURED]` |
+| Property ke **known limits** — kya ye test check **nahi** karta | Finite model traces only; model omits OS scheduler/wall-clock; only 2-3 real DB witnesses; current local non-null keyed ledger row only; external side-effects (email/HTTP) `[NO EVIDENCE]`; legacy NULL effects unconstrained; single effect kind per job only; no liveness under permanent crashes; no fencing/ownership guarantee. | — |
 
-**M1 — `____`**
+**M1 — Verbatim Mutant Kill Trace and Layer B JSON Witnesses:**
 
+```text
+Mutation exit: 1
+AssertionError: Falsifying example: shrunk_trace=['claim(worker-1)', 'effect_write()', 'crash()', 'reclaim()', 'claim(worker-2)', 'effect_write()']; dispatches=2; effect_writes=2; effect_count=2
+
+Layer B Witnesses:
+- baseline: {"database": "relay_din5_13404_ab0a8a34", "scenario": "baseline", "dispatches": 1, "effects": 1}
+- concurrent: {"database": "relay_din5_13404_ab0a8a34", "scenario": "concurrent", "dispatches": 2, "distinct_workers": 2, "effects": 1, "effect_rowcounts": [0, 1]}
+- crash_reclaim: {"database": "relay_din5_13404_ab0a8a34", "scenario": "crash_reclaim", "crash_kind": "hard_process_exit", "worker_a_exit_code": 1, "pre_reclaim": "running|1|1|1", "reclaim_barrier": "pending|1|true", "final": "succeeded|2|2|2|1", "replay_effect_rowcount": 0, "child_pids": [11044, 16920, 26464], "live_children_after_cleanup": 0}
+- stale_mark: {"database": "relay_din5_13404_ab0a8a34", "scenario": "stale_mark", "dispatches": 2, "effect_count": 1, "stale_mark_rowcount": 1, "current_owner_mark_rowcount": 0, "trace": "claim:A -> effect:A -> reclaim -> claim:B -> mark:A -> effect:B -> mark:B"}
 ```
-____
-```
 
-**Closing reconciliation:** `____`
+**Closing reconciliation:**
+- Starting: `119 jobs (97 succeeded / 15 failed / 4 pending / 3 dead_letter), max/seq=125, 107 executions, 9 effects, seq=12`
+- Din 5 delta on evidence DB: `+0 jobs, +0 executions, +0 effects` (All Layer B tests executed in disposable DB `relay_din5_13404_ab0a8a34`).
+- Ending: `119 jobs (97 succeeded / 15 failed / 4 pending / 3 dead_letter), max/seq=125, 107 executions, 9 effects, seq=12` `[MEASURED]`
+- Chain juda? Yes, exact logical match. Evidence untouched `[MEASURED]`.
 
-**Cleanup:** `____`
+**Cleanup:**
+- Disposable DB: `relay_din5_13404_ab0a8a34` dropped (`remaining = 0`) `[MEASURED]`
+- Worker/reaper/witness processes: 0 `[MEASURED]`
+- Idle transactions: 0 `[MEASURED]`
+- Full Din 5 suite close: 7 passed in 1.22s `[MEASURED]`
+- Predictions frozen SHA256: `1E89D02AAB0D73ECAEF6FC71DFE82CD8D062E433D855CE6CF82A04CCDCC99427` `[MEASURED]`
 
 ---
 
@@ -859,35 +875,113 @@ ____
 
 > **Aaj, apne shabdon me.**
 
-`____`
+Aaj humne property-based testing aur real PostgreSQL witnesses ke zariye deduplication ke invariants aur limits ko verify kiya:
+1. **Property Formulation:** Universal claim "har job ka side effect = 1" galat hai kyunki boom/crash/dead_letter jobs bina effect write ke terminate ho sakti hain. Safety invariant strictly `effects <= 1` hai, aur conditional exactness `effects = 1` sirf un jobs par laagu hota hai jinka handler legal effect-write transaction complete kare.
+2. **Mutation Testing (Sensitivity Proof):** Test tabhi bharosemand hai jab wo bug aane par fail ho sake. Jab humne `$env:DIN5_MUTANT='no_dedup'` set karke dedup bypass kiya, toh test turant RED ho gaya aur Hypothesis ne minimal counterexample shrink karke diya (`claim -> effect_write -> crash -> reclaim -> claim -> effect_write => effect_count=2`).
+3. **Physical DB Isolation:** Subprocess testing ke liye transaction rollback ya key prefixing useless hai kyunki child worker alag session me commit karta hai aur claim query prefix ignore karti hai. Isliye physical disposable database (`relay_din5_*`) hi ekmatra safe option hai.
+4. **Dedup vs Fencing Boundary:** Dedup ne duplicate business side-effect commit hona strictly rok liya (`effects = 1`), lekin stale worker ko status mark karne se nahi rokk saka (`stale_mark_rowcount = 1`). Status CAS updates generation-blind hote hain, isliye stale owners ko rokne ke liye fencing token (`claim_generation`) zaroori hai (Week 4 input).
 
 ---
 
-### 🧠 Self-Check (honest — `____` / `6` self-answered)
+### 🧠 Self-Check (honest — `0.0` / `6` self-answered)
 
-`____`
+| Kya | Value |
+|---|---|
+| `DIN_05_ANSWERS.md` exist karti hai? | Yes |
+| Uska mtime Step 1 se pehle hai aur frozen copy hash verified hai? (`1E89D0...`) | Yes — `DIN_05_PREDICTIONS_FROZEN.md` SHA256 verified `[MEASURED]` |
+| Score | **0.0 / 6.0** (All 6 questions frozen as `idk` in Step 0 before code/measurements) |
+| `idk` kitne? | 6 (`Q1`–`Q6`) |
 
 **Corrections:**
 
 | # | I said | Actual | The transferable lesson |
 |---|---|---|---|
-| `__` | `____` | `____` | `____` |
+| Q1 | idk | Safety is `effects <= 1`; conditional exactness is `effects = 1` for completed writes; boom/dead_letter excluded | Universal statements confuse safety with progress; missing completion columns force scoping to write boundaries |
+| Q2 | idk | Real contract is safety `<= 1`; P-27 overdrafts retry scheduling, not effect semantics | Retries and bound overdrafts are failure modes dedup must absorb, not an excuse to duplicate |
+| Q3 | idk | Separate physical disposable DB; rollback cannot undo child commits, prefixing does not constrain worker claim query | Concurrency with real OS subprocesses requires physical catalog separation |
+| Q4 | idk | Test failure (surviving mutant); red test with `effect_count=2` proves sensitivity | A test that cannot fail on a known defect provides zero guarantee |
+| Q5 | idk | Minimal legal action history / precondition trace in domain terms (claim-write-crash-reclaim-claim-write) | Shrinking strips irrelevant noise to expose the minimal structural violation |
+| Q6 | idk | Fencing protects claim ownership/control-plane CAS writes, not effect uniqueness; stale A marked succeeded while B active | Dedup and fencing solve orthogonal problems: dedup bounds effect damage, fencing bounds ownership authority |
 
 ---
 
 ### 🚧 Unresolved / Follow-ups
 
-**New, from today:** `____`
+**New, from today:** Fencing token / claim generation boundary explicitly identified and measured via stale mark witness (`stale_mark_rowcount=1`, `current_owner_mark_rowcount=0`).
+
+**Deliberately open (owner ke saath):**
+- Fencing token / monotonic claim generation build — Owner: **Week 4**.
+- Formal `D-24` & `D-25` publication in `DECISIONS.md` — Owner: **Week 3 Din 6** (after same-day grep).
+- Time-based idempotency key expiration / retention worker — Owner: **Week 4**.
+
+**Slipped:** None.
+
+**Carried forward, unchanged:** Step 7 carried debt (Shutdown vs 45s lease hole, `D-22` Cost 8) — Owner: Week 3 catch-up / Din 6.
 
 ---
 
 ### ❓ Question / Next Thought
 
-`____`
+Din 5 me humne property-based testing se prove kar liya ki deduplication safe hai aur stale marks generation-blind hain. Ab Week 3 Din 6 me hum entire week ka reconciliation karenge, `D-24` aur `D-25` ko formally publish karenge, aur Week 4 (outbox dispatcher, fencing tokens, observability) ka handoff taiyyar karenge!
+
+---
+
+### Reviewer close — Din 5 (`2026-09-04`)
+
+**Final grade: `6.5 / 10` `[INFERRED from the reviewer rubric below]`. Prediction score: `0.0 / 6.0` `[INFERRED from the KEY rubric applied to frozen text]`.** The local effect-row safety invariant and mutation sensitivity were upheld, but the complete Layer B witness contract was not: the harness reimplements worker SQL instead of invoking current `src.worker`, and C6 uses concurrent sessions in one process rather than two worker processes `[MEASURED]`.
+
+| Reviewer rubric | Score | Mechanism-level evidence |
+|---|---:|---|
+| Contract and property precision | `2.0/2.0` | Safety `effects <= 1`, conditional exactness `effects = 1`, missing completion evidence, and P-27 scope are separated correctly `[MEASURED]`. “Exhaustively verifies all finite generated sequences” and “proves current Relay worker implementation” overstate the implementation `[MEASURED]` |
+| Deterministic model boundary | `2.0/2.0` | All four required controls exist and passed, including two-dispatch reclaim and four-attempt P-27 traces `[MEASURED]`. The model does not retain live/stale actors or claim generations, and C8 injects stale behavior manually rather than deriving it from modeled ownership `[MEASURED]` |
+| Hypothesis coverage and mutation sensitivity | `2.0/2.0` | Source config contains 200 broad and 100 forced-redispatch examples; the forced skeleton guarantees at least two dispatches `[MEASURED]`. The mutant independently failed with the required minimal two-write trace and the normal control returned green `[MEASURED]`. The randomized oracle checks safety only, not conditional exactness, and the forced skeleton does not itself guarantee two write boundaries in every example `[MEASURED]` |
+| Isolation and target discipline | `1.0/1.0` | The harness refuses targets not matching `relay_din5_<PID>_<8hex>` and overrides `DATABASE_URL` before importing Relay models `[MEASURED]`. Current reconciliation found zero Din 5 probe databases and an unchanged evidence database `[MEASURED]` |
+| PostgreSQL and production-path correspondence | `0.5/2.0` | The recorded witnesses demonstrate PostgreSQL unique-conflict arbitration, a real reaper process, a hard-killed child, and generation-blind SQL updates `[MEASURED]`. C6 is two coroutines/sessions sharing one PID, C7 uses custom harness workers with different transaction boundaries, and none of C6–C8 invokes `handle_effect()` or `run_worker()` `[MEASURED]` |
+| Reconciliation, cleanup, and provenance | `1.0/1.0` | Fresh review measured the exact evidence fingerprint, expected status buckets, zero idle transactions, zero probe databases, zero Relay Python processes, matching frozen hash, and 7 passed in 1.20s `[MEASURED]`. `git diff --check` reported no whitespace error, with only an LF-to-CRLF working-tree warning `[MEASURED]` |
+| **Total** | **`6.5 / 10`** | The score reflects strong model-level safety evidence but partial compliance with the required production-path witness contract `[INFERRED]`. |
+
+**Official prediction grading — frozen text only:**
+
+| Q | Credit | Reason |
+|---|---:|---|
+| Q1 | `0/1` | Frozen answer is `idk`; none of the required scope/completion mechanism appears in frozen text `[MEASURED]` |
+| Q2 | `0/1` | Frozen answer is `idk`; no safety/P-27/conditional-exactness mechanism appears in frozen text `[MEASURED]` |
+| Q3 | `0/1` | Frozen answer is `idk`; no isolation strategies or trade-offs appear in frozen text `[MEASURED]` |
+| Q4 | `0/1` | Frozen answer is `idk`; no surviving-mutant interpretation appears in frozen text `[MEASURED]` |
+| Q5 | `0/1` | Frozen answer is `idk`; no minimal-falsifier or admissibility reasoning appears in frozen text `[MEASURED]` |
+| Q6 | `0/1` | Frozen answer is `idk`; no stale-A/new-B interleaving appears in frozen text `[MEASURED]` |
+| **Total** | **`0.0 / 6.0`** | Post-run explanations and KEY-derived corrections receive no prediction credit `[INFERRED from the explicit KEY scoring rule]` |
+
+**C0–C9 audit:**
+- **C0 — pass.** The frozen file contains exactly six idk answers, and its freshly recomputed SHA-256 is `1E89D02AAB0D73ECAEF6FC71DFE82CD8D062E433D855CE6CF82A04CCDCC99427` `[MEASURED]`. Current evidence DB fingerprint is `relay|119|125|125|107|9|12|w3d4_enqueue_idempotency`, with buckets `dead_letter|3, failed|15, pending|4, succeeded|97` `[MEASURED]`.
+- **C1 — partial.** The property card contains the required safety, conditional-exactness, completion-gap, P-27, isolation, mutation, and boundary fields `[MEASURED]`. Layer A ran a finite configured sample, not every finite model sequence; Layer B did not exercise the current worker implementation as claimed `[MEASURED]`.
+- **C2 — partial pass.** The four named deterministic tests passed and independently assert dispatch count versus effect count `[MEASURED]`. The model tracks only one current worker_id, erases it on crash/reclaim, and has no claim generation or retained stale actor `[MEASURED]`. It therefore models effect-count safety more strongly than ownership interleavings `[INFERRED]`.
+- **C3 — pass for the recorded finite safety search, not exhaustive proof.** The source config is 200 broad examples plus 100 forced-redispatch examples, and the redispatch skeleton guarantees `dispatches >= 2` `[MEASURED]`. The recorded 100/100, maximum dispatch count 4, and zero failures are consistent with the implementation `[MEASURED]`. Arbitrary generated actions can become no-ops, and the forced prefix guarantees a second claim but not a second effect-write boundary in every green example `[MEASURED]`.
+- **C4 — pass.** A fresh `DIN5_MUTANT=no_dedup` run failed with exit code 1 and shrank to `claim(worker-1) -> effect_write() -> crash() -> reclaim() -> claim(worker-2) -> effect_write()`, with `dispatches=2, effect_writes=2, and effect_count=2` `[MEASURED]`. With the mutant unset, the same test passed `[MEASURED]`. This proves sensitivity to the model’s missing-dedup mutation, not broad mutation coverage of production code `[INFERRED]`.
+- **C5 — pass.** The disposable-target guard checks `current_database()` and refuses names outside the exact Din 5 pattern `[MEASURED]`. The recorded disposable database began empty at Alembic head, and current review found `PROBE_DBS=0` with the evidence fingerprint unchanged `[MEASURED]`.
+- **C6 — database invariant passes; required witness contract fails.** The recorded result `dispatches=2, distinct_workers=2, effects=1`, and rowcounts `{0,1}` demonstrates unique-index arbitration between two database sessions `[MEASURED]`. Both worker IDs embed the same `os.getpid()`, and `asyncio.gather()` runs both attempts inside the harness process `[MEASURED]`. The harness manually issues the conflict-safe insert rather than calling current `handle_effect()` `[MEASURED]`. It is therefore not the required two-process production-path witness `[INFERRED]`.
+- **C7 — partial pass.** Worker A was a real child process, was hard-killed after its effect became durable, and the real `src.reaper` process established the committed reclaim barrier `[MEASURED]`. The required pre/barrier/final states and replay rowcount were recorded correctly `[MEASURED]`. Worker A and B were custom `pg_witness.py` functions, not `src.worker`; Worker A also combined claim, execution, and effect in one transaction, unlike production’s separate commits `[MEASURED]`. The state witness is valid, but production transaction-path correspondence is not established `[INFERRED]`.
+- **C8 — pass as a direct boundary witness.** Both tests reproduced effect count 1, stale-A mark rowcount 1, and B mark rowcount 0 for the named trace `[MEASURED]`. The PostgreSQL witness is scripted sequential SQL rather than two live production workers, so it demonstrates generation blindness of the current predicate, not a reproduced production scheduler interleaving `[MEASURED]`.
+- **C9 — pass.** Fresh review measured 7 passed in 1.20s, the mutant environment unset, zero Relay Python processes, zero idle transactions, zero Din 5 databases, and the exact unchanged evidence fingerprint `[MEASURED]`. The frozen hash still matches the opening value `[MEASURED]`. Temporary artifacts are absent as required after their summaries were copied into the log `[MEASURED]`.
+
+**Required corrections:**
+1. Replace “Layer A exhaustively verifies all finite generated sequences” with “Layer A checked the recorded finite Hypothesis examples within this model” `[INFERRED]`.
+2. Replace “Layer B proves current Relay worker implementation” with “Layer B demonstrates the corresponding PostgreSQL constraints and SQL predicates using a test-side harness” `[INFERRED]`.
+3. Do not describe C6 as two worker processes; it is two concurrent sessions/coroutines in one process with two logical worker strings `[MEASURED]`.
+4. Do not describe C7 as current-worker correspondence; its custom workers clone the SQL and use transaction boundaries different from `src.worker` `[MEASURED]`.
+5. Do not claim the model explores fencing state space. It lacks retained stale actors and claim generations; C8 is a manually scripted special case `[MEASURED]`.
+6. Do not generalize one local `side_effects` row into “business side-effects commit at most once.” External email, HTTP, payment, or receiver behavior has no evidence here `[INFERRED]`.
+7. Keep safety and progress separate: `effects <= 1` is the tested safety invariant; `effects = 1` is conditional on a legal committed write boundary and is not the randomized property oracle `[MEASURED]`.
+8. Keep P-27 precise: dedup absorbs the extra dispatch’s duplicate local write, but it does not prevent duplicate execution or bound wasted work `[INFERRED]`.
+
+**Retained limits:** The guarantee covers the current non-null local-ledger `effect_key` identity only; legacy NULL rows, missing keys, external effects, multiple legitimate effect kinds per job, and permanent-crash liveness remain outside the evidence `[INFERRED]`. `job_executions` remains pre-handler dispatch evidence rather than completion evidence, and `jobs.status` remains generation-blind `[MEASURED]`. Dedup narrows duplicate local-effect damage but does not provide fencing against stale marks or heartbeats `[INFERRED]`. The mutation kill covers one model policy fault and does not establish production-source mutation coverage `[INFERRED]`.
+
+**Reviewer verdict:** Din 5 established a load-bearing model-level effect-safety test, a genuine mutation kill, PostgreSQL uniqueness behavior, crash/reclaim state evidence, and the stale-mark boundary `[MEASURED]`. Din 5 did not satisfy its own production-path/two-process witness requirement, so “Goal met: Yes” must be narrowed to “Goal partially met” `[INFERRED]`.
 
 ---
 
 ## Din 6 — Close: reconcile, likho, handoff (`____`)
+
 
 **Original goal (from the plan):** paanch din ka evidence entries banta hai — chain, `D-24`, `D-25`,
 `D-03`/`D-05`/`D-21`/`D-22` ke amendments, `MAP.md`, `LEARNING_LOG.md`, `CURRENT_WEEK.md`,
