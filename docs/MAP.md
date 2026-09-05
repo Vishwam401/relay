@@ -179,14 +179,16 @@ evidence lives.
 | `D-06` `jobs.status` | `text` + `CHECK`; transitions by compare-and-set | **Illegal transitions are prevented only where the guard is written.** Amended W2 D6: the audit surface is **three** guarded statements (claim · reaper · one mark emitting four values), plus the heartbeat guarded *on* `status` while writing `claimed_at` — not "five writers". And the graph now has a cycle, so CAS on a recurring value cannot tell generations apart | A fencing token is designed (Week 3), or a fourth statement writes `status` |
 | `D-07` `jobs.attempts` | added in Week 1, `NOT NULL DEFAULT 0` | An unused column for a week; its **update policy** (increment at claim or at failure) is still undecided | Week 2 retry logic |
 | `D-08` `jobs.created_at` | `timestamptz NOT NULL DEFAULT now()`, DB-generated | Not true FIFO either (`P-05`); ties guaranteed within a transaction; enqueue cannot be attributed to an API instance | Per-instance latency attribution is ever needed |
-| `D-21` `job_executions` | append-only, written before the handler, own transaction, no FK, no index | Records dispatch not claims (`[MEASURED]`); orphans accepted (`[MEASURED]`); claim→record gap under-counts (`[INFERRED]`). Amended W2 D6: **`count(*)>1` expired on Din 3 — the reaper, two days before retry** — and has five causes; the missing *completion* endpoint means job 95's headline number cannot be recomputed from the DB | Identifier is overdue → **Week 3, with the dedup key**; Week 4 retention forces the FK question |
-| `D-22` lease + heartbeat | `claimed_at` event column · lease `30 s` · heartbeat `10.0 s` · **no** handler timeout · shutdown Option A | Duration chosen Din 2 ahead of measurement and Din 2 never exercised it; lease shorter than a handler Relay permits → the week's duplicate (`14.783 s`); reclaim costs `lease + one poll`; heartbeat only covers handlers that yield; **shutdown Option A's cost is `[INFERRED]`** — the run had handler `<` lease | The `payload {"seconds": 45}` + `SIGBREAK` run happens (Week 3 Din 1), or a handler timeout lands and makes the lease derivable |
+| `D-21` `job_executions` | append-only, written before the handler, own transaction, no FK, no index | Records dispatch not claims (`[MEASURED]`); orphans accepted (`[MEASURED]`); claim→record gap under-counts (`[INFERRED]`). Amended W2 D6: **`count(*)>1` expired on Din 3 — the reaper, two days before retry** — and has five causes; the missing *completion* endpoint means job 95's headline number cannot be recomputed from the DB | Identifier is overdue; slipped at Week 3 Din 6 close to Week 4; Week 4 retention forces the FK question |
+| `D-22` lease + heartbeat | `claimed_at` event column · lease `30 s` · heartbeat `10.0 s` · **no** handler timeout · shutdown Option A | Duration chosen Din 2 ahead of measurement and Din 2 never exercised it; lease shorter than a handler Relay permits → the week's duplicate (`14.783 s`); reclaim costs `lease + one poll`; heartbeat only covers handlers that yield; **shutdown Option A's cost is `[INFERRED]`** — the run had handler `<` lease | The `payload {"seconds": 45}` + `SIGBREAK` run (slipped at Week 3 Din 6 close to Week 4), or a handler timeout lands and makes the lease derivable |
 | `D-23` retry policy | increment on **claim** · `next_attempt_at` column · `min(5.0 · 2^(n-1), 15.0)` with equal jitter · `MAX_ATTEMPTS = 3` | Bounds **scheduling**, not dispatches — `attempts` reached `4` and bought a full extra handler run (`P-27`, accepted as an overdraft); reclaim re-dispatches with **no** backoff; jitter narrower than the poll quantum is unmeasurable (`P-24`); `CAP` is inert (`P-26`); `dead_letter` is a verdict with no diagnosis | `MAX_ATTEMPTS` or the poll interval changes; a side-effecting handler exists (Week 3); `last_error` lands (Week 4) |
+| `D-24` two-layer idempotency | separate enqueue identity from execute identity | Enqueue identity (`uq_jobs_idempotency_key`) bounds caller retries; execute identity (`uq_side_effects_effect_key`) bounds worker redispatches. Enqueue-only fails on lease reclaim; execute-only fails on lost ack | Multi-tenant namespace, retention TTL, or external outbox |
+| `D-25` execute-time dedup | stable nullable effect key, named database `UNIQUE`, and conflict-safe insert | Application `SELECT`-then-`INSERT` race reproduced at `count=2` without constraint. `ON CONFLICT DO NOTHING` linearizes at index; `rowcount=0` handles loser | Multi-effect jobs, legacy NULL rows |
 | `D-01` *reserved* | Postgres vs Redis vs RabbitMQ | Cost field partly collected: polling is 1 tx per worker per interval; an idle fleet is not free. **Still missing** a clean throughput comparison | Din 6, after a clean concurrency run |
 | `D-02` *reserved* | `FOR UPDATE SKIP LOCKED` vs `SERIALIZABLE` | **Not writable yet.** The mechanism half is measured (`SKIP LOCKED` removes waiting, not duplicates). The throughput half is not — `P-12`. `SERIALIZABLE` was never run at all | A run with a **proven overlap window** exists |
 
 **Numbering:** `D-09`..`D-20` belong to the Month 2–4 roadmap. `D-01`..`D-08` and `D-21` are Week 1;
-`D-22`/`D-23` are Week 2. **Next free: `D-24`.** `PROBLEMS.md` holds `P-01`..`P-27` — **next free `P-28`**.
+`D-22`/`D-23` are Week 2; `D-24`/`D-25` are Week 3. **Next free: `D-26`.** `PROBLEMS.md` holds `P-01`..`P-27`, plus Week 3's `P-28` and `P-29` — **next free `P-30`**.
 Grep on the day you assign the number, not the day the plan was written — collisions have happened twice.
 
 ---
@@ -195,20 +197,22 @@ Grep on the day you assign the number, not the day the plan was written — coll
 
 | Component | Entries |
 |---|---|
-| `jobs.id` | `D-03`, `P-05` (ordering), `D-05` amendment (guessable ids + egress) |
+| `jobs.id` | `D-03` + Din 6 amendment (PK separated from caller retry key, sequence gaps on conflict), `P-05` (ordering), `D-05` amendment (guessable ids + egress) |
+| `jobs.idempotency_key` | `D-24`, `P-07` (caller retry identity, `uq_jobs_idempotency_key`, `409` on fingerprint mismatch) |
 | `jobs.type` | `D-04` + Din 3 amendment, `P-04`, `P-11` (unregistered type leaves no execution row) |
-| `jobs.payload` | `D-05` + Din 2 amendment, `P-08`, `P-07` (payload hash as idempotency key) |
+| `jobs.payload` | `D-05` + Din 2 & Din 6 amendments (JSON compact serialization, application fingerprinting), `P-08`, `P-07` (payload hash as idempotency key) |
 | `jobs.status` | `D-06` + W2 amendment (three guarded writers, one of them emitting four values; the graph now cycles), `P-04`, `P-09`, `P-16` (one value, two situations), W0 D5 (lost update / two-worker analysis) |
 | `jobs.attempts` | `D-07`, `D-23` (incremented at **claim**, inside the row lock), `P-27` (the bound is on scheduling, so `4` is reachable), `P-11` (attempt number needed on the instrument), `P-25` (a rejected mark does not double-increment) |
-| `jobs.claimed_at` | `D-22` (event column, so the duration lives in the predicate), `P-19` (second clock, third meaning of `NULL`), `D-23` Cost 12 (a retry-waiting `pending` row still carries it), heartbeat is its fourth writer |
+| `jobs.claimed_at` | `D-22` + Din 6 amendment (event column; generation blindness of status CAS, unbuilt fencing token), `P-19` (second clock, third meaning of `NULL`), `D-23` Cost 12 (a retry-waiting `pending` row still carries it), heartbeat is its fourth writer |
 | `jobs.next_attempt_at` | `D-23` (migration `9e4822cbf157`), `P-25` (rejected with its transition), `D-23` Cost 3 (nobody clears it, so reclaim bypasses backoff) |
 | `jobs.created_at` | `D-08`, `P-05`, `P-03` (composite index candidate) |
-| `job_executions` | `D-21` + W2 amendment (five causes of `count(*)>1`), `P-11`, `P-12` (its `executed_at` is what caught the bad experiment), `P-13` (its `worker_id` is what caught the strays), `D-22` Cost 10 (it has a dispatch endpoint and no completion endpoint) |
+| `side_effects` | `D-24`, `D-25` (logical effect key `job:<id>`, `uq_side_effects_effect_key`, `ON CONFLICT DO NOTHING`) |
+| `job_executions` | `D-21` + W2 & W3 Din 6 amendments (dispatch entry vs completion, claim generation needed, five causes of `count(*)>1`), `P-11`, `P-12` (its `executed_at` is what caught the bad experiment), `P-13` (its `worker_id` is what caught the strays), `D-22` Cost 10 (it has a dispatch endpoint and no completion endpoint) |
 | Claim query | `P-03` (index, Week 4), `P-05` (tiebreak), `D-06` (the guard), `D-23` (the `next_attempt_at` gate and its mandatory `IS NULL` branch; it never consults `attempts`), W1 D3 (`LockRows` below `Limit`), W1 D4 (`SKIP LOCKED`) |
 | Reaper | `D-22` (lease duration lives in its predicate), `P-19` (`IS NULL` branch), `P-20` (its output), `P-22` (its latency, and how to measure it wrong), `D-06` amendment (its guard re-asserts the whole predicate), `D-23` Cost 3 (it re-dispatches with no backoff) |
 | Heartbeat | `P-21` (coverage inverse to failure severity), `D-22` Costs 5–7 (interval chosen not measured; rejects a released lease, untested against a re-claimed one) |
 | `dead_letter` | `D-06` amendment (two migrations, `NOT VALID` → `VALIDATE`), `D-23` Cost 8 (self-describing verdict, no diagnosis), `D-21` amendment (it did not rename history) |
-| `POST /jobs` | `P-07`, `P-08`, `D-05` amendment, W1 D2 |
+| `POST /jobs` | `P-07`, `P-08`, `D-05` amendment, `D-24` (enqueue idempotency), W1 D2 |
 | `GET /jobs/{id}` | `D-05` amendment (egress), `D-03` (enumeration) |
 | Middleware | `P-08`, `D-05` amendment |
 | Worker loop | `P-09`, `P-10`, `P-06` (do not hold the claim transaction), W0 D2 (shutdown), `P-13` (strays), `P-15` (it bounds no handler), `D-23` (it owns the terminal decision) |
@@ -422,14 +426,14 @@ deferred cancellation of in-flight I/O (rejected by measurement)
 | Which index does the claim query need — composite, partial, or none? | Week 4, by `EXPLAIN ANALYZE` | `P-03` |
 | A clean two-worker run with a **proven overlap window** | before `D-01` / `D-02` can be written | `P-12` |
 | `SERIALIZABLE` for the claim — never run | `D-02` | W0 D5 |
-| Who mints the idempotency key, what the dedup window is, and what a duplicate receives (`202` with the original id, or `409`) | Week 3 | `P-07` |
-| Where the dedup check belongs — enqueue or execute | Week 3 | W0 D5 |
+| ~~Who mints the idempotency key, what the dedup window is, and what a duplicate receives (`202` with the original id, or `409`)~~ | ✅ **Closed W3 D4** — caller mints key, API enforces 202-original replay and 409 on payload mismatch | `P-07`, `D-24` |
+| ~~Where the dedup check belongs — enqueue or execute~~ | ✅ **Closed W3 D6 (`D-24`)** — both layers: enqueue for client retry ack loss, execute for worker redispatch | `D-24`, W0 D5 |
 | ~~Reaper deadline wrong in the *safe-looking* direction: live-but-slow worker, lease expires, two legal executions~~ | ✅ **Answered W2 D3 — it happens.** Job 95, overlap `14.783 s` | `D-22` Cost 2, `P-16` |
-| Attempt number vs claim id on `job_executions` — **overdue**, not deferred | **Week 3, with the dedup key** (it expired W2 D3, one week early) | `D-21` amendment, `D-22` Cost 11, `P-11` |
-| A **completion** endpoint on the evidence row (`completed_at`) — without it, a death mid-handler and a lost mark are identical | Week 3, with dedup (it adds a writer to the row the reaper races) | `D-22` Cost 10 |
-| Fencing token / generation counter — CAS cannot tell one `running` from another | Week 3 | `D-06` amendment, `D-22` Cost 7 |
+| Attempt number vs claim id on `job_executions` — **overdue**, not deferred | Slipped at Week 3 Din 6 close to Week 4 (historical: scheduled Week 3) | `D-21` amendment, `D-22` Cost 11, `P-11` |
+| A **completion** endpoint on the evidence row (`completed_at`) — without it, a death mid-handler and a lost mark are identical | Slipped at Week 3 Din 6 close to Week 4 (historical: scheduled Week 3) | `D-22` Cost 10 |
+| Fencing token / generation counter — CAS cannot tell one `running` from another | Slipped at Week 3 Din 6 close to Week 4 (historical: scheduled Week 3) | `D-06` amendment, `D-22` Cost 7 |
 | Handler timeout — the lease is chosen rather than derived because nothing bounds a handler | Week 3/4; blocked on *what status does a timed-out handler get?* | `P-15`, `D-22` rejected (c) |
-| Shutdown-versus-lease: one `slow` job with `payload {"seconds": 45}`, `SIGBREAK` at `T = 3 s` | **Week 3 Din 1 or a named catch-up slot.** Closes `D-22` Cost 8, `P-21`'s untested half, `P-25` on the terminal write | `D-22` Revisit |
+| Shutdown-versus-lease: one `slow` job with `payload {"seconds": 45}`, `SIGBREAK` at `T = 3 s` | Slipped at Week 3 Din 6 close to Week 4 (historical: scheduled Week 3 Din 1) | `D-22` Revisit |
 | `attempts < :max` in the claim gate — needs a sweep to terminalise the unclaimable row | Week 3, if ever; the overdraft is accepted for now | `P-27`, `D-23` rejected |
 | `last_error` — `dead_letter` is a verdict with no diagnosis | Week 4 | `D-23` Cost 8 |
 | Hold duration of a real `ADD CONSTRAINT` under `ACCESS EXCLUSIVE` — the whole Option A vs B number | honestly waits for a large table | `D-06` amendment, `D-07` |

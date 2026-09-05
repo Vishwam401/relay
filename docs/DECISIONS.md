@@ -491,6 +491,22 @@ Chose (a) over (b) because `GENERATED ... AS IDENTITY` is SQL-standard (PG 10+) 
 
 **Revisit when:** Relay needs multi-region or multi-database id generation, or a client genuinely needs the id before the DB round-trip.
 
+### Week 3 Din 6 amendment — D-03 (2026-09-05)
+
+Din 4 verified that database primary key allocation and optional caller idempotency key operate as independent identity concerns:
+- Sequential caller replays with the same idempotency key returned original Job 116 with exactly one stored row `[MEASURED-R]`.
+- Concurrent same-key contending requests returned original Job 121 with exactly one stored row `[MEASURED-R]`.
+- Two equal unkeyed requests created distinct Jobs 123 and 124 `[MEASURED-R]`.
+- Same-key conflicts and uncommitted rollbacks advanced `jobs_id_seq` without allocating visible rows `[MEASURED-R]`.
+
+This confirms that caller retry intent and internal database storage identity can vary independently `[INFERRED]`.
+
+What Din 4 did **not** retest:
+- The underlying performance trade-offs of `bigint` vs `UUID` index locality and B-tree page splits were not remeasured `[NO EVIDENCE in Din 4]`.
+- Multi-region database generation, distributed ID allocation, and client-generated primary keys remain unexercised `[NO EVIDENCE in Din 4]`.
+- Sequential ID enumeration and authorization boundaries were not touched `[NO EVIDENCE in Din 4]`.
+- Indefinite key retention without TTL or tombstone cleanup was accepted for Week 3; post-deletion replay behavior remains mechanism reasoning rather than a measured retention experiment `[INFERRED]`.
+
 ---
 
 ## D-04: `jobs.type` is unconstrained `text`; validation lives in the application, not the database
@@ -623,6 +639,15 @@ This is precisely the property Cost #4 asked for (*"reject before bytes are pars
 **(b) Narrows unauthenticated data exposure.** `D-03` chose sequential DB-generated ids, explicitly accepting that they are guessable, on the grounds that *"an unguessable id is obscurity, not security. The real fix is authorization."* That acceptance is cheap only while ids reveal nothing. Returning `payload` would turn a guessable id into a data read primitive over an endpoint with no auth — enumeration would yield whatever callers put in payloads. Excluding it **narrows the blast radius; it does not eliminate exposure**: `404` versus `200` still reveals which ids exist, and `status` still reveals what the system is doing. `D-03` Cost #3 already noted ids leak approximate job volume. The real fix remains authorization, which is out of scope for the month.
 
 The actual reason the response is minimal is neither of the above: **adding a response field is backward-compatible, removing one is a breaking change.** Under that asymmetry, minimal is the reversible starting point. `attempts` was excluded on top of that because it is always `0` in Week 1 — a field that cannot vary teaches a client nothing while creating a compatibility obligation.
+
+### Week 3 Din 6 amendment — D-05 (2026-09-05)
+
+Din 4 clarified the fingerprint equality mechanism:
+- The canonical request fingerprint bytes are constructed application-side using `sort_keys=True` and compact `separators=(',', ':')` prior to database insertion `[INFERRED]`.
+- Application serialization—not PostgreSQL `jsonb` normalization—is the actual mechanism that made key-replayed requests compare equal regardless of dict key ordering `[MEASURED-R]`.
+- Measured fingerprint differentials established: `F(sleep, {a:1, b:2}) = F(sleep, {b:2, a:1})`, while `F(sleep, {a:1, b:2}) != F(boom, {a:1, b:2})` (type-different) and `F(sleep, {a:1, b:2}) != F(sleep, {a:1, b:3})` (payload-different) `[MEASURED-R]`.
+- Equal payload without an idempotency key (unkeyed requests) legitimately creates distinct job rows; fingerprint equality detects key reuse payload mismatches, not caller intent `[INFERRED]`.
+- Current compact sorted serialization is sufficient for tested fixtures, but does not provide full canonical JSON standards: floating-point numeric formatting, Unicode normalization, and duplicate-key parsing remain unresolved `[INFERRED]`.
 
 ---
 
@@ -1053,6 +1078,13 @@ Recording these so that "not yet decided" is never mistaken for "overlooked":
 | Stream-level body limit (`Content-Length`-independent) | Week 4 | `P-08`. Record the fix's own overshoot bound (limit + one chunk) when it lands |
 | Response fields `type` / `created_at` on `GET /jobs/{id}` | When a consumer needs them | Measured to be near-free (row-store; same heap page). Excluded only for response-surface reversibility, not cost |
 
+### Week 3 Din 6 amendment — D-21 (2026-09-05)
+
+Week 3 audit and Din 5 modeling separated instrument dispatch evidence from effect completion evidence:
+- The `job_executions` table records dispatch start *before* the handler runs; it contains no claim generation, no `completed_at` timestamp, and provides no completion evidence `[INFERRED]`.
+- The `effect_key` in `side_effects` provides durable effect identity (`job:<job_id>`), but cannot serve as claim identity across retries `[INFERRED]`.
+- Din 5 checked effect safety on finite test-side model examples, but live execution against two real concurrent production `src.worker` processes was explicitly unmeasured `[NO EVIDENCE]` and has slipped to Week 4 `[INFERRED]`.
+- Designing an explicit per-dispatch claim generation counter and adding a `completed_at` execution completion endpoint has slipped to Week 4 `[INFERRED]`.
 
 ---
 
@@ -1255,6 +1287,15 @@ branch that did **all** of Din 2's reclaiming.
 - A fencing token or generation counter is designed (Week 3) → Cost 7 and Cost 2's `rowcount = 1` both change
   shape, and `D-06`'s compare-and-set stops being the only transition guard.
 
+### Week 3 Din 6 amendment — D-22 (2026-09-05)
+
+Week 3 Din 5 measurements clarified the status mark and fencing boundaries:
+- Job 95 demonstrated the historical production witness where an old worker's status-only terminal mark returned `rowcount=1` after the row cycled `running -> pending -> running` while Worker B was still executing `[MEASURED-R]`.
+- Din 5 test-side witness explicitly showed that the status guard is generation-blind: stale Worker A's mark succeeded with `stale_mark_rowcount=1`, current Worker B's mark failed with `current_owner_mark_rowcount=0`, while total side effects remained safe at `effects=1` `[MEASURED-R]`.
+- The live concurrent production schedule where a stale heartbeat or mark overwrites a new claim has `[NO EVIDENCE]`.
+- Explicit fencing tokens remain unbuilt in the schema, meaning compare-and-set on `status = 'running'` is the only guard `[INFERRED]`.
+- The execution endpoint timestamp `completed_at` and the 45 s payload + T=3 s `SIGBREAK` shutdown run slipped past Week 3 and are assigned to Week 4 `[INFERRED]`.
+
 ---
 
 ## D-23: bounded retry — increment on claim, `next_attempt_at` column, `base = 5.0 s` exponential with equal jitter, and the bound is on retry *scheduling*, not on dispatches
@@ -1454,6 +1495,43 @@ taken: Week 3, alongside dedup.
   answerable query instead of a five-way question.
 - **A delay needs to be claimed as measured** — then the instrument comes first: `Scheduling retry` lines
   copied into the log **before** any capture is deleted, or a `scheduled_at` recorded on the evidence row.
+
+---
+
+## D-24: two-layer idempotency — separate enqueue identity from execute identity
+
+**Problem:** Relay needs to prevent duplicate side effects when either the HTTP client retries an API call (due to network timeout/disconnect) or the worker runtime reclaims and redispatches a job (due to lease expiry/worker crash). A single identity layer cannot handle both failure domains.
+
+**Options:**
+- (a) enqueue-only idempotency via `idempotency_key` on `POST /jobs`
+- (b) execute-only idempotency via `effect_key` in the worker handler
+- (c) both enqueue identity (`uq_jobs_idempotency_key`) and execute identity (`uq_side_effects_effect_key`)
+
+**Chose:** (c) both layers. Caller retry identity `k_e` operates on HTTP ingress to ensure $|J(k_e)| \le 1$, while stable logical effect identity `k_x = "job:{job_id}"` operates inside the worker execution pipeline to ensure $|E(k_x)| \le 1$.
+
+**Evidence:**
+- On enqueue layer, concurrent same-key requests returned Job 121 twice while inserting exactly one row; the observer recorded `Timeout/PgSleep` and `Lock/transactionid` `[MEASURED-R]`.
+- On execute layer, lease expiry produced Job 125 with two attempts, two executions across two distinct workers, but exactly one committed effect row under `uq_side_effects_effect_key` `[MEASURED-R]`.
+- Enqueue-only fails when Worker A crashes post-effect or lease expires, causing the reaper to redispatch: since $J(k_e)=1$ was already satisfied, enqueue dedup cannot arbitrate the second worker execution `[INFERRED]`.
+- Execute-only fails when the client disconnects before receiving `202 Accepted` and retries with a new job: execute layer sees two distinct jobs (`job:A` and `job:B`) and legally commits an effect for each `[INFERRED]`.
+
+**Cost:**
+- 1. Omitted or lost caller idempotency key completely bypasses enqueue dedup `[INFERRED]`.
+- 2. Current global caller namespace requires strict client-side uniqueness discipline `[INFERRED]`.
+- 3. Database retains idempotency keys forever; retention cleanup without TTL will bound memory or require future tombstone design `[INFERRED]`.
+- 4. Winner latency increases for concurrent callers waiting on transaction locks `[INFERRED]`.
+- 5. Application-owned fingerprint pairing adds serialization overhead on every ingress request `[INFERRED]`.
+- 6. Compact sorted-key serializer boundary does not provide full canonical JSON normalization `[INFERRED]`.
+- 7. Stable `job:{id}` effect key allows only one logical effect kind per job `[INFERRED]`.
+- 8. Historical NULL effect rows exist outside non-null unique index protection `[MEASURED]`.
+- 9. Duplicate delivery still consumes worker CPU and handler time before reaching the conflict no-op `[INFERRED]`.
+- 10. Local table atomicity provides zero guarantee for external side effects like email, HTTP, or payment sinks `[NO EVIDENCE]`.
+
+**Rejected:**
+- (a) Enqueue-only rejected because worker crashes and lease reclaims legally re-execute the single job, requiring execute-time dedup `[INFERRED]`.
+- (b) Execute-only rejected because network ack loss causes client retries that create separate jobs, producing multiple distinct effect rows `[INFERRED]`.
+
+**Revisit when:** Multi-tenant namespacing is introduced, retention TTL policies are implemented, jobs require multiple distinct logical effects, or an external transactional outbox dispatcher is built in Week 4.
 
 ---
 
