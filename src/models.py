@@ -75,6 +75,12 @@ class Job(Base):
         nullable=True,
     )
 
+    claim_generation: Mapped[int] = mapped_column(
+        BigInteger,
+        nullable=False,
+        server_default=text("0"),
+    )
+
     __table_args__ = (
         CheckConstraint(
             "status IN ('pending', 'running', 'succeeded', 'failed', 'dead_letter')",
@@ -107,6 +113,11 @@ class JobExecution(Base):
         DateTime(timezone=True),
         nullable=False,
         server_default=func.now(),
+    )
+
+    claim_generation: Mapped[int | None] = mapped_column(
+        BigInteger,
+        nullable=True,
     )
 
 

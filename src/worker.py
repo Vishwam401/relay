@@ -32,7 +32,9 @@ def request_shutdown(signum: int, frame: Any) -> None:
     SHUTDOWN_REQUESTED = True
 
 
-async def send_heartbeat(job_id: int, stop_event: asyncio.Event) -> None:
+async def send_heartbeat(
+    job_id: int, generation: int, stop_event: asyncio.Event
+) -> None:
     while not stop_event.is_set():
         try:
             await asyncio.wait_for(
@@ -44,13 +46,17 @@ async def send_heartbeat(job_id: int, stop_event: asyncio.Event) -> None:
                 async with session.begin():
                     update_stmt = (
                         update(Job)
-                        .where(Job.id == job_id, Job.status == "running")
+                        .where(
+                            Job.id == job_id,
+                            Job.status == "running",
+                            Job.claim_generation == generation,
+                        )
                         .values(claimed_at=func.now())
                     )
                     result = await session.execute(update_stmt)
                     if result.rowcount == 0:
                         print(
-                            f"[{WORKER_ID}] Heartbeat lost: job {job_id} is no longer 'running'"
+                            f"[{WORKER_ID}] Heartbeat lost: job {job_id} generation {generation} is no longer active"
                         )
                         break
                     print(f"[{WORKER_ID}] Heartbeat sent for job {job_id}")
@@ -113,13 +119,16 @@ REGISTRY: dict[str, Callable[..., Coroutine[Any, Any, None]]] = {
 
 
 
-async def record_execution(job_id: int, worker_id: str) -> None:
+async def record_execution(
+    job_id: int, worker_id: str, claim_generation: int | None = None
+) -> None:
     async with async_session() as session:
         async with session.begin():
             await session.execute(
                 insert(JobExecution).values(
                     job_id=job_id,
                     worker_id=worker_id,
+                    claim_generation=claim_generation,
                 )
             )
 
@@ -138,7 +147,7 @@ async def run_worker() -> None:
         async with async_session() as session:
             async with session.begin():
                 claim_query = (
-                    select(Job.id, Job.type, Job.payload, Job.attempts)
+                    select(Job.id, Job.type, Job.payload, Job.attempts, Job.claim_generation)
                     .where(
                         Job.status == "pending",
                         or_(
@@ -161,30 +170,35 @@ async def run_worker() -> None:
                             status="running",
                             claimed_at=func.now(),
                             attempts=Job.attempts + 1,
+                            claim_generation=Job.claim_generation + 1,
                         )
+                        .returning(Job.claim_generation)
                     )
                     update_result = await session.execute(update_stmt)
-                    if update_result.rowcount == 0:
+                    row = update_result.first()
+                    if not row:
                         print(
                             f"[{WORKER_ID}] Conflict: Job {job.id} was claimed by another writer (rowcount=0)."
                         )
                     else:
+                        generation = row[0]
                         current_attempts = job.attempts + 1
                         claimed_job = (
                             job.id,
                             job.type,
                             job.payload,
                             current_attempts,
+                            generation,
                         )
                         print(
-                            f"[{WORKER_ID}] Claimed job {job.id} (attempt={current_attempts}, rowcount={update_result.rowcount}). Status is now 'running'."
+                            f"[{WORKER_ID}] Claimed job {job.id} (generation={generation}, attempt={current_attempts}, rowcount=1). Status is now 'running'."
                         )
 
         if not claimed_job:
             await asyncio.sleep(POLL_INTERVAL_SECONDS)
             continue
 
-        job_id, job_type, payload, current_attempts = claimed_job
+        job_id, job_type, payload, current_attempts, generation = claimed_job
         handler = REGISTRY.get(job_type)
         next_attempt_at = None
 
@@ -196,13 +210,13 @@ async def run_worker() -> None:
         else:
             stop_event = asyncio.Event()
             heartbeat_task = asyncio.create_task(
-                send_heartbeat(job_id, stop_event)
+                send_heartbeat(job_id, generation, stop_event)
             )
             try:
                 print(
-                    f"[{WORKER_ID}] Executing job {job_id} (type={job_type}, attempt={current_attempts}/{MAX_ATTEMPTS})..."
+                    f"[{WORKER_ID}] Executing job {job_id} (generation={generation}, type={job_type}, attempt={current_attempts}/{MAX_ATTEMPTS})..."
                 )
-                await record_execution(job_id, WORKER_ID)
+                await record_execution(job_id, WORKER_ID, claim_generation=generation)
                 await handler(payload, job_id)
                 print(f"[{WORKER_ID}] Finished execution for job {job_id}.")
                 new_status = "succeeded"
@@ -236,7 +250,11 @@ async def run_worker() -> None:
             async with session.begin():
                 mark_stmt = (
                     update(Job)
-                    .where(Job.id == job_id, Job.status == "running")
+                    .where(
+                        Job.id == job_id,
+                        Job.status == "running",
+                        Job.claim_generation == generation,
+                    )
                     .values(
                         status=new_status,
                         next_attempt_at=next_attempt_at,
@@ -244,9 +262,17 @@ async def run_worker() -> None:
                 )
                 mark_result = await session.execute(mark_stmt)
                 if mark_result.rowcount == 0:
-                    print(
-                        f"[{WORKER_ID}] Conflict on mark: Job {job_id} status was modified by another transaction (rowcount=0)."
-                    )
+                    check_stmt = select(Job.status, Job.claim_generation).where(Job.id == job_id)
+                    check_res = await session.execute(check_stmt)
+                    check_row = check_res.first()
+                    if check_row and check_row.claim_generation != generation:
+                        print(
+                            f"[{WORKER_ID}] Mark fenced: job_id={job_id} held_generation={generation} current_generation={check_row.claim_generation} rowcount=0"
+                        )
+                    else:
+                        print(
+                            f"[{WORKER_ID}] Conflict on mark: Job {job_id} status was modified by another transaction (rowcount=0)."
+                        )
                 else:
                     print(
                         f"[{WORKER_ID}] Marked job {job_id} as '{new_status}' (rowcount={mark_result.rowcount})."

@@ -987,7 +987,7 @@ Din 5 me humne property-based testing se prove kar liya ki deduplication safe ha
 `D-03`/`D-05`/`D-21`/`D-22` ke amendments, `MAP.md`, `LEARNING_LOG.md`, `CURRENT_WEEK.md`,
 `WEEK_03_HANDOFF.md`, carried debts ka verdict, aur commit. **Koi `src/` change nahi.**
 
-**Goal met?** Yes [MEASURED]. All documentation deliverables published, 5-day chain reconciled via database date groups, and zero code/DB modifications made.
+**Goal met?** Yes, with six named slips `[MEASURED]`. Required close documents were published, the 5-day chain reconciled via database date groups, `src/`/`alembic/` had zero delta, and C0/C8 showed zero net durable mutation across the checked database fingerprint.
 
 **Anything else learned?**
 1. Enqueue and execute layers operate on orthogonal distributed failure domains (`D-24`). Enqueue handles caller network timeouts; execute handles worker crashes and lease redispatches.
@@ -1151,8 +1151,9 @@ relay|119|125|125|107|9|12|w3d4_enqueue_idempotency
 final_sql_passed
 tracked_scope=docs/DECISIONS.md,docs/LEARNING_LOG.md,docs/logs/WEEK_03.md,docs/MAP.md
 
-=== FINAL POST-COMMIT TRUTH ===
-FINAL_COMMIT=8118441
+=== CLOSE CONTENT COMMIT (recorded by post-close audit fix) ===
+CLOSE_CONTENT_COMMIT=87f2253
+# This identifies the reviewed Week 3 close-content commit; later provenance-only commits are intentionally separate.
 ```
 
 ## Week close — reconcile chain aur handoff
