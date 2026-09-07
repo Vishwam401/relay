@@ -3,6 +3,7 @@ import os
 import random
 import signal
 import sys
+import traceback
 from collections.abc import Callable, Coroutine
 from typing import Any
 from sqlalchemy import func, insert, or_, select, text, update
@@ -56,10 +57,10 @@ async def send_heartbeat(
                     result = await session.execute(update_stmt)
                     if result.rowcount == 0:
                         print(
-                            f"[{WORKER_ID}] Heartbeat lost: job {job_id} generation {generation} is no longer active"
+                            f"[{WORKER_ID}] Heartbeat lost: job_id={job_id} generation {generation} is no longer active"
                         )
                         break
-                    print(f"[{WORKER_ID}] Heartbeat sent for job {job_id}")
+                    print(f"[{WORKER_ID}] Heartbeat sent for job_id={job_id}")
 
 
 async def handle_sleep(payload: dict, job_id: int = 0) -> None:
@@ -95,9 +96,9 @@ async def handle_effect(payload: dict, job_id: int) -> None:
             inserted_count = result.rowcount
 
     if inserted_count == 1:
-        print(f"[{WORKER_ID}] [EFFECT HANDLER] Side-effect written for job {job_id} (rowcount={inserted_count}).")
+        print(f"[{WORKER_ID}] [EFFECT HANDLER] Side-effect written for job_id={job_id} (rowcount={inserted_count}).")
     else:
-        print(f"[{WORKER_ID}] [EFFECT HANDLER] Side-effect deduped for job {job_id} (rowcount={inserted_count}).")
+        print(f"[{WORKER_ID}] [EFFECT HANDLER] Side-effect deduped for job_id={job_id} (rowcount={inserted_count}).")
 
     duration = float(payload.get("seconds", 2.0))
     block = bool(payload.get("block", False))
@@ -107,7 +108,7 @@ async def handle_effect(payload: dict, job_id: int) -> None:
         time.sleep(duration)
     else:
         await asyncio.sleep(duration)
-    print(f"[{WORKER_ID}] [EFFECT HANDLER] Work completed for job {job_id}.")
+    print(f"[{WORKER_ID}] [EFFECT HANDLER] Work completed for job_id={job_id}.")
 
 
 REGISTRY: dict[str, Callable[..., Coroutine[Any, Any, None]]] = {
@@ -178,7 +179,7 @@ async def run_worker() -> None:
                     row = update_result.first()
                     if not row:
                         print(
-                            f"[{WORKER_ID}] Conflict: Job {job.id} was claimed by another writer (rowcount=0)."
+                            f"[{WORKER_ID}] Conflict: job_id={job.id} was claimed by another writer (rowcount=0)."
                         )
                     else:
                         generation = row[0]
@@ -191,7 +192,7 @@ async def run_worker() -> None:
                             generation,
                         )
                         print(
-                            f"[{WORKER_ID}] Claimed job {job.id} (generation={generation}, attempt={current_attempts}, rowcount=1). Status is now 'running'."
+                            f"[{WORKER_ID}] [claim] Claimed job {job.id} (job_id={job.id}, generation={generation}, attempt={current_attempts}, rowcount=1). Status is now 'running'."
                         )
 
         if not claimed_job:
@@ -201,12 +202,16 @@ async def run_worker() -> None:
         job_id, job_type, payload, current_attempts, generation = claimed_job
         handler = REGISTRY.get(job_type)
         next_attempt_at = None
+        completed_at = None
+        last_error = None
 
         if not handler:
             print(
-                f"[{WORKER_ID}] Unknown job type: '{job_type}'. Marking failed."
+                f"[{WORKER_ID}] Unknown handler for job_type='{job_type}', job_id={job_id}. Marking terminal 'dead_letter'."
             )
-            new_status = "failed"
+            new_status = "dead_letter"
+            completed_at = func.now()
+            last_error = f"Unknown job type: '{job_type}'"
         else:
             stop_event = asyncio.Event()
             heartbeat_task = asyncio.create_task(
@@ -214,13 +219,16 @@ async def run_worker() -> None:
             )
             try:
                 print(
-                    f"[{WORKER_ID}] Executing job {job_id} (generation={generation}, type={job_type}, attempt={current_attempts}/{MAX_ATTEMPTS})..."
+                    f"[{WORKER_ID}] [execute] Executing job {job_id} (job_id={job_id}, generation={generation}, type={job_type}, attempt={current_attempts}/{MAX_ATTEMPTS})..."
                 )
                 await record_execution(job_id, WORKER_ID, claim_generation=generation)
                 await handler(payload, job_id)
-                print(f"[{WORKER_ID}] Finished execution for job {job_id}.")
+                print(f"[{WORKER_ID}] Finished execution for job_id={job_id}.")
                 new_status = "succeeded"
+                completed_at = func.now()
+                last_error = None
             except Exception as exc:
+                last_error = traceback.format_exc()
                 if current_attempts < MAX_ATTEMPTS:
                     delay = min(
                         BASE_BACKOFF_SECONDS
@@ -231,16 +239,19 @@ async def run_worker() -> None:
                         0, delay / 2.0
                     )
                     new_status = "pending"
+                    completed_at = None
                     next_attempt_at = func.now() + text(
                         f"interval '{actual_delay} seconds'"
                     )
                     print(
-                        f"[{WORKER_ID}] Job {job_id} failed attempt {current_attempts}/{MAX_ATTEMPTS}: {exc}. Scheduling retry in {actual_delay:.2f}s (new_status='pending')."
+                        f"[{WORKER_ID}] Job_id={job_id} failed attempt {current_attempts}/{MAX_ATTEMPTS}: {exc}. Scheduling retry in {actual_delay:.2f}s (new_status='pending')."
                     )
                 else:
                     new_status = "dead_letter"
+                    completed_at = func.now()
+                    next_attempt_at = None
                     print(
-                        f"[{WORKER_ID}] Job {job_id} reached max_attempts ({MAX_ATTEMPTS}): {exc}. Marking terminal 'dead_letter'."
+                        f"[{WORKER_ID}] Job_id={job_id} reached max_attempts ({MAX_ATTEMPTS}): {exc}. Marking terminal 'dead_letter'."
                     )
             finally:
                 stop_event.set()
@@ -258,6 +269,8 @@ async def run_worker() -> None:
                     .values(
                         status=new_status,
                         next_attempt_at=next_attempt_at,
+                        completed_at=completed_at,
+                        last_error=last_error,
                     )
                 )
                 mark_result = await session.execute(mark_stmt)
@@ -271,11 +284,11 @@ async def run_worker() -> None:
                         )
                     else:
                         print(
-                            f"[{WORKER_ID}] Conflict on mark: Job {job_id} status was modified by another transaction (rowcount=0)."
+                            f"[{WORKER_ID}] Conflict on mark: job_id={job_id} status was modified by another transaction (rowcount=0)."
                         )
                 else:
                     print(
-                        f"[{WORKER_ID}] Marked job {job_id} as '{new_status}' (rowcount={mark_result.rowcount})."
+                        f"[{WORKER_ID}] [mark] Marked job {job_id} as '{new_status}' (job_id={job_id}, rowcount={mark_result.rowcount})."
                     )
 
     print(f"[{WORKER_ID}] Clean shutdown complete. Exiting with code 0.")

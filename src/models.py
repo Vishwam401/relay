@@ -81,6 +81,16 @@ class Job(Base):
         server_default=text("0"),
     )
 
+    completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
+    last_error: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+    )
+
     __table_args__ = (
         CheckConstraint(
             "status IN ('pending', 'running', 'succeeded', 'failed', 'dead_letter')",
