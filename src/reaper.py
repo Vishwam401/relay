@@ -30,7 +30,7 @@ async def reap_stuck_jobs() -> int:
                 Job.claimed_at < func.now() - text(f"interval '{LEASE_DURATION_SECONDS} seconds'"),
             )
             select_stmt = (
-                select(Job.id, Job.status, Job.claimed_at)
+                select(Job.id, Job.status, Job.claimed_at, Job.claim_generation)
                 .where(Job.status == "running", predicate)
                 .order_by(Job.id)
             )
@@ -46,7 +46,9 @@ async def reap_stuck_jobs() -> int:
                         predicate,
                     )
                     .values(status="pending", claimed_at=None)
-                    .returning(Job.status, func.clock_timestamp())
+                    .returning(
+                        Job.status, func.clock_timestamp(), Job.claim_generation
+                    )
                 )
                 update_result = await session.execute(update_stmt)
                 returned_row = update_result.first()
@@ -54,8 +56,16 @@ async def reap_stuck_jobs() -> int:
                 post_status = returned_row[0] if returned_row else candidate.status
                 db_ts = returned_row[1] if returned_row else None
                 ts_str = db_ts.isoformat() if db_ts else datetime.now().isoformat()
+                post_generation = (
+                    returned_row[2] if returned_row else candidate.claim_generation
+                )
+                # Field order is load-bearing: `job_id=<n> pre_status=... matched=...
+                # post_status=...` keeps the Din 1/Din 2 `id=<n> pre_status=...`
+                # substring intact, so older Get-LogEvent patterns still match.
                 print(
-                    f"[{REAPER_ID}] [DB_TIME: {ts_str}] id={candidate.id} pre_status={candidate.status} matched={matched} post_status={post_status}"
+                    f"[{REAPER_ID}] [DB_TIME: {ts_str}] [reclaim] job_id={candidate.id} "
+                    f"pre_status={candidate.status} matched={matched} post_status={post_status} "
+                    f"pre_generation={candidate.claim_generation} post_generation={post_generation}"
                 )
                 if matched > 0:
                     reclaimed_count += matched
