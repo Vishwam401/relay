@@ -36,6 +36,7 @@ desktop.ini
 
 # Logs & Database files
 *.log
+logs/
 *.sqlite
 *.db
 

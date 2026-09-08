@@ -165,3 +165,46 @@ class SideEffect(Base):
         UniqueConstraint("effect_key", name="uq_side_effects_effect_key"),
     )
 
+
+class Outbox(Base):
+    __tablename__ = "outbox"
+
+    id: Mapped[int] = mapped_column(
+        BigInteger,
+        primary_key=True,
+        autoincrement=True,
+    )
+
+    job_id: Mapped[int] = mapped_column(
+        BigInteger,
+        nullable=False,
+    )
+
+    effect_key: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+    )
+
+    payload: Mapped[dict] = mapped_column(
+        JSONB,
+        nullable=False,
+        server_default=text("'{}'::jsonb"),
+    )
+
+    dispatched_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
+    attempts: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        server_default=text("0"),
+    )
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+

@@ -9,7 +9,7 @@ from typing import Any
 from sqlalchemy import func, insert, or_, select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from src.database import async_session
-from src.models import Job, JobExecution, SideEffect
+from src.models import Job, JobExecution, Outbox, SideEffect
 
 POLL_INTERVAL_SECONDS = 2.0
 HEARTBEAT_INTERVAL_SECONDS = 10.0
@@ -81,6 +81,7 @@ async def handle_slow(payload: dict, job_id: int = 0) -> None:
 
 async def handle_effect(payload: dict, job_id: int) -> None:
     effect_key = f"job:{job_id}"
+    inserted_count = 0
     async with async_session() as session:
         async with session.begin():
             stmt = (
@@ -95,8 +96,23 @@ async def handle_effect(payload: dict, job_id: int) -> None:
             result = await session.execute(stmt)
             inserted_count = result.rowcount
 
+            if inserted_count == 1:
+                outbox_stmt = insert(Outbox).values(
+                    job_id=job_id,
+                    effect_key=effect_key,
+                    payload=payload,
+                )
+                await session.execute(outbox_stmt)
+
+            if payload.get("crash_at") == "before_commit":
+                print(
+                    f"[{WORKER_ID}] [crash_at] Triggering before_commit crash for job_id={job_id} before session commit."
+                )
+                sys.stdout.flush()
+                os._exit(1)
+
     if inserted_count == 1:
-        print(f"[{WORKER_ID}] [EFFECT HANDLER] Side-effect written for job_id={job_id} (rowcount={inserted_count}).")
+        print(f"[{WORKER_ID}] [EFFECT HANDLER] Side-effect and outbox written for job_id={job_id} (rowcount={inserted_count}).")
     else:
         print(f"[{WORKER_ID}] [EFFECT HANDLER] Side-effect deduped for job_id={job_id} (rowcount={inserted_count}).")
 
