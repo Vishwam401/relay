@@ -18,7 +18,7 @@ async def lifespan(app: FastAPI):
                 """
                 CREATE TABLE IF NOT EXISTS sink_deliveries (
                     id bigserial PRIMARY KEY,
-                    idempotency_key text NOT NULL,
+                    idempotency_key text NOT NULL UNIQUE,
                     job_id bigint NOT NULL DEFAULT 0,
                     received_at timestamptz NOT NULL DEFAULT now(),
                     body jsonb NOT NULL DEFAULT '{}'::jsonb
@@ -53,39 +53,59 @@ async def deliver(req: DeliverRequest):
 
     async with async_session() as session:
         if dedup_enabled:
-            # Check if this idempotency_key has already been delivered
-            check_stmt = text(
-                "SELECT id FROM sink_deliveries WHERE idempotency_key = :k LIMIT 1"
+            # Atomic single statement: INSERT ... ON CONFLICT (idempotency_key) DO NOTHING
+            insert_stmt = text(
+                """
+                INSERT INTO sink_deliveries (idempotency_key, job_id, body, received_at)
+                VALUES (:k, :job_id, CAST(:body AS jsonb), now())
+                ON CONFLICT (idempotency_key) DO NOTHING
+                """
             )
-            res = await session.execute(check_stmt, {"k": req.idempotency_key})
-            if res.first() is not None:
+            res = await session.execute(
+                insert_stmt,
+                {
+                    "k": req.idempotency_key,
+                    "job_id": req.job_id,
+                    "body": json.dumps(req.body),
+                },
+            )
+            await session.commit()
+
+            if res.rowcount == 0:
                 print(f"[deliver] idempotency_key={req.idempotency_key} result=duplicate")
                 sys.stdout.flush()
                 return {
                     "result": "duplicate",
                     "idempotency_key": req.idempotency_key,
                 }
+            else:
+                print(f"[deliver] idempotency_key={req.idempotency_key} result=applied")
+                sys.stdout.flush()
+                return {
+                    "result": "applied",
+                    "idempotency_key": req.idempotency_key,
+                }
+        else:
+            # SINK_DEDUP disabled: unconditional insert
+            insert_stmt = text(
+                """
+                INSERT INTO sink_deliveries (idempotency_key, job_id, body, received_at)
+                VALUES (:k, :job_id, CAST(:body AS jsonb), now())
+                """
+            )
+            await session.execute(
+                insert_stmt,
+                {
+                    "k": req.idempotency_key,
+                    "job_id": req.job_id,
+                    "body": json.dumps(req.body),
+                },
+            )
+            await session.commit()
 
-        # Insert delivery
-        insert_stmt = text(
-            """
-            INSERT INTO sink_deliveries (idempotency_key, job_id, body)
-            VALUES (:k, :job_id, CAST(:body AS jsonb))
-            """
-        )
-        await session.execute(
-            insert_stmt,
-            {
-                "k": req.idempotency_key,
-                "job_id": req.job_id,
-                "body": json.dumps(req.body),
-            },
-        )
-        await session.commit()
-
-        print(f"[deliver] idempotency_key={req.idempotency_key} result=applied")
-        sys.stdout.flush()
-        return {
-            "result": "applied",
-            "idempotency_key": req.idempotency_key,
-        }
+            print(f"[deliver] idempotency_key={req.idempotency_key} result=applied")
+            sys.stdout.flush()
+            return {
+                "result": "applied",
+                "idempotency_key": req.idempotency_key,
+            }

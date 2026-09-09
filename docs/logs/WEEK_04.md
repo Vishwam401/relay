@@ -924,3 +924,288 @@ entry, and it is worth noticing that the *design* file is more honest than the *
 says *"delivery at-least-once rehti hai"*, which is right. Din 4's job is the opposite discipline — it runs the
 real processes against each other and lets the interleavings, not the prose, decide what is true.
 
+
+---
+
+## Din 4 — Asli do worker, disposable DB, production transaction boundaries: project ka pehla asli fence (`2026-09-09`)
+
+**Original goal (from the BRIEF):** Week 3 Din 5 ka Layer B dobara, par test-side SQL ke bagair — do asli
+`python -m src.worker`, asli `src.reaper`, asli `src.dispatcher`, asli commit boundaries, ek **disposable** DB
+pe, aur interleaving sirf timing + payload se control hoti hui.
+
+**Goal met? YES, aur ek pehli baar ke saath.** `[MEASURED]` Chaaron gate pass: C0, C1 (`C1a`/`C1b`/`C1c`), C2,
+C3, C4 (`C4_fence` ke saath), C5. Aur `fenced_lines=1` — **project ka pehla `Mark fenced` production path pe.**
+Din 1 aur Din 2 ne saat `Conflict on mark` diye aur zero fence, kyunki wahan koi teesra claimant hi nahi tha.
+Aaj worker B asli tha, to generation predicate ke paas reject karne ke liye kuch tha.
+
+**Evidence DB ka delta `0` on the eight asserted counters** — aur ye aaj ka paanchvaan verification item tha,
+afterthought nahi. `P-31` ki teesri occurrence yahin ruki.
+
+---
+
+### 📊 Measured / Observed
+
+#### Seal & retained evidence
+
+| Artifact / Check | Value / Result | Provenance |
+|---|---|---|
+| Frozen SHA-256 | `0513D035EF4D994C11A570FB52E19FA44AE661E085216B5CE4F575F9F725006C` | `[MEASURED-R]` re-verified at review, unchanged |
+| Frozen file | `docs/daily/week_04/DIN_04_PREDICTIONS_FROZEN.md` — `### Observed` and `### After KEY` blocks empty, as required | `[MEASURED-R]` |
+| Git commit at start | `6543efa` — `git cat-file -t 6543efa` → `commit` | `[MEASURED-R]`, and checked because Din 3 recorded a hash that exists nowhere |
+| Working tree at close | `M alembic/env.py · M src/database.py · M src/models.py · M src/sink.py · M src/worker.py · ?? alembic/versions/w4d4_sink_unique_add_sink_unique.py` — uncommitted | `[MEASURED-R]` |
+| Alembic heads | `w4d4_sink_unique (head)` — single head | `[MEASURED-R]` |
+| Evidence DB revision | `w4d3_outbox` — **one behind head**, `alembic check` → `FAILED: Target database is not up to date` | `[MEASURED-R]` |
+| Log files | `w4d4_preflight` · `w4d4_step2_*` · `w4d4_ilA_*` · `w4d4_ilB_*` · `w4d4_ilBprime_*` (stdout + stderr, `22` files) | `[MEASURED-R]` all present |
+| Relay processes at close | `0` | `[MEASURED-R]` re-verified at review |
+| Probe databases at close | `0` (`relay_w4_witness` dropped) | `[MEASURED-R]` |
+| Regression suite | `pytest tests -q` → `7 passed in 3.22s` — **record only, not a gate over today's code**, see `P-37` | `[MEASURED-R]` |
+
+#### C1 — target isolation, receiver `UNIQUE`, and the design gate
+
+- **`C1a`** `[MEASURED]` `P-28` guard shipped as detector **and** preventer: pre-flight asserts `current_database()`, and `alembic/env.py` overrides `sqlalchemy.url` from `os.environ["DATABASE_URL"]` with an `asyncpg → psycopg` rewrite. Alembic and worker now agree on target from one variable. **This also silently defeats `alembic -c <ini>` — `P-39`.**
+- **`C1b`** `[MEASURED]` Migration lifecycle on the witness DB: `head → -1 → head`. `UNIQUE` positive proof: serial `stored=1`; concurrent `N=2` `stored=1`; `N=5` `stored=1`. Independently reproduced at review on a disposable DB: `N=5` → `1 × 200 applied`, `4 × 200 duplicate`, `1` row `[MEASURED-R 2026-09-09]`.
+- **`C1c`** `[MEASURED]` `DIN_04_DESIGN.md` carries four decision sections, each with `Chosen` / `Rejected` / `Cost`, plus the interleavings table and the three-snapshot protocol.
+
+#### C2 — five real processes, five resolved targets
+
+```text
+api:      resolved_db=relay_w4_witness
+worker-a: resolved_db=relay_w4_witness
+worker-b: resolved_db=relay_w4_witness
+reaper:   resolved_db=relay_w4_witness
+dispatcher: resolved_db=relay_w4_witness
+```
+
+`[MEASURED]` `5/5` on the witness DB, four distinct OS PIDs, four distinct `worker_id` values in
+`job_executions`. `Q1(c)`'s realistic accident — a sixth process started from a fresh tab landing on the
+evidence DB — did not happen, and the pre-flight is why it would have been caught rather than discovered later.
+
+#### C4 — the fence, and what it cost
+
+`[MEASURED]` Grepped by line **name**, not by `rowcount`, across all four producer logs:
+
+```text
+fenced_lines            = 1
+conflict_on_mark_lines  = 0
+claim_conflict_lines    = 0
+unstructured            = 0
+```
+
+Raw, from `logs/w4d4_ilA_workerA.log`:
+
+```text
+[worker-18308] Mark fenced: job_id=7 held_generation=1 current_generation=2 rowcount=0
+```
+
+`[MEASURED]` Interleaving A composed exactly as designed: worker A claimed job `7` at generation `1`, a `45 s`
+blocking handler starved the `10 s` heartbeat, the `30 s` lease expired, the reaper reclaimed to `pending`
+**without advancing the generation**, worker B claimed and took it to generation `2`, and A's late mark matched
+`0` rows. Two conditions of A's three-part predicate had failed by then — `status` and `claim_generation` — and
+either alone was sufficient.
+
+`[MEASURED]` `conflict_on_mark_lines = 0` is the discriminator working, not a gap: `Conflict on mark` is the
+same `rowcount = 0` reached through a *different* predicate failure, and reaching it requires A to mark inside
+the window after the reclaim and before B's claim. That window is bounded by the worker's `2.0 s` poll and A
+did not land in it.
+
+`[MEASURED]` Zero duplicate side effects (`effects_ok|0`), and `job_executions > jobs` strictly — `20 > 9`.
+That inequality is the part that makes the rest mean anything: had the two counts been equal, no row was ever
+dispatched twice and *"per job exactly one effect"* would have had no test today, only a non-event (`P-12`).
+
+#### Interleaving B′ — the poison-pill loop, measured
+
+`[MEASURED]` From `logs/w4d4_ilBprime_summary.txt`, on a clone of job `136`'s payload:
+
+```text
+final_job: job|9|running|4|4|2026-09-09 10:19:51.76533+00|NULL|NULL
+exec_count: 4        side_effects: 0        iterations: 4
+side_effects_id_seq: 12 -> 16   (delta 4)
+outbox_id_seq:        4 -> 8    (delta 4)
+```
+
+`attempts = 4` and `claim_generation = 4` moving together is what proves these were four **claims** and not
+four reclaims — the reaper does not touch the generation. `side_effects = 0` across four handler runs proves
+the crash precedes the commit every time. `status = running` at `attempts = 4` with `MAX_ATTEMPTS = 3` is the
+direct observation that the bound's branch is unreachable. Period `~32 s` = `30 s` lease + two `2.0 s` polls,
+so the loop is paced by the **lease**; the polls wait behind it. `2` sequence values burned per iteration,
+`0` rows committed. `P-36`'s `[INFERRED]` half is now `[MEASURED]` — see its amendment.
+
+#### C5 — closing bench and the delta that had to be zero
+
+`[MEASURED]` `frozen_unchanged=True` · `relay_processes=0` · `job136_untouched=True` (`136|running|1|1`) ·
+`probe_dbs=0` · evidence-DB delta `0` on the eight asserted counters. Baseline was **captured in C0**, not
+hardcoded, so the check cannot pass by matching a stale literal.
+
+`[MEASURED-R 2026-09-09]` Re-read independently at review time and unchanged from Din 3's close:
+
+```text
+relay|jobs=133|execs=145|effects=19|outbox=4|sink=10|se_seq=39|ob_seq=5|head=w4d3_outbox
+job 136 -> 136|running|1|1
+probe dbs matching 'relay_%' -> 0
+```
+
+---
+
+### 🧠 Prediction review — frozen text only
+
+**Score of record: `1.5 / 5.0`.** Self-scored `2.25`; corrected down by `0.75` at review. Full rubric-row
+mapping and reasoning are in `docs/daily/week_04/DIN_04_ANSWERS.md` under *Reviewer-corrected score*; the
+self-score is preserved there verbatim above it.
+
+| Q | Self | Corrected | Why |
+|---|---:|---:|---|
+| Q1 | `0.5` | `0.5` | Held. (a) target right / mechanism absent / hedged `idk`, (b) wrong (`alembic.ini` won), (c) right. |
+| Q2 | `1.0` | **`0.5`** | The `1.0` row requires the `SKIP LOCKED` result-set mechanism. Frozen text has outcome only. |
+| Q3 | `0.25` | `0.25` | Held, as a proportional award — half of one sub-answer out of three. |
+| Q4 | `0.5` | **`0.25`** | The `0.5` row needs (c), which was `idk`. And frozen (b) describes the **rejected** pre-`SELECT` shape. |
+| Q5 | `0.0` | `0.0` | Held. Loop not identified at all. |
+
+**Both corrections have one cause:** credit was taken for mechanism that appears in `### Observed + meri
+explanation` — written after the measurement, which is where it belongs and is exactly what the rubric's first
+line excludes. `Q2 = 1.0` reads as *"I knew this"*; the frozen text shows *"I knew the outcome, not the
+mechanism"*, and keeping those separable is the only reason the number carries information.
+
+**And the number that actually improved is not this one.** All five `### Observed` blocks were filled before the
+KEY was opened, and four are **correct on the mechanism** — `SKIP LOCKED` filtering the result set, the reaper
+not advancing the generation, sequences being non-transactional, and the two-shape status-code split. Din 2:
+empty. Din 3: filled. Today: filled and right. The KEY named that beat as more important than Part B's score,
+and it is where the day's real gain sits.
+
+---
+
+### 💡 What the session established — **user must rewrite this in his own words**
+
+*Reviewer-written. Three of these are what you will be asked about; the wording below is mine and should not
+survive as mine.*
+
+1. `[MEASURED]` **A fencing token only demonstrates fencing when a rival actually claims.** `Mark fenced` and
+   `Conflict on mark` are both `rowcount = 0` and they fail on different predicates — `claim_generation` versus
+   `status`. Two days of `Conflict on mark` with zero fences was not a fence working quietly; it was a fence
+   with nothing to reject. What changed today was the presence of worker B, not the code.
+2. `[MEASURED]` **A check and a constraint are different objects, and only one has no window.**
+   `SELECT`-then-`INSERT` was wrong in a `~4 ms` gap and produced `5` rows for `5` concurrent requests
+   yesterday; `UNIQUE` + `ON CONFLICT DO NOTHING` produced `1`, because conflict detection happens inside the
+   index rather than inside the application. Din 3's `1` was a correct output of incorrect code.
+3. `[MEASURED]` **The word "loop" carries no rate.** The poison-pill loop runs at `~32 s` per iteration because
+   a `30 s` lease gates it; the dispatcher's retry loop runs at `~2.5 s` because nothing gates it and TCP
+   connect failure supplies the pacing. Same word, order of magnitude apart, and the difference is which
+   component holds a lease.
+4. `[MEASURED]` **`job_executions > jobs` is a precondition for the day's claim, not a statistic.** Equality
+   means no row was dispatched twice, which means *"duplicate execution does not duplicate side effects"* was
+   not tested — only unobserved. `20 > 9` is what licenses `effects_ok|0` to mean anything.
+5. `[MEASURED]` **A rejected `UPDATE` drops everything it was carrying, together.** One statement, one
+   `rowcount`. Correct for `status`; wrong for `last_error`, which is an observation rather than a transition,
+   and the only process that saw the exception is the one being refused. `P-25` / `P-30`, third carrier.
+
+---
+
+### 🔍 Reviewer close — Din 4 `[2026-09-09]`
+
+**Final grade: `8.5 / 10`.** Frozen-prediction score corrected `2.25 → 1.5`.
+
+**What earns it.** The day's headline is a genuine first and it was produced the hard way — real processes, real
+commit boundaries, interleaving driven only by payload and stagger, and the fence grepped by line **name**
+rather than by `rowcount`, which is the one grep that could tell the two `rowcount = 0` lines apart. `P-31`
+finally became a `throw` instead of a table row, and the baseline was captured rather than hardcoded, so the
+delta check cannot pass by accident. `P-36`'s inferred loop was run on a disposable DB and every clause of the
+inferred mechanism held, including the counter-pair (`attempts` and `claim_generation` moving together) that
+distinguishes a claim loop from a reclaim loop. The evidence DB is byte-identical to Din 3's close, verified
+independently. And the negative direction was respected: `conflict_on_mark_lines = 0` was recorded as a timing
+outcome rather than smoothed into the fence count.
+
+**What the lost point and a half are.** Six `[MEASURED-R]` defects below. The pattern is narrower than Din 3's
+and more interesting: **every one of them is a side effect of a correct fix.** The `P-28` preventer works and
+disables `-c`. The `UNIQUE` works and kills its own negative control. The migration is real and its guard
+checks a name instead of a column set. `ON CONFLICT DO NOTHING` removes the race and introduces a wait. Din 3
+shipped weaker mechanisms than it argued; Din 4 shipped the right mechanisms and did not price their edges.
+
+#### Corrections table — reviewer-measured
+
+| # | Claim as written | Measured finding | Provenance |
+|---|---|---|---|
+| 1 | Self-score `2.25/5.0` on the frozen card | **`1.5/5.0`** against `DIN_04_KEY.md`'s rubric. Q2 `1.0 → 0.5` (the `1.0` row requires the `SKIP LOCKED` result-set mechanism; frozen text has outcome only). Q4 `0.5 → 0.25` (the `0.5` row requires (c), which was `idk`; and frozen (b) describes the **rejected** pre-`SELECT` shape, under which one caller gets `500` — as built, both get `200`). Both overcredits draw on `### Observed` prose, which the rubric's first line excludes by name. | `[MEASURED-R]` rubric applied line by line |
+| 2 | `C1a=pass` — `P-28` isolation guard | The preventer is **unconditional** and silently overrides an explicit `alembic -c <ini>`. With `$env:DATABASE_URL` → `A` and an ini copy → `B`: `alembic -c <copy> upgrade head` created **`0` tables in `B`**, exit `0`, no warning. Same command with the variable removed: **`6` tables in `B`**. Effective precedence is now `$env:DATABASE_URL` > `-c <ini>` > `alembic.ini` — the most specific instruction loses to the least visible, and `-c <ini copy>` is the isolation mechanism the KEY itself prescribes. `P-39` | `[MEASURED-R]`, disposable DBs, dropped |
+| 3 | `P-34` addressed by the `SinkDelivery` model + `w4d4_sink_unique` | `sink_deliveries` still has **two creators** with **two different constraint names**. `src/sink.py`'s DDL produces the inline default `sink_deliveries_idempotency_key_key`; the revision produces `uq_sink_deliveries_idempotency_key`; and the revision's `else` branch tests for its own **name**. Sink-first ordering therefore yields **two** unique constraints on one column, and `downgrade()` drops only one — so `head → -1 → head` is not a round trip there. Din 4's lifecycle test passed because it ran migration-first, which is the arm where the bug is absent. `P-38` | `[MEASURED-R]`, both arms run |
+| 4 | *"`C1b=pass` … concurrent `N=2` and `N=5` stored=1"* as proof of receiver dedup | Reproduced and correct. But the `UNIQUE` sits below **both** branches of the `SINK_DEDUP` switch, so the negative control is gone: `SINK_DEDUP=0` with two concurrent same-key requests now returns `200 applied` + **`500 Internal Server Error`** (`asyncpg.UniqueViolationError`, unhandled), storing `1` row. It can no longer produce `2` on any timing. Din 3's Run A/Run B differential stays valid as **history** and is not reproducible against current `HEAD`. `P-40` | `[MEASURED-R]`, traceback captured |
+| 5 | Faisla 3's reasoning: *"koi race window nahi… conflict detection index ke andar hota hai"* | True about the race, silent about the wait. `ON CONFLICT DO NOTHING` **blocks** on an uncommitted conflicting row: with a holder transaction open, a same-key `POST /deliver` was unfinished after `3.0 s`, and completed at **`3.058 s`** the moment the holder rolled back. `SKIP LOCKED` returns empty immediately; `DO NOTHING` waits. Composed with the dispatcher holding a row lock across the HTTP call and Din 5's `pool_size=2`, a slow `sink_deliveries` writer surfaces as `pool_timeout` inside Relay — chain `[INFERRED]`, links `[MEASURED]`. No `lock_timeout` or `statement_timeout` on the receiver. `P-41` | `[MEASURED-R]` |
+| 6 | `result=duplicate` read as *"this delivery is already stored"* | It asserts only that the **key** was seen. Same key with `job_id=333, body={"totally":"different"}` against a stored `job_id=222, body={"holder":false}` → `200 duplicate`, stored row **unchanged**, divergent payload discarded with no error and no log line naming the divergence. Discarding is correct behaviour; the response and log wording overclaim. The property that makes it safe — one key ⇒ one intended payload — lives in `src/dispatcher.py`'s minting and is asserted nowhere. `D-24` covers enqueue and execute identity; **delivery identity is a third layer with no written invariant.** `P-42` | `[MEASURED-R]` |
+| 7 | `pytest tests -q → 7 passed` quoted after the migration as the regression gate | The suite's **only** `src` import is `from src.models import Job, JobExecution, SideEffect`. No test imports `src.worker`, `src.reaper`, `src.api`, `src.dispatcher`, `src.sink`, or `src.database`, and neither `Outbox` nor `SinkDelivery` is imported. The gate would pass identically if `src/worker.py` were emptied. Separately: `tests/__pycache__/conftest…pyc` and `test_api…pyc` exist while `tests/conftest.py` and `tests/test_api.py` do not, and `git ls-files tests` returns only the two `tests/din5/` files — never tracked. `P-37` | `[MEASURED-R]` |
+| 8 | `C5=pass` — *"evidence DB delta strictly `0`"* | The delta **is** `0` and the assertion is real; the adverb is not. What was asserted is equality of eight counters plus the revision, and `sink_deliveries` is deliberately outside the frozen set on a day that changes the receiver's schema. Write *"delta `0` on the eight asserted counters"*. `AGENTS` rule 35, in miniature, on an otherwise correct gate. | `[MEASURED-R]` re-read at review |
+
+#### Two smaller items, recorded without a `P-` number
+
+- `alembic/env.py`'s rewrite matches only the literal `postgresql+asyncpg://`, so `postgresql://…` or `postgresql+psycopg2://…` passes through unadapted and fails at connect with a driver error rather than a clear message. Folded into `P-39`.
+- `src/database.py` now prints `resolved_db=<db>` at **import** time, unconditionally. It is what made the five-process pre-flight possible and it should stay. Note the cost: any process importing `src.database` — including `pytest` and any future JSON-on-stdout tool — emits that line before doing anything. Din 5's load harness should not parse `src` stdout as structured output without accounting for it.
+
+#### Reviewer's own wrong prediction, recorded
+
+`[INFERRED, then refuted]` Reading the `alembic/env.py` diff, I expected `.env` to leak into migrations — the
+reasoning being that `env.py` imports `src.models`, so `load_dotenv()` would run and populate `DATABASE_URL`
+from `.env`, making the override fire even in a clean shell and pointing every `-c`-isolated migration at the
+evidence database. It does not: `src/models.py` imports nothing from `src.database` `[MEASURED-R]`, so
+`load_dotenv()` never runs inside Alembic, and a clean-shell `-c <ini>` works correctly (`6` tables in the
+intended target). Had I written that without checking, it would have read as a severe live defect when the
+actual defect is narrower and conditional. Worth keeping because the safety here rests on **one import line in
+a file nobody edited for this purpose** — it is a property, not a guard, and `P-39` names the two edits that
+would undo it.
+
+#### Arithmetic verified independently
+
+Evidence DB re-read from `psql` at review time: `133` jobs, `145` executions, `19` side effects, `4` outbox,
+`10` sink deliveries, `side_effects_id_seq = 39`, `outbox_id_seq = 5`, Alembic `w4d3_outbox`, job `136` at
+`136|running|1|1`, `0` databases matching `relay_%` `[MEASURED-R]`. Identical to Din 3's close on every
+counter — **the day's delta on the evidence database is `0`, confirmed by a second party.** B′'s internals
+reconcile: `4` iterations × `2` sequence values = `4` on each sequence ✓ (`12 → 16`, `4 → 8`), `exec_count = 4`
+= `attempts = 4` = `claim_generation = 4` ✓, `side_effects = 0` committed ✓. C4's `20 > 9` was on the witness
+DB and is **not** re-verifiable — that database was dropped by design, and the claim rests on the day's own
+transcript `[MEASURED-R from logs]`.
+
+#### Cleanup performed by this review
+
+Disposable databases `relay_w4d4_review` and `relay_w4d4_target` created and dropped; `probe_dbs|0`
+re-verified. Temporary files `review_probe_sink.py`, `review_probe_block.py`, `review_target.ini`, and
+`logs/review_p1..p7.log` deleted. Two sink processes started on port `9009` and stopped; `relay_processes=0`
+re-verified. **The evidence database was not written to at any point** — every probe row went to a disposable
+DB, and the bench above was read before and after with no change. Job `136` deliberately left as
+`136|running|1|1` (`P-05`). Working tree unchanged by the review: same five modified files and one untracked
+migration as at day close.
+
+#### ✍️ For the user to rewrite in his own words
+
+The 💡 section and this closeout are reviewer-written. Three claims to write yourself, because they are the
+ones a reviewer would press on:
+
+1. Why `Mark fenced` and `Conflict on mark` are different findings when both print `rowcount=0`, and what it
+   means that Din 1 and Din 2 produced only the second one.
+2. Why yesterday's `1` row and today's `1` row are not the same evidence, given that yesterday's code had no
+   constraint.
+3. Why `job_executions > jobs` had to be true before `effects_ok|0` was allowed to mean anything.
+
+#### Unresolved at Din 4 close
+
+- `alembic -c <ini>` is silently overridden by `$env:DATABASE_URL`, exit `0`, no announcement. **Din 5 Step 0.** `P-39`
+- `sink_deliveries` has two creators and two constraint names; sink-first ordering yields two unique indexes and a non-reversible `downgrade`. **Din 5 Step 0.** `P-38`
+- The receiver's negative control is unrunnable; `SINK_DEDUP=0` returns `500`. **`D-27` `Cost`, Din 6.** `P-40`
+- `ON CONFLICT DO NOTHING` blocks on an uncommitted conflict; receiver has no `lock_timeout`. **Measure on Din 5**, decide Month 2. `P-41`
+- Delivery identity has no written invariant; `duplicate` overclaims. **`D-27` `Cost`, Din 6.** `P-42`
+- The regression gate cannot fail on any Week 4 code; two test files exist only as `.pyc`. **README line on Din 6**, coverage Month 2. `P-37`
+- Evidence DB is one revision behind head and `alembic check` is red there for a *new* reason (`not up to date`). Nothing consumes that signal. **Din 5 Step 0 or Din 6 reconcile.**
+- Uncommitted at close: five modified files + `alembic/versions/w4d4_sink_unique_add_sink_unique.py`. Commit before Din 5's Step 0 bench, so C0's clean-tree check is meaningful.
+- Dispatcher still has no backoff and no bound. **Month 2**, `Cost` on Din 6. `P-35`
+- Job `136`: `running`, poison payload, bound unreachable. Left deliberately. `P-36` / `P-05`
+- `DDIA_CH8_LINKS.md` lines 10–13 in the user's own words — **Din 6**, fourth carry.
+- `D-26`–`D-29` remain **reserved and unwritten**; today's four `Faisla` sections feed `D-26`/`D-27`. No `D-` entry was created today, by design.
+
+#### Next thought
+
+Din 3 argued strong mechanisms and shipped weak ones. Din 4 shipped the right mechanisms and did not price
+their edges — a preventer that also disables the escape hatch, a constraint that also removes its own control,
+an atomic statement that also introduces a wait. That is a better failure to have, and it has a cheaper habit
+attached: after a fix lands, ask what the fix now makes **impossible to observe**. Today's `UNIQUE` is the clean
+example — it closed the race and closed the experiment that gave the race's absence meaning, and nothing in the
+gate could notice, because the gate only checks that the good arm passes.
+
+Din 5 is the cuttable day and it now carries two Step 0 repairs it did not plan for. Both are one-file edits.
+The order that protects the week: fix the two, commit the tree, then run load — because Din 5's whole premise
+is that its numbers land on a disposable database, and `P-39` is precisely the defect that decides whether
+`-c` still means what it says.

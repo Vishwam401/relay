@@ -208,3 +208,44 @@ class Outbox(Base):
         server_default=func.now(),
     )
 
+
+class SinkDelivery(Base):
+    __tablename__ = "sink_deliveries"
+
+    id: Mapped[int] = mapped_column(
+        BigInteger,
+        primary_key=True,
+        autoincrement=True,
+    )
+
+    idempotency_key: Mapped[str] = mapped_column(
+        Text,
+        nullable=False,
+    )
+
+    job_id: Mapped[int] = mapped_column(
+        BigInteger,
+        nullable=False,
+        server_default=text("0"),
+    )
+
+    received_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+
+    body: Mapped[dict] = mapped_column(
+        JSONB,
+        nullable=False,
+        server_default=text("'{}'::jsonb"),
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "idempotency_key",
+            name="uq_sink_deliveries_idempotency_key",
+        ),
+    )
+
+

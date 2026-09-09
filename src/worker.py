@@ -113,6 +113,12 @@ async def handle_effect(payload: dict, job_id: int) -> None:
 
     if inserted_count == 1:
         print(f"[{WORKER_ID}] [EFFECT HANDLER] Side-effect and outbox written for job_id={job_id} (rowcount={inserted_count}).")
+        if payload.get("crash_at") == "after_commit":
+            print(
+                f"[{WORKER_ID}] [crash_at] Triggering after_commit crash for job_id={job_id} after session commit."
+            )
+            sys.stdout.flush()
+            os._exit(1)
     else:
         print(f"[{WORKER_ID}] [EFFECT HANDLER] Side-effect deduped for job_id={job_id} (rowcount={inserted_count}).")
 

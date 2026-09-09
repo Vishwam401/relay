@@ -38,6 +38,13 @@ def run_migrations_offline() -> None:
     script output.
 
     """
+    import os
+
+    env_url = os.environ.get("DATABASE_URL")
+    if env_url:
+        sync_url = env_url.replace("postgresql+asyncpg://", "postgresql+psycopg://")
+        config.set_main_option("sqlalchemy.url", sync_url)
+
     url = config.get_main_option("sqlalchemy.url")
     context.configure(
         url=url,
@@ -57,6 +64,13 @@ def run_migrations_online() -> None:
     and associate a connection with the context.
 
     """
+    import os
+
+    env_url = os.environ.get("DATABASE_URL")
+    if env_url:
+        sync_url = env_url.replace("postgresql+asyncpg://", "postgresql+psycopg://")
+        config.set_main_option("sqlalchemy.url", sync_url)
+
     connectable = engine_from_config(
         config.get_section(config.config_ini_section, {}),
         prefix="sqlalchemy.",
