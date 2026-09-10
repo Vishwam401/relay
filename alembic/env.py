@@ -26,6 +26,34 @@ target_metadata = Base.metadata
 # ... etc.
 
 
+def configure_url() -> tuple[str, str]:
+    import os
+    from sqlalchemy.engine.url import make_url
+
+    has_cli_c = bool(getattr(config, "cmd_opts", None) and getattr(config.cmd_opts, "config", None))
+    is_custom_ini = bool(config.config_file_name and os.path.basename(config.config_file_name) != "alembic.ini")
+
+    if has_cli_c or is_custom_ini:
+        source = "-c"
+    else:
+        env_url = os.environ.get("DATABASE_URL")
+        if env_url:
+            sync_url = env_url.replace("postgresql+asyncpg://", "postgresql+psycopg://")
+            config.set_main_option("sqlalchemy.url", sync_url)
+            source = "env"
+        else:
+            source = "alembic.ini"
+
+    raw_url = config.get_main_option("sqlalchemy.url")
+    if raw_url and "postgresql+asyncpg://" in raw_url:
+        raw_url = raw_url.replace("postgresql+asyncpg://", "postgresql+psycopg://")
+        config.set_main_option("sqlalchemy.url", raw_url)
+
+    db_name = make_url(raw_url).database if raw_url else "unknown"
+    print(f"alembic resolved_db={db_name} source={source}", flush=True)
+    return raw_url, source
+
+
 def run_migrations_offline() -> None:
     """Run migrations in 'offline' mode.
 
@@ -38,14 +66,7 @@ def run_migrations_offline() -> None:
     script output.
 
     """
-    import os
-
-    env_url = os.environ.get("DATABASE_URL")
-    if env_url:
-        sync_url = env_url.replace("postgresql+asyncpg://", "postgresql+psycopg://")
-        config.set_main_option("sqlalchemy.url", sync_url)
-
-    url = config.get_main_option("sqlalchemy.url")
+    url, _ = configure_url()
     context.configure(
         url=url,
         target_metadata=target_metadata,
@@ -64,12 +85,7 @@ def run_migrations_online() -> None:
     and associate a connection with the context.
 
     """
-    import os
-
-    env_url = os.environ.get("DATABASE_URL")
-    if env_url:
-        sync_url = env_url.replace("postgresql+asyncpg://", "postgresql+psycopg://")
-        config.set_main_option("sqlalchemy.url", sync_url)
+    configure_url()
 
     connectable = engine_from_config(
         config.get_section(config.config_ini_section, {}),
@@ -90,3 +106,4 @@ if context.is_offline_mode():
     run_migrations_offline()
 else:
     run_migrations_online()
+

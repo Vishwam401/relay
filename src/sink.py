@@ -18,7 +18,7 @@ async def lifespan(app: FastAPI):
                 """
                 CREATE TABLE IF NOT EXISTS sink_deliveries (
                     id bigserial PRIMARY KEY,
-                    idempotency_key text NOT NULL UNIQUE,
+                    idempotency_key text NOT NULL,
                     job_id bigint NOT NULL DEFAULT 0,
                     received_at timestamptz NOT NULL DEFAULT now(),
                     body jsonb NOT NULL DEFAULT '{}'::jsonb
