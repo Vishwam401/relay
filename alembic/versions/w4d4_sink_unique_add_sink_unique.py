@@ -51,6 +51,11 @@ def upgrade() -> None:
             c['name'] for c in inspector.get_unique_constraints('sink_deliveries')
         ]
         if 'uq_sink_deliveries_idempotency_key' not in constraints:
+            conn.execute(sa.text("""
+                DELETE FROM sink_deliveries a
+                USING sink_deliveries b
+                WHERE a.id > b.id AND a.idempotency_key = b.idempotency_key
+            """))
             op.create_unique_constraint(
                 'uq_sink_deliveries_idempotency_key',
                 'sink_deliveries',
