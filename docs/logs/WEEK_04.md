@@ -1373,3 +1373,358 @@ is that its numbers land on a disposable database, and `P-39` is precisely the d
 
 Din 5 delivered the complete failure and capacity matrix for Relay under stress. Din 6 is the final day of Week 4 and Month 1: reconciling all counters across the entire 4-week journey, publishing architectural decisions (`D-26` to `D-29`), resolving active problem cards, and delivering an honest, evidence-backed verdict on Relay's core contracts.
 
+---
+
+### 🔍 Reviewer close — Din 5 `[2026-09-10]`
+
+**Ek line me: aaj ke chaar gate genuinely pass hue, aur din ka sabse bada result ulta nikla.** Worker DB
+outage me **zinda nahi raha — wo mar gaya**, aur reaper ne row isliye reclaim ki ki usko **haath se dobara
+start** kiya gaya tha. Log me dono cheezein ulti likhi hain. Score `1.5` se `1.0` correct hota hai.
+
+#### Jo maine khud chalaya aur jo genuinely khada hai
+
+| Kya | Reported | Mera measurement | Verdict |
+|---|---|---|---|
+| Evidence DB ke `8` data counters | `133\|145\|19\|4\|39\|5\|0\|1` | `133\|145\|19\|4\|39\|5\|0\|1` `[MEASURED-R 2026-09-10]` | **Exact match, delta `0`** |
+| Job `136` | `136\|running\|1\|1` | `136\|running\|1\|1` | **Untouched** |
+| `status` histogram | — | `dead_letter\|5` · `failed\|15` · `running\|1` · `succeeded\|112` = `133` | **Internally consistent** |
+| Probe DBs | `0` | `pg_database` me sirf `postgres, relay, template0, template1` | **Saaf** |
+| Relay processes | `0` | `0` | **Saaf** |
+| `alembic heads` / `current` / `check` | HEAD, green | `w4d4_sink_unique (head)` single head; `current` = head; `check` → `No new upgrade operations detected` | **Green** |
+| `P-39` fix live hai | haan | `alembic current` khud print karta hai: `alembic resolved_db=relay source=alembic.ini` | **Live, aur source announce ho raha hai** |
+| `P-38` fix live hai | haan | `src/sink.py` ki `CREATE TABLE` me `idempotency_key text NOT NULL`, koi inline `UNIQUE` nahi | **Live** |
+| `application_name` attribution | `5` distinct names | Paanchon `logs/w4d5_step1_*.stdout.log` ki pehli line: `app_name=api` · `dispatcher` · `reaper` · `sink` · `worker`, sab `relay_w4d5_step1` pe | **Genuinely pass — aaj ka sabse saaf gate** |
+| Paanch commits | `4d5d77a` `ee1045a` `bc99c60` `cb17c36` `5d1b556` | Paanchon maujood, tree clean | **Pass** |
+| Worker drain `~7.0` jobs/s | `~7.0` | `186` marks · first claim `15:11:37.299` → last mark `15:12:03.690` = `26.391 s` → **`7.01` jobs/s**, per-job **`0.1427 s`** `[MEASURED-R]` | **Confirmed, aur per-job number bhi match** |
+| `400` enqueued ka closure | `214` pending post-run | `186` processed `+` `214` pending `=` `400` | **Arithmetic bandh hai** |
+
+**Do cheez iss list me tareef ke layak hai, aur sirf do.** `application_name` ka kaam kal ke KEY ne trap #1 me
+naam se warn kiya tha (`where application_name = :app` aaj `0` dega), aur wo trap avoid hua — label pehle set
+hua, phir uss column pe gate laga. Aur throughput ka number sirf reported nahi, **reproducible** hai: maine
+usko log ke timestamps se dobara nikala aur `0.1427 s` per job tak match hua.
+
+#### Aaj ka sabse bada finding — aur ye din ka headline result palat deta hai
+
+`logs/w4d5_step5_worker.stderr.log` ka **outermost frame** ye hai:
+
+```text
+File "D:\PROJECTS\relay\src\worker.py", line 321, in <module>
+    asyncio.run(run_worker())
+  ...
+File "D:\PROJECTS\relay\src\worker.py", line 185, in run_worker
+    result = await session.execute(claim_query)
+sqlalchemy.exc.InterfaceError: ... connection is closed
+[SQL: SELECT jobs.id, ... FOR UPDATE SKIP LOCKED]
+```
+
+**Exception `run_worker()` se bahar nikli aur `asyncio.run` tak pahunchi. Process mar gaya.**
+`w4d5_step5_worker.stdout.log` `15:22:16.128` pe khatam hoti hai aur **dobara shuru nahi hoti** — DB waapas
+aane ke baad ek bhi query nahi. `echo=True` on tha, to agar worker zinda hota to `BEGIN` dikhta. Nahi dikhta.
+
+**Mechanism, aur ye source me ek `try` ki jagah hai:** `src/worker.py` ka `except Exception as exc:` **sirf**
+handler execution ko wrap karta hai (`record_execution` + `handler`). Claim ka block —
+
+```python
+async with async_session() as session:      # koi try/except nahi
+    async with session.begin():
+        result = await session.execute(claim_query)
+```
+
+— aur terminal mark ka block, **dono unguarded** hain. Aur ek idle worker apna zyada waqt **claim poll** me
+kaatta hai, to DB blip ka sabse sambhav shikaar wahi unguarded raasta hai.
+
+**Log me likha hai:** *"worker in-flight query raised exception caught by `except Exception as exc:`; worker
+logged traceback and remained alive without process crash."* **Ye galat hai, teen tarah se:** exception kisi
+`except` me nahi giri, worker zinda nahi raha, aur `[MEASURED]` label ek aisi cheez pe laga hai jiska evidence
+ussi file me ulta pada hai.
+
+#### Doosra finding — reaper ka `7.9 s` recovery number ek artifact hai
+
+`logs/w4d5_step5_reaper.stdout.log` ki pehli engine line:
+
+```text
+2026-09-10 15:22:46,428 INFO sqlalchemy.engine.Engine select pg_catalog.version()
+2026-09-10 15:22:46,491 [reclaim] job_id=1 pre_status=running matched=1 post_status=pending
+```
+
+`select pg_catalog.version()` engine ka **pehla handshake** hai. Uska `15:22:46.428` hona ek hi cheez ka matlab
+rakhta hai: **reaper process outage ke dauran chal hi nahi raha tha. Usko DB waapas aane ke baad launch kiya
+gaya.** Reclaim uske pehle poll pe, `63 ms` baad hua.
+
+To *"DB start hone ke `7.9 s` baad reaper ne reclaim kiya"* ek **system recovery bound nahi hai** — wo
+**haath se process start karne ki latency** hai. Aur `run_reaper()` bhi bilkul worker jaisa unguarded hai:
+
+```python
+while not SHUTDOWN_REQUESTED:
+    await reap_stuck_jobs()      # koi try/except nahi
+    await asyncio.sleep(POLL_INTERVAL_SECONDS)
+```
+
+**Iska seedha nateeja, aur ye Din 6 ke promise #4 ka poora scope statement hai:** agar reaper outage ke dauran
+chal raha hota, wo **worker ke saath hi mar jaata**, aur phir job `1` ko `pending` karne wala **koi nahi bacha
+hota**. Row `running` me hamesha ke liye baithi rehti. Kal ke KEY ka trap #8 (*"recovery serial hai, reaper ka
+apna pehla poll bhi fail kar sakta hai"*) test hi nahi hua, kyunki reaper maidan me nahi tha.
+
+**Aur Relay ke paas koi supervisor nahi hai** — na `restart: unless-stopped`, na systemd, na Kubernetes. To aaj
+ka sach ye hai: **ek `1`-second DB restart poore job processing ko rok deta hai jab tak koi insaan process
+dobara na chalaye.** Contract *"crashes are recoverable"* **row** ke liye sach hai aur **process** ke liye nahi.
+Ye `P-43` hai.
+
+#### Teesra finding — do failure report hui hain, ek observe hui hai
+
+C5 ka row maangta tha: *"Postgres-down ke **do** failures — live-break aur stale-pool **alag naam** se."*
+
+Traceback ka innermost frame `_start_transaction` → `_check_open()` → `connection is closed` hai. Matlab asyncpg
+connection object **statement bhejne se pehle hi** band tha — ye **stale-pool** failure hai. **Live-break
+(query beech me thi aur socket toota) observe hi nahi hui.** Log ne ek hi traceback ko do headings me baant
+diya (*"Database Stop Mid-Flight"* aur *"Stale Connection Recovery"*) aur usko do failures ki tarah likha. Wo
+ek hai. `[REPORTED as two, MEASURED as one]`.
+
+Aur *"Next query succeeded cleanly"* ka **koi evidence nahi hai** — process mar chuka tha, agli query hui hi
+nahi. SQLAlchemy ka invalidate-and-recycle behaviour general me sach hai; **aaj wo observe nahi hua**, aur
+iss worker ke liye wo bekaar bhi hai: claim pe koi retry loop nahi hai, to pehli stale connection hi aakhri
+hai.
+
+#### Chautha finding — `MAX_ATTEMPTS` ka sawaal aaj answer hi nahi hua, aur mechanism dono jagah galat likha hai
+
+Step 5 ki timeline, logs se:
+
+| Waqt | Kya hua |
+|---|---|
+| `15:22:13.94` | Job `2` claim (`attempt=1`), `COMMIT` |
+| `15:22:14.10` | Job `2` → `succeeded` |
+| `15:22:14.11` | Agla poll: koi `pending` row nahi mili |
+| `15:22:16.13` | Agla poll ka claim `SELECT` — **yahi in-flight statement tha jab DB gayi**, aur yahi crash hui |
+
+**Outage ke waqt koi job handler me nahi thi. Worker idle poll kar raha tha.** Job `1` pehle se `running`
+seed ki hui thi aur **iss worker ne usko kabhi claim nahi kiya**. To *"DB outage in-flight job ke attempts
+kharch karta hai"* ka aaj **koi measurement nahi hai** — aur wo dawa `[MEASURED from Step 5 chaos test]` label
+ke saath likhi gayi hai. Ye wahi galti hai jiske liye `AGENTS` rule 6 exist karta hai.
+
+**Aur mechanism, jo `DIN_05_KEY.md` me bhi (meri hi galti) aur `ANSWERS` me bhi galat likha hai:**
+`attempts` **`except` block me increment nahi hota**. Wo **claim ki `UPDATE`** me hota hai:
+
+```python
+.values(status="running", claimed_at=func.now(),
+        attempts=Job.attempts + 1, claim_generation=Job.claim_generation + 1)
+```
+
+`except Exception` block `current_attempts` ko sirf **padhta** hai (`if current_attempts < MAX_ATTEMPTS`) taaki
+`pending` vs `dead_letter` decide kare. Iss farq se jawab teen alag case me toot jaata hai, aur aaj sirf pehla
+chala:
+
+| Outage kab | `attempts` ka kya hua | Aaj test hua? |
+|---|---|---|
+| **Claim ke dauran** (aaj yahi hua) | Increment usi transaction me tha, transaction roll back hui → **`attempts` kharch nahi hue.** Row `pending` hi rahi, cost `0` | **Haan** |
+| **Handler ke dauran, claim ke baad** | Increment **already committed** hai (claim se). `except` chalta hai par uska mark `UPDATE` bhi fail hota hai → row `running` phansi rehti hai → reaper reclaim → agla claim **phir** increment karta hai. **Ek outage do attempts kha jaata hai** | **Nahi** |
+| **Handler success ke baad, mark se pehle** | Wahi shape, aur upar se job **dobara execute** hoti hai | **Nahi** |
+
+**Ye teen-case wala jawab kal ke KEY se behtar hai** aur wo Din 6 ke `D-26`/`D-27` ke `Cost` me isi shape me
+jaana chahiye — ek line me nahi.
+
+#### Paanchva finding — Step 2 aur Step 3 ke teen headline numbers repo me nahi hain
+
+`logs/` me `w4d5_step1_*`, `w4d5_step4_worker.*`, `w4d5_step5_*` hain. **`w4d5_step2*` aur `w4d5_step3*`
+maujood nahi hain**, aur koi probe script bhi nahi (`labs/probe_hold.py` Week 3 ka `FOR UPDATE` probe hai,
+aaj se uska koi rishta nahi). To ye teen numbers —
+
+| Number | Status |
+|---|---|
+| Pool timeout `3.0055 s` (`sqlalchemy.exc.TimeoutError`) | `[REPORTED, NOT VERIFIABLE]` |
+| `P-41` receiver wait `2.8133 s` vs uncontended `0.4703 s` | `[REPORTED, NOT VERIFIABLE]` |
+| `/healthz` timeout `3.1618 s` | `[REPORTED, NOT VERIFIABLE]` |
+
+— repo se dobara nahi nikalte. Mechanism dono case me plausible hai aur maine usko contradict karne ka koi
+evidence nahi paaya; par **C3 ka row *"Pool actually `2` tha — `application_name` se filter karke `2`
+connections peak pe, `3` kabhi nahi"* satisfy hua ye bhi verify nahi ho sakta.** Aur `DIN_05_DESIGN.md` ka
+Faisla 3 `step4_load_probe.py` ko *"chosen"* likhta hai — **wo file tree me nahi hai.** Ek decision jiska
+implementation retained nahi hai, wo Din 6 pe ek `Cost` line nahi likh sakta. Ye `P-45` ka ek hissa hai.
+
+Aur ek chhoti si structural baat jo isse judi hai: `.gitignore` me `logs/` hai, to jo log bache bhi hain wo
+**git me nahi** hain. `P-29` (raw-evidence retention) ka wahi shape, aur Din 6 ke DoD audit me isko naam se
+aana chahiye.
+
+#### Chhatva finding — C5 gate jaisa likha tha, wo satisfy ho hi nahi sakta tha, aur ye **meri** galti hai
+
+`DIN_05_BRIEF.md` ke C5 me do assert hain:
+
+```powershell
+if ($closeBench -ne $script:C0_BENCH) { throw "C5: evidence DB delta non-zero" }   # 9 columns
+if ($evHead -ne $headName)            { throw "C5: evidence DB head pe nahi hai" } # relay ko head pe hona hai
+```
+
+`$benchSql` ka **nauva column `version_num` hai**, aur BRIEF khud kehta hai *"kal wo ek revision peeche thi"*.
+Agar `relay` C0 pe `w4d3_outbox` thi aur C5 pe `w4d4_sink_unique` honi chahiye, to nauva column **badla**, to
+pehla assert **zaroor** `throw` karta. **Dono assert ek saath pass nahi ho sakte the.** BRIEF ka footnote
+(*"ye `9` asserted counters pe `0` hai"*) galti ko double karta hai.
+
+User ne isko runtime pe `8` columns pe compare karke resolve kiya — **aur wo sahi engineering call hai**. Par
+usko *"all gates passed: C0…C5"* likhna wahi `P-31` ka chehra hai: **gate badla gaya aur run ek clean pass ki
+tarah band hua.** Iss baar defect checklist me tha, aur checklist maine likhi thi. `P-31` pe amendment likhi
+hai.
+
+#### Prediction score — `1.5` galat hai, `1.0` sahi hai
+
+**Pehle process ka defect, kyunki wo score se bada hai.** Log ke scoring table me frozen text **teen jagah
+upar ki taraf re-write hua hai**. `DIN_05_PREDICTIONS_FROZEN.md` ka hash unchanged hai (maine `07D46BD6…`
+verify kiya, file chhui nahi gayi) — problem file me nahi, **quote me** hai:
+
+| Q | Log ke table me likha hai | Frozen file me actually likha hai |
+|---|---|---|
+| Q1 (c) | *"Little's Law: `50 × 0.02 = 1.0 < 2`"* | *"50 ke liye 250 ms lagega … 250/2 = 125 ms … kaafi hai"* — Little's Law ka naam nahi, `0.02` kahin nahi |
+| Q2 (b) | *"Peak is 15 on single engine; **total theoretical ceiling is 75 across 5 engines**"* | *"Load pe 15 dikhenge."* — bas. **`75` frozen text me nahi hai** |
+| Q3 (a) | *"`0.5 jobs/sec`"* | Ye number frozen text me nahi hai; wahan *"poll interval 2.0s usme aayega"* likha hai |
+
+Q2 ka wala directly `0.25` ka overcredit hai. Baaki do score nahi badalte par **same defect hai**, aur ye Din 4
+pe already ek baar correct hua tha aur aaj ke BRIEF me bold me warn kiya gaya tha. **Rule dobara:
+`### Observed` aur `### After KEY` ka text score me nahi aata, aur scoring table me frozen answer ko
+paraphrase nahi karna — usko `quote` karna hai.**
+
+**Corrected scoring, rubric ke against:**
+
+| Q | Self | **Corrected** | Kyun |
+|---|---:|---:|---|
+| Q1 | `1.0` | **`0.75`** | (b) aur (c) genuinely poore hain — `pool_timeout` bound (`30 s`) aur **application pool layer** dono naam se, aur (c) ki arithmetic + verdict *"kaafi hai"* sahi. **(a) credit nahi le sakta:** *"Slow 202 **ya** timeout/error milega"* sawaal ke teenon options ko cover karta hai — wo hedge hai, prediction nahi. Aur uske saath jo mechanism likha hai (*"handler kaam karte time lock lagata hai to koi aur pool aayega isko skip karke doosra job le lega"*) wo **worker claim ka raasta hai, `POST /jobs` ka nahi** — `SKIP LOCKED` ka mechanism ek `INSERT` handler pe chipka diya gaya. Galat code path |
+| Q2 | `0.5` | **`0.25`** | (a) ka **number** sahi (`5` idle) par **mechanism khaali** — lazy pool / *"`pool_size` retention hai, allocation nahi"* prediction me kahin nahi. Aaj ka apna rule: *"outcome guess karna aadha score hai"*. (b) **galat** — paanch process ke sawaal ka jawab `15` dena wahi *"ceiling aur observed ek maan liye"* hai jisko KEY ne *"aaj ki sabse aam galti"* kaha. (c) `idk` |
+| Q3 | `0.0` | **`0.0`** | Sahi tha. (a) me `2.0 s` ko arithmetic me ghusaya, aur koi throughput number nahi diya. (b)/(c) `idk` |
+| Q4 | `0.0` | **`0.0`** | Teenon `idk` |
+| Q5 | `0.0` | **`0.0`** | Teenon `idk` |
+| **Total** | **`1.5`** | **`1.0 / 5.0`** | |
+
+**Aur ek cheez jo score me nahi hai par kehni hai:** `9` sub-questions me `6` pe `idk` likha gaya. Wo
+`AGENTS` rule ke hisaab se **sahi kaam** hai aur usko guess se badalna bura hota. Par teen din ka pattern ab
+saaf hai: **`idk` un sawaalon pe aa raha hai jinka jawab source padhne se milta tha** — Q4(a) ka jawab
+`src/worker.py` ke `try` ki **jagah** hai, Q4(b) ka jawab pool ka lifecycle hai, Q5(a) ka jawab `pool_size=2`
+aur `Depends(get_db)` ka jod hai. **Ye Situation 2 (outcome) nahi, Situation 1 + source-reading hai.** Din 6
+pe iska seedha effect hai: aaj ke paanch sawaalon me se chaar **iss hafte ke apne evidence** pe hain, kisi
+library ke behaviour pe nahi. Un pe `idk` likhna ek alag cheez batata hai.
+
+#### Aur chaar cheezein jo contradiction ya loose wording hain
+
+1. **`pending` ki do series aapas me nahi milti.** Log: `91 → 133 → 177 → 221 → 267`. `ANSWERS`:
+   `91 → 155 → 221 → 267`. Log wali series `+44` per `5 s` = **`8.8`/s** hai, jabki log khud usi paragraph me
+   *"net accumulation `+12.8` to `+13.2` jobs/s"* likhta hai. `ANSWERS` wali series `+64/5` = `12.8`/s deti hai
+   aur wo `19.8 − 7.0 = 12.8` se **milti hai**. To **`ANSWERS` ki series sahi hai aur log ki mis-transcribed
+   hai.** Log me `ANSWERS` wali jaani chahiye.
+2. **Connection headroom ka verdict overclaim hai.** Log: *"`97 − 75 = 22` connections (comfortable)"*. Wo load
+   script ka apna engine (`+15` tak) aur `psql`/`docker exec` sessions (`+2-4`) **chhod deta hai** — bilkul wo
+   do cheezein jo KEY ne naam se maangi thi. Poori ginti `~92-94` hai against `97`, matlab headroom **`~3-5`**.
+   Mazedaar baat: `DIN_05_ANSWERS.md` ne ye **sahi** likha (`75 + 15 = 90`), aur log ne usse **peeche** jaake
+   `22 comfortable` likh diya. Aur *"comfortable single-digit/double-digit buffer"* apne aap me ek
+   contradiction hai. **Verdict: `narrow`, `comfortable` nahi.**
+3. **`DIN_05_DESIGN.md` Faisla 4 ka poora premise galat hai.** Wo `pool_pre_ping` ko reject karta hai ye keh ke
+   ki *"background workers and reapers … operate in continuous polling loops **with built-in exception
+   handling**"*. **Aisi koi handling nahi hai** — na claim pe, na reaper ke poll pe. Aur `Cost` line
+   (*"raises an unintercepted `InterfaceError`"*) **asar chhupa deti hai**: nateeja ek transient error nahi,
+   **process ki maut** hai. Deletion test ka jawab isse **palat** jaata hai: jis process ke paas retry loop
+   nahi hai, uske liye `pool_pre_ping` *"ek perpetual tax"* nahi hai — wo **ek DB restart aur poore processing
+   halt ke beech ki ek hi cheez** hai, kyunki stale connection checkout ke **andar** replace ho jaati. Faisla 4
+   ko Din 6 pe `D-28`/`D-29` ke saath **dobara likhna** hai, aur `Chosen` badalna ho to wo `P-43` ke fix ke
+   saath aayega — pehle exception boundary, phir `pool_pre_ping` ka faisla.
+4. **Faisla 1 ka `Cost` binding constraint galat naam leta hai.** Wo `echo=True` ko throughput bound bataata
+   hai (*"bounding single-worker throughput to ~7–10 jobs/s"*). Measured per-job `0.1427 s` hai jisme handler ka
+   `0.1 s` hai; `echo` ka hissa `~11 ms` = **`~8%`**. **Binding constraint handler duration hai**, `echo` ek
+   `8%` tax hai. C4 ka row specifically *"binding constraint ka naam"* maangta tha.
+
+#### Ek naya defect jo aaj ke code me aaya
+
+`src/main.py` me `/slow-hold` **commit ho gaya hai**:
+
+```python
+@app.get("/slow-hold")
+async def slow_hold(seconds: float = 4.0, db: AsyncSession = Depends(get_db)):
+    await db.execute(text("SELECT pg_sleep(:s)"), {"s": seconds})
+```
+
+`seconds` ek **caller-controlled, unbounded** query parameter hai, aur handler ek **pooled connection** ko
+utni der pin karta hai. Relay me koi auth nahi hai (`D-03`). To `GET /slow-hold?seconds=100000` ek connection
+ko ghanton ke liye le leta hai, aur `pool_size + max_overflow` jitni requests poore API pool ko khaali kar
+deti hain — jiske baad `/healthz` bhi girta hai. **Aaj ka Step 3 ka measurement iska impact proof hai**, wo
+mechanism accidentally ship ho gaya. Ye `P-44` hai. Saath me: `/health`, `/healthz`, `/db-ping` — teen
+overlapping endpoints, aur `/db-ping` ab `/healthz` ka duplicate hai. Wo `D-28` ki ek line hai.
+
+#### Meri apni galtiyan, record ke liye
+
+- **`DIN_05_KEY.md` Q4(a) ka mechanism galat tha.** Maine likha ki bound `except Exception` me hai aur isliye
+  DB outage attempts kharch karta hai. **Evaluation** wahan hai; **increment** claim ki `UPDATE` me hai. Iss
+  farq se claim-time outage ka cost `0` ho jaata hai — jo aaj actually hua.
+- **`DIN_05_KEY.md` Q4(a) ka outcome bhi galat tha.** Maine *"worker crash nahi karega"* likha. Worker crash
+  kar gaya, kyunki `except Exception` claim ko wrap hi nahi karta. **Maine source padha aur `try` ki jagah
+  verify nahi ki** — wahi galti jiske liye trap #5 me maine `if` branch ko naam se warn kiya tha.
+- **C5 ka gate maine aisa likha jo satisfy nahi ho sakta tha** (upar chhatva finding).
+
+#### Saatva finding — evidence DB ne teen rows khoyi, aur gate usko dekh hi nahi sakta tha
+
+`sink_deliveries` **`10` se `7`** ho gaya `[MEASURED-R 2026-09-10]`. Bache hue ids: `1, 2, 4, 6, 7, 8, 9`.
+Gaye: `3, 5, 10`. Sequence abhi bhi `10` pe hai, to gaps permanent aur readable hain.
+
+Kaaran commit `cb17c36` hai — `w4d4_sink_unique` ke `upgrade()` ke andar paanch line, `create_unique_constraint`
+se pehle:
+
+```sql
+DELETE FROM sink_deliveries a
+USING sink_deliveries b
+WHERE a.id > b.id AND a.idempotency_key = b.idempotency_key
+```
+
+Aur wo `relay` pe **chali**. `DELETE` khud **zaroori** tha — duplicate keys ke saath `UNIQUE` ban hi nahi
+sakti. Problem uske teen properties hain: **irreversible** (`downgrade()` constraint girata hai, rows wapas
+nahi laata — to C1b arm 3 ka *"clean round trip"* **schema** me clean hai, **data** me nahi), **unlogged**
+(kitni rows giri, wo kahin print nahi hota — `-3` din ke poore transcript me nahi hai), aur **unconditional**
+(jis DB pe point kiya, wahan chalega).
+
+**Aur gate isko structurally pakad nahi sakta tha.** C5 ka bench `8` data counters + revision assert karta hai,
+aur `sink_deliveries` **jaan-boojh ke uss set se bahar** hai un dino jab receiver ka schema badalta hai — wo
+faisla do din pehle, sahi reason se liya gaya tha. To *"evidence DB delta `0`"* **asserted quantities pe sach
+hai**, aur uske saath-saath evidence DB ne teen rows kho di. **Dono statement sahi hain; sirf ek likha gaya.**
+Ek frozen set with a documented exclusion theek hai; ek delta claim jo apni exclusion ka naam nahi leti **jab
+change usi exclusion me hua ho**, theek nahi.
+
+**Jo delete hua wo mehnga tha.** Bachi hui keys ko Din 3 ke record (`job:135`, `job:137`, `job:138`,
+`job:139`×2, aur teen manual C3 keys `1 + 2 + 2` pe) ke against rakhne se: teen gayi rows har duplicated key ki
+**doosri** copy thi — do `SINK_DEDUP=0` manual rows aur doosra `job:139`
+`[INFERRED from key survival + Din 3 log; deleted rows padhe nahi ja sakte]`. Wo duplicates kachra nahi the.
+Wo **`P-33` ka original measurement** the (check-then-insert race → ek key pe do rows) aur **`P-40` ka negative
+control**. `P-40` already kehta tha ki control **runnable** nahi raha; ab wo **readable** bhi nahi hai. Ye
+`P-46` hai.
+
+**Ek incidental correction, aur wo ek khula item band karti hai.** Din 3 ke reviewer close me likha tha ki
+`sink_deliveries = 10` *"ek named list me reconcile nahi hota — nau identified hain aur dasva record nahi
+hai"*. Wo list actually **das** tak jodti hai (`1 + 1 + 1 + 2 + 5`); shortfall ek arithmetic slip thi, ek
+missing row nahi. **Koi unidentified dasvi delivery kabhi nahi thi.** Week 4 ke handoff me wo mystery nahi
+jaani chahiye.
+
+#### Nayi problem cards
+
+| ID | Kya |
+|---|---|
+| **`P-43`** | Worker aur reaper ke DB poll ke aas-paas koi exception boundary nahi, to ek DB restart process ko maar deta hai — aur Relay me koi supervisor nahi hai |
+| **`P-44`** | `/slow-hold` ek unauthenticated, unbounded connection-hold primitive hai jo production module me commit ho gaya |
+| **`P-45`** | Din 5 ke teen headline numbers ka koi retained artifact nahi, aur ek `Chosen` decision ki script tree me maujood nahi |
+| **`P-46`** | Ek migration ne evidence DB pe unguarded `DELETE` chalaya, teen historical rows gayi, aur delta gate usko dekh hi nahi sakta tha |
+
+Amendments: **`P-31`** (gate jaisa likha tha satisfy nahi ho sakta tha, aur run pass likha gaya) aur
+**`P-37`** (`7 passed` ne aaj ke `src/main.py`, `src/database.py`, `src/worker.py` ke changes me se kuch bhi
+touch nahi kiya — `/slow-hold` ek bhi test se nahi guzra).
+
+#### Din 6 pe iska seedha asar — chaar cheezein badalti hain
+
+1. **Promise #4 (*crashes recoverable*) ka verdict `protected` nahi ho sakta.** Row-level recovery
+   `narrowed` hai (reaper ne reclaim kiya, par **restart karke**). Process-level recovery ka verdict
+   **`[NO EVIDENCE]`** hai, aur uska naam `P-43` hai.
+2. **Promise #1 (*accepted job never silently lost*) ke liye ek naam wala untested failure ab maujood hai:**
+   worker aur reaper dono ek hi outage me marte hain aur `running` row ko koi reclaim nahi karta. Wo README ke
+   failure matrix ki ek row hai jiska evidence cell **`[NO EVIDENCE]`** hoga — aur plan ka Din 6 Q5 exactly
+   yahi poochta hai.
+3. **`D-29` ka `Rejected` field advisory lock ko *"single reaper ke numbers se"* nahi maar sakta**, kyunki wo
+   numbers aaj nahi liye gaye (reaper outage me chal hi nahi raha tha, aur do reaper ka koi run nahi hua).
+   `D-29` ko honestly likhna hai: *"advisory lock ko iss hafte ke evidence se reject nahi kiya gaya"*.
+4. **Reconcile chain ka `0` asserted counters pe already `[MEASURED-R]` hai** (maine aaj do baar liya), par
+   **`sink_deliveries` ka bucket join nahi karega**: Week 3/Din 3/Din 4 close pe `10`, aaj `7`, delta **`-3`**
+   `cb17c36` ke `DELETE` se (`P-46`). Din 6 ke Step 1 ko wo `-3` **naam se** likhna hai, warna chain ya toot
+   jaayegi ya ek compensating error me chhup jaayegi. Aur Din 6 ka Q1 exactly yahi poochta hai — to wo sawaal
+   ek formality nahi, ek asli diagnosis hai.
+
+**Cleanup:** iss review me maine sirf read-only queries chalayi (`psql -At -c` counts, `alembic
+heads/current/check`, log parsing). **Koi row nahi likhi, koi DB nahi banayi, koi file delete nahi ki.** Kuch
+temporary script nahi bani. Evidence DB review ke pehle aur baad me same hai: `133|145|19|4|39|5|0|1`.
