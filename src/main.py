@@ -18,10 +18,22 @@ async def health_check():
     return {"ok": True}
 
 
+@app.get("/healthz")
+async def healthz(db: AsyncSession = Depends(get_db)):
+    await db.execute(text("SELECT 1"))
+    return {"status": "ok"}
+
+
 @app.get("/db-ping")
 async def db_ping(db: AsyncSession = Depends(get_db)):
     result = await db.execute(text("SELECT 1"))
     return {"db": result.scalar()}
+
+
+@app.get("/slow-hold")
+async def slow_hold(seconds: float = 4.0, db: AsyncSession = Depends(get_db)):
+    await db.execute(text("SELECT pg_sleep(:s)"), {"s": seconds})
+    return {"held": seconds}
 
 
 @app.post(
