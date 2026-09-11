@@ -1728,3 +1728,66 @@ touch nahi kiya — `/slow-hold` ek bhi test se nahi guzra).
 **Cleanup:** iss review me maine sirf read-only queries chalayi (`psql -At -c` counts, `alembic
 heads/current/check`, log parsing). **Koi row nahi likhi, koi DB nahi banayi, koi file delete nahi ki.** Kuch
 temporary script nahi bani. Evidence DB review ke pehle aur baad me same hai: `133|145|19|4|39|5|0|1`.
+
+---
+
+## Din 6 — Month 1 Finale: Reconcile Chain, Decisions, README, aur Month 1 Verdict (`2026-09-11`)
+
+**Goal:** Month 1 ko rigorously close karna. Chaar decisions (`D-26`–`D-29`) publish karna, 4-week reconcile chain jodhna, README ko engineering artifact banana, aur 5 core contract promises pe final verdict likhna. **`src/` code me zero line change.**
+
+**Architectural invariant:**
+> Month 1 ka har contract promise ek honest verdict (`protected` under tested failures / `narrowed` / `[NO EVIDENCE]`) ke saath likha hai, aur har verdict ke peeche ek job id ya measured number hai.
+
+### Step 0 — Baseline Capture aur Gate C0 [PASS]
+
+- **Git status:** Working tree clean (`nothing to commit, working tree clean`).
+- **`src/` baseline tree SHA:** `394338c77dc87b6c75141ab62ee072d0729c049e` `[MEASURED]`
+- **Numbering check:** `D-26`–`D-29` free (0 collision), `P-47` next free problem card `[MEASURED]`
+- **Opening bench (9 data counters):** `133|145|19|4|7|39|5|0|1` `[MEASURED]`
+- **Revision:** `w4d4_sink_unique` `[MEASURED]`
+- **Job 136 baseline:** `136|running|1|1` `[MEASURED]`
+- **Predictions sealed:** `DIN_06_PREDICTIONS_FROZEN.md` SHA-256 = `934764139408B2DAFBEC93CCA2BD8385FFEF2B105F75752F275A0296C82C9D97` `[MEASURED]`
+- **Relay processes running:** `0`
+- **Gate C0 verdict:** `C0=pass`
+
+---
+
+### Step 1 — 4-Week Reconcile Chain (Arithmetic Balance Sheet)
+
+#### 1A — Arithmetic Table (Recorded Deltas se Expected Total)
+
+| Line / Source | jobs | job_executions | side_effects | outbox | sink_deliveries | Notes / Provenance |
+|---|---|---|---|---|---|---|
+| **Week 4 Opening Bench** | 119 | 107 | 9 | 0 | 0 | Week 3 close bench (`logs/WEEK_03.md`, `DIN_01_BRIEF.md`) |
+| `+` Din 1 Step 0 Drain | +0 | +4 | +0 | 0 | 0 | Drained jobs 116, 121, 123, 124 (`logs/w4d1_step0_drain.log`) |
+| `+` Din 1 Experiment Delta | +3 | +5 | +2 | 0 | 0 | Jobs 126, 127, 128 (`logs/w4d1_step1_*.log`) |
+| `+` Din 2 Experiment Delta | +6 | +21 | +3 | 0 | 0 | Jobs 129..134 (`logs/w4d2_*.log`) |
+| `+` Din 3 Experiment Delta | +5 | +8 | +5 | +4 | +10 | Jobs 135..139 (`logs/w4d3_*.log`), schema added outbox & sink |
+| `+` Din 4 Experiment Delta | +0 | +0 | +0 | +0 | +0 | Disposable witness DB (`relay_w4_witness`); evidence DB delta 0 |
+| `+` Din 5 Experiment Delta | +0 | +0 | +0 | +0 | **-3** | Asserted 8 counters delta 0; sink lost 3 rows via migration `cb17c36` (`P-46`) |
+| **`=` Expected Closing** | **133** | **145** | **19** | **4** | **7** | Mathematical sum of all recorded deltas |
+| **Actual Live DB Count** | **133** | **145** | **19** | **4** | **7** | `[MEASURED 2026-09-11]` via `psql` on `relay` |
+| **Delta (Actual - Expected)** | **0** | **0** | **0** | **0** | **0** | **Chain 100% Judi (Exact match line-by-line)** |
+
+#### 1B — Actual Live DB Counts & Audit Shape
+
+- **Status histogram (`jobs` table):**
+  - `dead_letter`: `5` (Jobs 122, 125, 128, 129, 130)
+  - `failed`: `15`
+  - `running`: `1` (`Job 136`: `136|running|1|1`)
+  - `succeeded`: `112`
+  - `pending`: `0`
+  - **Total:** `133` `[MEASURED]`
+- **Job 136 check:** `136|running|1|1` intact, untouched by reapers `[MEASURED]`.
+- **Side effects duplicates check:**
+  - Query: `select job_id, count(*) from side_effects group by 1 having count(*) > 1;`
+  - Result: `job_id=110, count=2`
+  - Classification: **`[EXPECTED]`**. Week 4 Din 1 ka baseline negative control — execute dedup implement hone se pehle ka recorded duplicate run.
+- **Sink Deliveries 3-Arm Differential Check (`P-46` Verification):**
+  - Arm 1 (`select count(*) from sink_deliveries`): **`7`** rows `[MEASURED]`
+  - Arm 2 (`select count(distinct idempotency_key) from sink_deliveries`): **`7`** keys `[MEASURED]` (No duplicates remain in table)
+  - Arm 3 (`select last_value from sink_deliveries_id_seq`): **`10`** `[MEASURED]`
+  - **Inference:** Arm 1 akela `7` batata hai; Arm 3 ka `10` sequence last_value mathematically prove karta hai ki table se **3 rows delete hui hain** (IDs 3, 5, 10). Yeh P-33 aur P-40 ke evidence rows the jo migration `cb17c36` ne saaf kar diye (`P-46`).
+
+**Gate C1 verdict:** `C1=pass` (Chain mathematically reconciled, negative controls accounted for, and `P-46` deletion transparently documented).
+
