@@ -56,3 +56,7 @@ large*.json
 *.jpg
 *.png
 *.jpeg
+
+# DSA drill scratch (coach compiles probes here, then deletes)
+.dsa_tmp/
+*.exe
