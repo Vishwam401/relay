@@ -184,12 +184,24 @@ evidence lives.
 | `D-23` retry policy | increment on **claim** · `next_attempt_at` column · `min(5.0 · 2^(n-1), 15.0)` with equal jitter · `MAX_ATTEMPTS = 3` | Bounds **scheduling**, not dispatches — `attempts` reached `4` and bought a full extra handler run (`P-27`, accepted as an overdraft); reclaim re-dispatches with **no** backoff; jitter narrower than the poll quantum is unmeasurable (`P-24`); `CAP` is inert (`P-26`); `dead_letter` is a verdict with no diagnosis | `MAX_ATTEMPTS` or the poll interval changes; a side-effecting handler exists (Week 3); `last_error` lands (Week 4) |
 | `D-24` two-layer idempotency | separate enqueue identity from execute identity | Enqueue identity (`uq_jobs_idempotency_key`) bounds caller retries; execute identity (`uq_side_effects_effect_key`) bounds worker redispatches. Enqueue-only fails on lease reclaim; execute-only fails on lost ack | Multi-tenant namespace, retention TTL, or external outbox |
 | `D-25` execute-time dedup | stable nullable effect key, named database `UNIQUE`, and conflict-safe insert | Application `SELECT`-then-`INSERT` race reproduced at `count=2` without constraint. `ON CONFLICT DO NOTHING` linearizes at index; `rowcount=0` handles loser | Multi-effect jobs, legacy NULL rows |
+| `D-26` `claim_generation` | monotonic `bigint` fencing token, incremented **only** inside the claim CAS, returned via `RETURNING` | The fence rejects stale **writes**, not stale **work** (`[MEASURED]` — worker A had already attempted its insert). **Liveness cost lands on the fenced row:** job `128` sits `running|2|2` because the fence discarded the only terminal mark offered — the problem changed shape, it was not eliminated. Single-writer property is an **assumption**, not a constraint. `113` of `145` execution rows carry `NULL` generation. And `attempts` increments on claim while `MAX_ATTEMPTS` is evaluated in `except`, so a mid-handler outage costs **two** attempts `[NOT TESTED]` | A second path writes `status='running'` (Cost 2 stops being theoretical); the bound moves out of the `except` block; or the `NULL` era needs a backfill decision |
+| `D-27` transactional outbox | intent committed **with** the effect in one `COMMIT`; delivery **at-least-once**; exactly-once is the **receiver's** job | A fourth unsupervised process with no exception boundary (`P-43` shape); dispatcher has **no backoff and no bound** and `outbox.attempts` counts committed *marks* (`P-35`); row lock held **across** the HTTP call, so a pooled connection sits `idle in transaction`; `ON CONFLICT DO NOTHING` **waits** rather than skipping (`P-41`, `[REPORTED, NOT VERIFIABLE]`); delivery identity has **no written invariant** — one key per *job* (`P-42`); and **the dedup fix consumed the evidence for the problem it fixed** (`P-46`) | The dispatcher gains a bound and backoff; a payload discriminator plus a named `409` lands; the receiver moves to its own database (restoring `P-34`'s boundary and the negative control); or an outbox reaper is designed — at which point the lock-lifetime rejection reopens |
+| `D-28` observability | four SQL metrics · `/healthz` = `SELECT 1`, **liveness only** | `/healthz` drinks from the pool it reports on, so it fails while the process is healthy and merely busy — **a probe whose remediation is a restart, for a condition a restart does not fix.** Four deliberate omissions: worker liveness (`P-21`), dispatcher liveness (nothing observes it), queue backlog (`D-03`), and its own pool saturation. Headroom is **`~3–5`**, not `22`. Binding throughput constraint is **handler duration**, not `echo=True` (`0.1 s` of `0.1427 s`). Three numbers `[REPORTED, NOT VERIFIABLE]` (`P-45`). `/slow-hold` is unauthenticated and unbounded (`P-44`); `/db-ping` duplicates `/healthz` | Authentication exists (`/metrics` unblocks); the `P-43` boundary lands (`pool_pre_ping` gets re-priced — **that order is load-bearing**); a dedicated health pool or timeout is added; or `/slow-hold` and `/db-ping` are resolved |
+| `D-29` no leader election | one reaper; the reclaim `UPDATE`'s own re-checked lease predicate is what makes a second one safe | **One reaper is a single point of failure with no supervisor** (`P-43`) — when it is dead, recovery latency is **unbounded**. The recovery bound is `remaining lease + one poll + possibly one failed poll`, **conditional on the reaper being alive**, and that condition was not met in the only run that tested it. A second reaper's `rowcount = 0` bound is `[INFERRED from source]`, never measured. Reaper throughput at scale is `[NO EVIDENCE]` — every observed pass had at most one candidate. **The advisory-lock alternative is rejected on scope, not on measurement** | A **two-reaper run** produces a double-reclaim count — that single run is the named owner of this entry's weakest field, and it also prices the one failure mode a lease lacks: a hung-but-alive lock holder with no expiry |
 | `D-01` *reserved* | Postgres vs Redis vs RabbitMQ | Cost field partly collected: polling is 1 tx per worker per interval; an idle fleet is not free. **Still missing** a clean throughput comparison | Din 6, after a clean concurrency run |
 | `D-02` *reserved* | `FOR UPDATE SKIP LOCKED` vs `SERIALIZABLE` | **Not writable yet.** The mechanism half is measured (`SKIP LOCKED` removes waiting, not duplicates). The throughput half is not — `P-12`. `SERIALIZABLE` was never run at all | A run with a **proven overlap window** exists |
 
-**Numbering:** `D-09`..`D-20` belong to the Month 2–4 roadmap. `D-01`..`D-08` and `D-21` are Week 1;
-`D-22`/`D-23` are Week 2; `D-24`/`D-25` are Week 3. **Next free: `D-26`.** `PROBLEMS.md` holds `P-01`..`P-27`, plus Week 3's `P-28` and `P-29` — **next free `P-30`**.
+**Numbering, at Month 1 close (`2026-09-11`):** `D-09`..`D-20` belong to the Month 2–4 roadmap. `D-01`..`D-08`
+and `D-21` are Week 1; `D-22`/`D-23` are Week 2; `D-24`/`D-25` are Week 3; **`D-26`..`D-29` are Week 4 Din 6.**
+**Next free: `D-30`.** `PROBLEMS.md` holds `P-01`..`P-46` — **next free `P-47`**.
 Grep on the day you assign the number, not the day the plan was written — collisions have happened twice.
+
+**Week 4 Din 6 also appended amendment blocks to `D-06`, `D-21`, `D-22`, `D-23`, and `D-25`** — under their
+original entries, not as new numbers, so a reader of the original never sees only the old truth. The rows above
+for those five entries are therefore **incomplete on their own**: `D-06`'s transitions are now guarded on
+`(status, claim_generation)`, `D-21`'s claim identifier exists, `D-22`'s Costs 7/10/11 are built and Cost 8 is
+measured (and **weaker** than its `[INFERRED]` version), `D-23`'s `dead_letter` now carries a diagnosis, and
+`D-25`'s stable key is now doing double duty as the receiver's dedup identity.
 
 ---
 
@@ -211,7 +223,15 @@ Grep on the day you assign the number, not the day the plan was written — coll
 | Claim query | `P-03` (index, Week 4), `P-05` (tiebreak), `D-06` (the guard), `D-23` (the `next_attempt_at` gate and its mandatory `IS NULL` branch; it never consults `attempts`), W1 D3 (`LockRows` below `Limit`), W1 D4 (`SKIP LOCKED`) |
 | Reaper | `D-22` (lease duration lives in its predicate), `P-19` (`IS NULL` branch), `P-20` (its output), `P-22` (its latency, and how to measure it wrong), `D-06` amendment (its guard re-asserts the whole predicate), `D-23` Cost 3 (it re-dispatches with no backoff) |
 | Heartbeat | `P-21` (coverage inverse to failure severity), `D-22` Costs 5–7 (interval chosen not measured; rejects a released lease, untested against a re-claimed one) |
-| `dead_letter` | `D-06` amendment (two migrations, `NOT VALID` → `VALIDATE`), `D-23` Cost 8 (self-describing verdict, no diagnosis), `D-21` amendment (it did not rename history) |
+| `dead_letter` | `D-06` amendment (two migrations, `NOT VALID` → `VALIDATE`), `D-23` Cost 8 (self-describing verdict, no diagnosis) **superseded by `D-23`'s W4 D6 amendment — `last_error` is the diagnosis now**, `D-21` amendment (it did not rename history), `P-36` (`os._exit` never reaches it), `P-27` (`attempts = 4` reaches it for the wrong reason). Five rows in two eras: `104/105/108` pre-`last_error`, `129/130` with both `last_error` and `completed_at` |
+| `jobs.claim_generation` | **`D-26`** (the whole entry), `D-06` W4 D6 amendment (transitions are now guarded on `(status, claim_generation)`), `D-29` (the reaper deliberately does **not** advance it — which is what makes `attempts`+generation moving together diagnostic), `D-25` W4 D6 amendment (why the generation must **not** enter `effect_key`), `P-17` (the gap it closes) |
+| `jobs.completed_at` | `D-22` Cost 10 (deferred twice, now built), `D-23` W4 D6 amendment, `D-28` (the `p50`/`p99` metric is derived from it — and `completed_at − created_at` includes **queue dwell**, so under a backlog it measures waiting) |
+| `jobs.last_error` | `D-23` W4 D6 amendment (full traceback; **omitted** from `GET /jobs/{id}` because there is no auth — `D-03`; cleared on a successful retry; `+123%` heap pages on `5,000` rows), `P-30` (a rejected mark withholds it too, so the only worker that saw the exception leaves no reason) |
+| `outbox` | **`D-27`** (the whole entry), `D-21` (append-only reasoning applied to a second table), `P-35` (no backoff, no bound; `attempts` counts committed marks), `P-36` (`2` sequence values burned per crash iteration — one here, one on `side_effects`). `4` rows, id `2` is a gap |
+| `src/dispatcher.py` | `D-27` Cost 3 (row lock held **across** the HTTP call, `idle in transaction`), `P-35`, `P-41` (the receiver's wait composes with a small pool — `[INFERRED]`, never run), `P-42` (it mints `f"job:{job_id}"` — **one key per job**, and the invariant that makes that safe is written nowhere), `P-43` shape (no exception boundary, no supervisor) |
+| `sink_deliveries` / receiver | `D-27` (exactly-once here is Relay's **requirement on the receiver**, not its guarantee), `P-33` (check-then-insert race, closed for **storage**), `P-40` (the `UNIQUE` killed its own negative control; dedup-off now returns `500`), `P-41` (`ON CONFLICT DO NOTHING` waits), `P-42` (`duplicate` asserts the key was seen, not the payload), `P-34`/`P-38` (schema ownership across a service boundary), **`P-46`** (a migration deleted three rows; `count(*) = 7` against `last_value = 10`) |
+| `/healthz` · `/slow-hold` · `/db-ping` | `D-28` Costs 1, 2, 6 (liveness-only; four deliberate omissions; the three-endpoint overlap), `P-44` (`/slow-hold` unauthenticated and unbounded — the amplifier for the cascade `D-28` Cost 1 describes), `P-21` (why worker liveness cannot be reported), `D-03` (why queue depth cannot be) |
+| Exception boundaries / supervision | **`P-43`** (worker, reaper, **and** dispatcher: `except Exception` wraps only handler execution; no `restart:` policy, no systemd unit, no manifest), `D-28` (the `pool_pre_ping` rejection **re-taken** on the true premise — boundary first, then price the flag), `D-29` Cost 1, `D-22` W4 D6 amendment (`7.9 s` is process-launch latency, not a recovery bound) |
 | `POST /jobs` | `P-07`, `P-08`, `D-05` amendment, `D-24` (enqueue idempotency), W1 D2 |
 | `GET /jobs/{id}` | `D-05` amendment (egress), `D-03` (enumeration) |
 | Middleware | `P-08`, `D-05` amendment |
@@ -453,3 +473,77 @@ deferred cancellation of in-flight I/O (rejected by measurement)
 | W0 D2 — why `docker stop` escalated to `137` in ~1-2s instead of 10s | short, unowned | W0 D2 |
 | Should an unregistered type write an execution row? | recorded, not designed | `P-11` |
 | Is `413` even the right answer, or should the API point callers at object storage? | contract question | `P-08` |
+
+---
+
+# Month 1 close — `2026-09-11`
+
+**Authoritative documents, in reading order:** [`daily/WEEK_04_HANDOFF.md`](daily/WEEK_04_HANDOFF.md) (verdict
+table + line-by-line DoD audit) → [`../README.md`](../README.md) (nine-row failure matrix) →
+[`DECISIONS.md`](DECISIONS.md) (`D-26`–`D-29` and five amendment blocks).
+
+## The five promises, and what each verdict actually rests on
+
+| # | Promise | Verdict | The one sentence that limits it |
+|---|---|---|---|
+| 1 | accepted job never silently lost | **`narrowed`** | *Accepted* means a `202`, which requires a committed row — so a request arriving during a database outage is **rejected, not accepted**, and a rejected job is not a lost job |
+| 2 | duplicate execution ≠ duplicate side effect | **`narrowed`**, **two layers, two verdicts** | The noun `narrows` applies to is **storage**, not delivery — and on the external side the constraint lives in **another service**, so it is Relay's *requirement*, not Relay's guarantee |
+| 3 | retries bounded | **`narrowed`** | The bound is on retry **scheduling**, not dispatches (`P-27`), and it is evaluated in the handler-exception path — so `os._exit` skips it entirely (`P-36`) |
+| 4 | crashes recoverable | **`narrowed`** (row) · **`[NO EVIDENCE]`** (process) | Two claims that had been written as one: the **row** survives because it is durable and the lease expires; the **process** does not survive at all (`P-43`) |
+| 5 | terminal failures → DLQ | **`narrowed`** | Strongest of the five, and reachable **only** through the handler-exception path — so `P-36` and `P-27` sit outside it in opposite directions |
+
+**Not one is a bare `protected`.** A single unqualified `protected` in that table would undo four weeks of
+writing `narrows`, `bounds`, and *under the failures tested*.
+
+## Two additions to the trust ledger
+
+**`[MEASURED]` — Week 4's reproducible numbers.** Job `126`'s pre-fence harm (stale mark `rowcount = 1`,
+`32.973 s` before the live worker finished) · job `128`'s fence (`held_generation=1 current_generation=2
+rowcount=0`) · Din 4's `fenced_lines=1` / `conflict_on_mark_lines=0` grepped **by line name**, on two real OS
+processes · `job_executions > jobs` strictly (`20 > 9`) which is what licenses `effects_ok|0` to mean anything ·
+Interleaving B′'s `4` iterations with `attempts=4` **and** `claim_generation=4` moving together and
+`side_effects=0`, period `~32 s`, `2` sequence values per iteration · `1 × applied` + `4 × duplicate` = `1` row ·
+`signal_to_handler_s = 42.068 s` on a blocking handler (and `signal_to_exit_s` identical in **both** runs, which
+is why one run would have reported the useless number) · drain `7.01 jobs/s` / `0.1427 s` per job, recomputed
+from the log's own timestamps · `p50 10.2849 s` / `p99 18.3357 s` under backlog · `113`/`145` `NULL`
+generations · `sink_deliveries` `count(*) = 7` against `last_value = 10`.
+
+**`[REPORTED, NOT VERIFIABLE]` — a category this ledger did not have before `P-45`.** Pool timeout `3.0055 s` ·
+receiver contention `2.8133 s` against `0.4703 s` · `/healthz` timeout `3.1618 s`. Recorded, mechanisms sound,
+artifacts gone (`.gitignore` contains `logs/`). **This is neither `[MEASURED]` nor wrong, and collapsing it into
+either is the error the label exists to prevent.**
+
+## Two corrections that belong in an index rather than only in a log
+
+**A `count(*)` lies after a `DELETE`; a sequence does not.** `sink_deliveries` reads `7` rows with
+`last_value = 10`. A reader who checks only the first learns *"seven deliveries happened"*. Ten did. **Read a
+sequence alongside `count(*)` on any table a `DELETE` has ever touched** — and note this is a *different cause*
+from `P-05`'s rollback gaps, so the two gap lists must not be written as one.
+
+**A total that joins is not evidence that the lines are right.** Din 6's own Step 1 entry listed the five
+`dead_letter` ids as `122, 125, 128, 129, 130`; the actual ids are `104, 105, 108, 129, 130`. The **count** was
+right and three of the five ids were wrong. That is **compensating errors** in miniature, and it is why the
+reconcile chain is verified per line with a named source per line rather than on its total.
+
+## What Month 2 opens on
+
+1. **`P-43`** — no exception boundary on the worker, reaper, or dispatcher, and no supervisor anywhere. Two
+   decisions, not one edit. **Deliberately not fixed on Din 6**, because it is the *input* to promise #4's
+   verdict.
+2. **`pool_pre_ping`, re-priced after `P-43`.** The order is load-bearing: the deletion test's answer **inverts**
+   once the missing boundary is known.
+3. **`P-45`** — retention. Cheapest high-value item; it is already costing verifications.
+4. **The two-reaper run** — `D-29`'s weakest field has a named owner.
+5. **`P-44`** — `/slow-hold`. Three options, each weakening the Step 3 measurement slightly; pick one on the
+   record.
+
+6. **`P-47`** — opened by trying to commit this close. Five `docs/` subtrees are gitignored, so **all four
+   handoffs, every BRIEF/KEY, and all twelve `PREDICTIONS_FROZEN.md` files are in no commit.** The frozen seal is
+   verified by hashing a file the repository does not contain. Bundle with `P-45` and `P-29` — one retention
+   decision closes all three.
+
+> **Read this index with `P-47` in mind.** The links above to `daily/WEEK_04_HANDOFF.md` and
+> `roadmap/CURRENT_WEEK.md` resolve on the machine this was written on and **not in a clone**. That is a known,
+> recorded gap, not an oversight — see `P-47` for why the fix is a scoping decision rather than an edit.
+
+**Numbering:** next free **`D-30`**, next free **`P-48`**. `BACKEND_ROADMAP_PART2.md` may now be opened.

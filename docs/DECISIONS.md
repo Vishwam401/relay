@@ -833,6 +833,48 @@ wrong — it asked *"is the value `running`"*, never *"whose"*. Compare-and-set 
 distinguish generations; the structural answer is a fencing token, and it is **not built**. This is the
 sharpest limit on `D-06`'s chosen mechanism and it did not exist while the graph was acyclic.
 
+### Week 4 Din 6 amendment — D-06 (2026-09-11)
+
+**The title of this entry is now incomplete, and the word that is wrong is *enforced*.** `D-06` says state
+transitions *"are enforced by compare-and-set, not by the schema"*. As of Week 4 Din 1 that sentence describes
+half the guard. Every lifecycle predicate — claim, heartbeat, terminal mark, `completed_at` — carries a second
+term: `jobs.claim_generation`, a `bigint NOT NULL DEFAULT 0` incremented **inside the claim's own `UPDATE`**
+and read back through that statement's `RETURNING`. Compare-and-set is now **generation-aware**. Read the
+original entry as *"the set of values is constrained by `CHECK`; the transitions are constrained by a guarded
+`UPDATE` on `(status, claim_generation)`."*
+
+**Cost 5 of the original entry predicted this and was measured twice.** Cost 5 said a compare-and-set on the
+recurring value `'running'` can match a different generation of the same row, and named the fencing token as the
+structural answer. Din 1 measured the harm first, deliberately, before building the fence: job `126`, a stale
+worker A marked `succeeded` with `rowcount = 1` at `08:06:42.342` while worker B's handler was still executing
+and finished `32.973 s` later, at which point B's own mark conflicted with `rowcount = 0` `[MEASURED]`. The
+guard evaluated its written predicate correctly; the predicate did not ask which claim it belonged to. Din 1's
+job `128` then ran the same interleaving with the fence in place: A's late mark reported
+`held_generation=1 current_generation=2 rowcount=0` `[MEASURED]`. Din 4 reproduced it on two real OS worker
+processes against a disposable database: `fenced_lines = 1`, `conflict_on_mark_lines = 0`, grepped by line
+**name** rather than by `rowcount`, because two different predicate failures both produce `rowcount = 0` and
+only the log line distinguishes them `[MEASURED]`.
+
+**What this amendment does not change, and each of these is a separate claim.**
+
+1. **The fence rejects stale *lifecycle writes*; it does not cancel stale *work*.** Worker A in Din 1's job
+   `128` had already attempted its effect insert before being fenced `[MEASURED]`. `effect_key` uniqueness
+   (`D-25`) is therefore a second layer, not a consequence of the fence `[INFERRED from source]`.
+2. **The generation has exactly one writer, and that is a live assumption rather than a constraint.** Only the
+   claim `UPDATE` increments it; the reaper's reclaim moves `status` and leaves the generation alone
+   (`pre_generation=post_generation`, measured directly on Din 2 and again on Din 5's job `1`) `[MEASURED]`. Any
+   future path that writes `status='running'` without incrementing reopens the window `D-26` closes
+   `[INFERRED]`.
+3. **Historical rows are honest rather than retrofitted.** `job_executions.claim_generation` is nullable with
+   no default, and `113` of `145` execution rows in the evidence database carry `NULL` — they were written
+   before the column existed `[MEASURED 2026-09-11]`. See `D-21`'s amendment.
+4. **The safety gain has a liveness cost, measured on the same row.** Job `128` is `running` with
+   `attempts = 2` and `claim_generation = 2` because the fence discarded the only terminal mark that was
+   offered `[MEASURED-R]`. The problem changed shape rather than disappearing: before the fence a wrong
+   terminal state was written; after it, no terminal state is written and the row waits for the lease.
+
+Full decision: `D-26`. Original entry unchanged above.
+
 ---
 
 ## D-07: `attempts integer NOT NULL DEFAULT 0` is added now, in Week 1, although retries arrive in Week 2
@@ -1107,6 +1149,48 @@ assignment, not on the day the plan was written — output in `logs/WEEK_02.md`,
 > **Nothing in these two entries is written as an elimination.** The lease and the reaper **narrow** the
 > stranded-work window. Contract #2 (*side effects are not duplicated*) is **unprotected** until Week 3.
 
+### Week 4 Din 6 amendment — D-21 (2026-09-11)
+
+**`job_executions` gained a fourth meaningful column, and the slipped debt `P-11` named is now paid.** Week 4
+Din 1 added `job_executions.claim_generation bigint NULL`, written from the value the claim's `RETURNING`
+handed back. The instrument can now answer a question it structurally could not answer for three weeks:
+*"were these two execution rows two claims, or one claim observed twice?"* `attempts` alone cannot separate
+those, because a reaper reclaim advances `attempts` on the **next** claim and the reaper touches nothing in
+between.
+
+**The column is nullable with no default, and that is the decision rather than an oversight.** A `DEFAULT 0`
+backfill would have made `113` historical rows claim to belong to generation `0` — a value that means *"never
+claimed under the fence"* on new rows and would mean *"unknown"* on old ones, with nothing in the schema to
+tell the two apart. `NULL` says *"this row predates the instrument"* and says it in the type system.
+`[MEASURED 2026-09-11]` Current evidence database: `113` `NULL`, `32` stamped, `145` total.
+
+**One number correction, and it is this amendment's only measurement.** `DIN_06_BRIEF.md` and Din 1's design
+notes both refer to *"the historical `107` rows"*. `107` was the execution count at Week 3's **close**, before
+Din 1's own drain and experiment rows landed. The count of rows carrying `NULL` today is **`113`**, not `107`
+`[MEASURED 2026-09-11]`. Din 1's reviewer close recorded `113 NULL / 3 stamped / 116 total` on the day, which
+is consistent — `29` further stamped rows were written across Din 2–3. Use `113`.
+
+**The two original refusals both held for another week, and one of them is now load-bearing rather than
+neutral.**
+
+1. **Still no foreign key.** Din 4's Interleaving B′ ran a crash loop on a disposable database and burned
+   `2` sequence values per iteration with `0` rows committed `[MEASURED]`; nothing in that loop could have
+   cascaded into `job_executions` in a way an FK would have caught, and an FK would have coupled the
+   observation log to the lifetime of the thing it observes.
+2. **Still no index, and the growth rate is now measured rather than assumed.** `job_executions` is at `145`
+   rows against `133` jobs — the instrument outgrows the table it observes, strictly, and that inequality is
+   what gives *"exactly one effect per job"* any content at all: Din 4 measured `20` executions against `9`
+   jobs on the witness database, and had those been equal, no row was ever dispatched twice and the claim
+   would have been a non-event (`P-12`) `[MEASURED]`. At `145` rows a `Seq Scan` is correct and an
+   `EXPLAIN ANALYZE`-driven index remains Month 2 (`P-03`).
+
+**And one thing the instrument still cannot do**, unchanged since Week 1 and now with a named consequence:
+`executed_at` is a **dispatch** instant, so `count(*) > 1` proves a job was dispatched twice and says nothing
+about overlap. Proving overlap needed a second clock from outside this table — the `14.783 s` figure in Week 2
+and the `32.973 s` figure on Din 1's job `126` both came from worker stdout, not from here `[MEASURED]`.
+`jobs.completed_at` (Din 2) narrows this for the *terminal* instant only; it is on `jobs`, one row per job, so
+it cannot time an individual dispatch.
+
 ---
 
 ## D-22: lease duration `30 s`, heartbeat interval `10 s`, and no handler timeout — one decision with three numbers, and only one of them is measured
@@ -1295,6 +1379,76 @@ Week 3 Din 5 measurements clarified the status mark and fencing boundaries:
 - The live concurrent production schedule where a stale heartbeat or mark overwrites a new claim has `[NO EVIDENCE]`.
 - Explicit fencing tokens remain unbuilt in the schema, meaning compare-and-set on `status = 'running'` is the only guard `[INFERRED]`.
 - The execution endpoint timestamp `completed_at` and the 45 s payload + T=3 s `SIGBREAK` shutdown run slipped past Week 3 and are assigned to Week 4 `[INFERRED]`.
+
+### Week 4 Din 6 amendment — D-22 (2026-09-11)
+
+Three of this entry's `Cost` lines changed status in Week 4. **Two were built and one was measured, and the
+measured one inverted its own claim** — which is the reason this amendment is long.
+
+**Cost 7 and Cost 11 are built.** The fencing token exists as `jobs.claim_generation`, every lifecycle
+predicate carries it, and Cost 7's *"dangerous ordering"* — a stale heartbeat resurrecting a reclaimed row back
+to `running` with `rowcount = 1` — is now gated on generation equality (`D-26`, and `D-06`'s amendment). Cost 11's
+claim identifier landed on `job_executions` as a nullable `claim_generation` (`D-21`'s amendment). Both were
+carried for four weeks with an owner each; both closed on Din 1.
+
+**Cost 10 is built.** `jobs.completed_at` exists, written by the terminal mark inside the same guarded `UPDATE`,
+so it inherits the generation gate rather than adding an unguarded writer to a row the reaper is racing — which
+was the exact objection that deferred it. First latency number from it: `p50 = 10.2849 s`, `p99 = 18.3357 s`
+over a `400`-job backlog `[MEASURED]` Din 5. Note what that latency **is**: `completed_at − created_at`, so it
+includes queue dwell (Din 2 Faisla 1). Under a backlog those percentiles are dominated by waiting, not by
+handler cost, and the per-job handler figure is a different number (`0.1427 s`, below).
+
+**Cost 8 was run, and the honest reading is not the one the `Revisit when` block anticipated.** Din 2 ran the
+prescribed shape twice, moving exactly one variable, and that pairing is what makes the result usable:
+
+| Marker | Run 1 — job `131`, `{"seconds": 45}` | Run 2 — job `132`, `{"seconds": 45, "block": true}` |
+|---|---|---|
+| heartbeat lines | `4` | `0` |
+| reaper reclaim | not recorded | `09:12:35.334` |
+| `signal_to_handler_s` | `0.001` | **`42.068`** |
+| `signal_to_exit_s` | `42.204` | `42.475` |
+| terminal mark | `rowcount = 1`, `succeeded` | **`Conflict on mark … rowcount = 0`** |
+| row at `T + 50` | `succeeded`, `completed_at` set | **`pending`**, `completed_at` `NULL`, `last_error` `NULL` |
+
+`[MEASURED]` all rows, Din 2.
+
+1. **The number a single run would have reported is the useless one.** `signal_to_exit_s` is `~42.2–42.5 s` in
+   **both** runs with opposite outcomes. A shutdown-latency figure that is identical across a clean finish and a
+   contested loss says nothing about either. This is why Cost 8 required two runs, and it is the general form of
+   `P-12`.
+2. **The real new number is `signal_to_handler_s = 42.068 s`, and its cause is not the lease.**
+   `CTRL_BREAK_EVENT` was delivered at `09:12:06.741`; the process printed `Signal SIGBREAK received` at
+   `09:12:48.809` — *after* `time.sleep(45)` returned. `time.sleep()` is not interrupted by `SIGBREAK` on
+   Windows. So `P-15`'s bound is **the handler's full duration**, not its *remaining* duration `[MEASURED]`. On
+   Week 1's `8 s` handler that difference was `5 s` and invisible; on `45 s` it is `42 s`.
+3. **Cost 8's claim is now `[MEASURED]` and it is weaker than the `[INFERRED]` version.** Graceful shutdown's
+   *"finish the current job, then exit"* rests on an unstated precondition — `handler_duration <
+   LEASE_DURATION_SECONDS` — and Run 2 broke it. The work was done, its side effect committed at `09:12:03.780`
+   and is durable, the worker exited `rc = 0`, **and the job is `pending` with `next_attempt_at NULL`**, i.e.
+   immediately re-claimable. **The work happened and the result was not written.** A clean exit code is not
+   evidence of a clean outcome.
+4. **The mark's label is `Conflict on mark`, not `Mark fenced`, and that is correct.** There was no second
+   worker; the reaper does not touch the generation. The predicate that failed was `status = 'running'`. Keeping
+   two names for one `rowcount = 0` is what let Din 4 grep the fence by **name** instead of by `rowcount`.
+
+**Cost 3's reclaim-latency figure needs a caveat this entry did not have.** Din 5's chaos run reported the
+reaper reclaiming job `1` *"7.9 s after database start"*. That is **process-launch latency, not a recovery
+bound**: the reaper's first engine line (`select pg_catalog.version()`) is at `15:22:46.428`, after the database
+returned, and the reclaim is `63 ms` later on its first poll `[MEASURED-R]`. The reaper was not running during
+the outage. Do not quote `7.9 s` as a recovery number (`P-43`).
+
+**And one property of the lease that only an outage could expose.** The reaper's predicate is
+`claimed_at < now() - interval '30 seconds'` where `now()` is the **server's** clock, so the lease runs on
+wall-clock time and not on activity. During Din 5's `26.8 s` outage `claimed_at` was frozen while the clock
+advanced, so the lease was **already spent** when the database returned and the row was reclaimable
+immediately `[MEASURED]`. Consequence, stated as a bound rather than a number: *time from database recovery to
+reclaim* = the lease's **remainder** (a function of the outage's length) `+` one reaper poll (`2.0 s`) `+`
+possibly one failed poll — **and the whole bound is conditional on the reaper being alive**, which on Din 5 it
+was not.
+
+**Unchanged: there is still no handler timeout.** It is still the structurally correct fix, and its price is
+still the unanswered question of what a timed-out handler's status should be. Month 2, with `P-43`'s exception
+boundary, and in that order.
 
 ---
 
@@ -1496,6 +1650,60 @@ taken: Week 3, alongside dedup.
 - **A delay needs to be claimed as measured** — then the instrument comes first: `Scheduling retry` lines
   copied into the log **before** any capture is deleted, or a `scheduled_at` recorded on the evidence row.
 
+### Week 4 Din 6 amendment — D-23 (2026-09-11)
+
+**`dead_letter` now carries a verdict *and* a diagnosis, and those are two different things that were
+previously one.** Week 3 added the `dead_letter` status value via `NOT VALID` + `VALIDATE CONSTRAINT`; Week 4
+Din 2 added `jobs.last_error text NULL`, holding a full `traceback.format_exc()` written by the same guarded
+terminal `UPDATE`. Before this, a terminal row answered *"did it stop?"* and a human had to find the worker's
+stdout to answer *"why?"* — and by Week 2's own record those captures were routinely deleted at day close.
+
+**The three decisions inside `last_error`, each with its own cost** (Din 2 Faisla 3):
+
+1. **Full traceback, not just `str(exc)`.** A bare message loses the frame that raised, which is the half that
+   distinguishes a handler bug from an infrastructure failure `[INFERRED]`.
+2. **Omitted from `GET /jobs/{id}` entirely.** Relay has no authentication anywhere (`D-03`), and a traceback
+   leaks module paths, environment shape, and often payload fragments to an unauthenticated caller. The column
+   is readable by an operator with database access and by nobody else `[INFERRED]`.
+3. **Cleared on a successful retry** (`last_error = None` when a retried job reaches `succeeded`). A stale
+   error string on a `succeeded` row is worse than no string: it reads as a current problem `[INFERRED]`.
+
+**Cost, and the storage line is the measured one.** A compressed Python traceback runs `~250–500` bytes and
+stays inline — below the `~2040 B` TOAST threshold — so it lands in the heap page the claim query scans. On a
+`5,000`-row synthetic table that moved the heap from `112` to `250` pages, **`+123%`** `[MEASURED]` Din 2.
+Accepted at today's `n = 133`; it is a real input to the indexing decision (`P-03`, Month 2), because a
+`Seq Scan` over a table whose rows doubled in width costs proportionally more.
+
+**Current terminal population, and it is worth reading as two eras rather than one number.**
+`[MEASURED 2026-09-11]` Five `dead_letter` rows: `104`, `105`, `108`, `129`, `130`.
+
+| ids | `last_error` | `completed_at` | `claim_generation` | Reading |
+|---|---|---|---|---|
+| `104`, `105`, `108` | `NULL` | `NULL` | `0` | Pre-Din-2. Terminal, and the diagnosis is unrecoverable |
+| `129`, `130` | set | set | `3` | Post-Din-2. Terminal **with** a stored cause and a completion instant |
+
+**Three corrections and carried limits that this amendment must not soften.**
+
+1. **The bound still bounds *scheduling*, not *dispatches*, and job `108` is the standing proof:**
+   `attempts = 4` against `MAX_ATTEMPTS = 3` `[MEASURED 2026-09-11]`, because `attempts` increments on
+   **claim** and a reaper reclaim spends budget without a failure (`P-27`). `last_error` does not change this;
+   it only makes the final attempt's cause readable.
+2. **A job can reach `dead_letter` without ever having failed on its own merits, and this is now three distinct
+   cases rather than one.** `attempts` increments inside the claim's `UPDATE`, while the `MAX_ATTEMPTS`
+   comparison is evaluated in the `except Exception` block — so a database outage's cost depends entirely on
+   *when* it lands. Enumerated in `D-26`'s `Cost 4`; only the first case has been run.
+3. **And the bound's branch can be unreachable, which is the opposite failure and shares the same root cause.**
+   Din 4's Interleaving B′ ran a handler that calls `os._exit(1)`, bypassing Python's exception handling
+   entirely: `attempts` reached `4` and `claim_generation` reached `4` with `side_effects = 0` and
+   `status = running` throughout — **never `dead_letter`** `[MEASURED]`, period `~32 s`, `2` sequence values
+   burned per iteration. `P-36`. One root cause — the bound is evaluated in a handler-exception path — produces
+   both a healthy job dead-lettered for an infrastructure fault and a poison pill that never terminates. Job
+   `136` in the evidence database is one such row, left `running|1|1` deliberately (`P-05`).
+
+**Revisit when** the bound moves out of the `except` block, which is the single edit that addresses both
+directions. Month 2, and it needs `P-43`'s exception boundary first, since that changes which paths can reach
+the bound at all.
+
 ---
 
 ## D-24: two-layer idempotency — separate enqueue identity from execute identity
@@ -1573,3 +1781,546 @@ This strengthens the chosen mechanism only inside its written boundary: a new no
 The local ledger insert and terminal mark **could** share one Postgres transaction, but that is not free: current handler/worker transaction ownership would couple; current ordering can hold the transaction across handler work; and guarded mark `rowcount=0` must force rollback or the effect can still commit alone `[INFERRED from source]`. External email/HTTP/payment cannot join that transaction `[INFERRED]`. A future outbox may make local state+intent atomic; it does not eliminate remote redelivery `[INFERRED]`.
 
 **Revisit now:** Din 4 adds enqueue identity and records `D-24` decision input in the Day 4 log only; Din 6 performs the same-day decision-number grep and publishes reserved `D-24` in `docs/DECISIONS.md`. Also revisit if one job gains multiple legitimate effect kinds or an external receiver contract is introduced `[INFERRED process ownership]`.
+
+### Week 4 Din 6 amendment — D-25 (2026-09-11)
+
+`D-25` chose a **stable** effect key. Week 4 put that choice under two new pressures — a generation counter
+above it and a network boundary below it — and the key stayed stable through both. The two relationships are
+different in kind and this amendment separates them, because collapsing them is how a future change would
+quietly break dedup.
+
+**1. `effect_key` versus `claim_generation` — deliberately unrelated, and the alternative was actively
+dangerous** (Din 1 Faisla 3). The obvious-looking move once a generation exists is to put it in the key:
+`job:{job_id}:gen:{claim_generation}`. That **destroys** the mechanism. Every redispatch increments the
+generation, so every redispatch mints a **new** key, every `INSERT` is unique, `ON CONFLICT` never fires, and
+duplicate effects commit — with the `UNIQUE` index still present and reporting nothing wrong `[INFERRED from
+schema semantics]`. The two identities answer different questions and must not be merged: `claim_generation`
+identifies *which claim is current* (a liveness/ownership fact, and it must change per claim);
+`effect_key` identifies *which logical effect this is* (a business fact, and it must **not** change per claim).
+Din 1's measured fence and Din 4's measured dedup are the two halves of that split running side by side: job
+`128` — two executions, two generations (`1`, `2`), stale mark `rowcount = 0`, **one** effect row `[MEASURED]`.
+
+**And the fence does not make the key redundant, which is the reason both exist.** The fence rejects a stale
+worker's *lifecycle write*; it does not cancel its *work*. In Din 1's job `128` worker A had already attempted
+its effect insert before being fenced `[MEASURED]`. Had the key been generation-scoped, A's insert would have
+succeeded under a different key and the fence would have blocked only the harmless part.
+
+**2. `effect_key` versus delivery identity — reused on purpose, and the invariant that makes it safe is
+unwritten** (Din 3 Faisla 3). `src/dispatcher.py` sends `effect_key` as the receiver's `idempotency_key`
+rather than minting a fresh id per delivery attempt; a per-attempt UUID would make every redelivery distinct
+and remove receiver-side dedup entirely. Measured end to end on Din 4's Interleaving C: five deliveries of one
+key produced `1 × 200 applied` + `4 × 200 duplicate` and **`1`** stored row `[MEASURED]`.
+
+Three consequences, and Cost 2 of the original entry is now the load-bearing one:
+
+- `D-25` Cost 2 said `job:{id}` encodes **one logical effect per job**. That limitation now reaches across a
+  service boundary: it is simultaneously the local ledger's identity **and** the external receiver's dedup
+  identity. A second legitimate effect kind per job would break both layers with one change `[INFERRED]`.
+- `result = duplicate` at the receiver asserts that the **key** was seen, not that the payload matches. A
+  divergent body under a seen key is discarded silently and reported as success — measured: key stored with
+  `job_id=222`, a later request with the same key and `job_id=333` returned `200 duplicate` and the stored row
+  was unchanged `[MEASURED-R]` (`P-42`). Discarding is the correct behaviour for an idempotent receiver; what
+  is wrong is reading `duplicate` as *"the payload was already delivered"*.
+- Legacy `NULL` keys had to be handled at the boundary rather than at the source: the dispatcher mints a
+  deterministic synthetic `job:<job_id>` for rows where `effect_key IS NULL` (`effnull|3`), because the
+  receiver's `idempotency_key` is `NOT NULL`. `[MEASURED 2026-09-11]` `3` of `19` `side_effects` rows still
+  carry `NULL` — original Cost 1, still open, and ordinary `UNIQUE` treats those nulls as distinct.
+
+**One cost that landed this week and belongs here rather than only in `D-27`.** The receiver's `UNIQUE
+(idempotency_key)`, added on Din 4 to close the check-then-insert race, required deleting the duplicate rows
+that already existed — and those rows **were** the measurement of the race (`P-33`) and the negative control
+that gave the dedup result its meaning (`P-40`). Three rows were removed from the evidence database; ids `3`,
+`5`, `10` are gone, `7` remain, and `sink_deliveries_id_seq.last_value` is still `10` `[MEASURED 2026-09-11]`.
+**The fix consumed the evidence for the problem it fixed** (`P-46`). Nothing here is reversible and the
+absence is now itself the record.
+
+**Revisit when** one job legitimately owns more than one logical effect kind — that is the single change that
+forces both the local key and the delivery key to be re-derived at once — or when delivery identity gains a
+written invariant and a payload discriminator (`D-27`, Month 2).
+
+---
+
+# The four Month 1 closing decisions (Week 4 Din 6, `2026-09-11`)
+
+> **Provenance convention, same as `D-01`/`D-02`.** `[MEASURED]` = measured by me on this machine, number in
+> `logs/WEEK_04.md`. `[MEASURED-R]` = measured by the reviewer. `[REPORTED, NOT VERIFIABLE]` = the number was
+> recorded and its artifact is not in the repository, so it cannot be re-derived (`P-45`). `[NOT TESTED]` = the
+> case is enumerated and has never been run. `[INFERRED]` = reasoned from source or mechanism. `[NO EVIDENCE]`
+> = judgement, labelled as such. **An untagged line reads as `[MEASURED]`, which is this file's most expensive
+> default.**
+>
+> **No new decision is taken here.** All four were made on Din 1–5 and are copied with their dates. What Din 6
+> adds is the `Cost` field and the `Rejected` field, neither of which could be written before the week's
+> measurements existed.
+>
+> **Numbering:** `D-09`–`D-20` are reserved by `roadmap/BACKEND_ROADMAP_PART2.md`. `D-26`–`D-29` were grepped
+> free before being written (Din 6 gate `C0`). **Next free: `D-30`.** Grep on the day you assign the number —
+> that collision has happened twice.
+
+---
+
+## D-26: `jobs.claim_generation` is a monotonic fencing token, incremented only by the claim's compare-and-set
+
+**Problem:** `jobs.status` **cycles**. A row reaches `running`, is reclaimed to `pending` by the reaper on
+lease expiry, and reaches `running` again under a different worker. A compare-and-set whose predicate is
+`WHERE status = 'running'` therefore asks *"is this row currently held?"* and cannot ask *"is it held by
+**me**?"* — the predicate has no vocabulary for claim identity. The harm this permits is not hypothetical and
+was measured **before** the fix, on purpose (Din 1 Step 1, job `126`):
+
+| Event | UTC | Result |
+|---|---|---|
+| Worker A claims job `126` | `08:05:57.303` | `running` |
+| A blocks the event loop for `45 s` | `08:05:57.334` | no heartbeat can fire |
+| Reaper reclaims the expired lease | `08:06:28.487` | `pending`, generation untouched |
+| Worker B claims the same row | `08:06:30.292` | `running` again |
+| **Stale A marks `succeeded`** | `08:06:42.342` | **`rowcount = 1`** |
+| B's handler finishes | `08:07:15.315` | — |
+| B's terminal mark conflicts | `08:07:15.326` | `rowcount = 0` |
+
+`[MEASURED]` all rows. **The wrong writer won and the right writer lost, and every compare-and-set was correct
+at the instant it ran.** For `32.973 s` the API would have reported `succeeded` on work that was still
+executing.
+
+**Options:**
+- (a) treat `claimed_at` as the claim's identity
+- (b) mint a per-claim `uuid` and store it on the row
+- (c) a database-owned monotonic `bigint`, incremented inside the claim's own `UPDATE`
+- (d) (c), but with the reaper's reclaim also advancing the counter
+
+**Chose:** (c), as `jobs.claim_generation bigint NOT NULL DEFAULT 0`, incremented as
+`claim_generation = claim_generation + 1` **inside the claim's compare-and-set**, with the resulting value read
+back from that same statement's `RETURNING` — so the worker's held generation and the row's committed
+generation come from one atomic statement and cannot diverge. Every subsequent lifecycle write by that worker —
+heartbeat, terminal mark, `completed_at`, `last_error` — carries `AND claim_generation = :g`. Explicitly **not**
+(d): the claim `UPDATE` is the only writer of the counter.
+
+**Evidence:**
+- **The fence fires, single-process:** Din 1 job `128` — A claims at generation `1` (`08:13:52.219`), reaper
+  reclaims (`08:14:23.485`) leaving the generation alone, B claims to generation `2` (`08:14:24.754`), A's late
+  mark reports `held_generation=1 current_generation=2 rowcount=0` (`08:14:37.259`). Two executions, two
+  workers, generations `1, 2`, **one** effect row `[MEASURED]`.
+- **The fence fires on the production path, two real OS worker processes, disposable database:** Din 4
+  Interleaving A on job `7` — `fenced_lines = 1`, `conflict_on_mark_lines = 0`, `claim_conflict_lines = 0`,
+  `unstructured = 0`, grepped by line **name** rather than by `rowcount` `[MEASURED]`. Raw:
+  `Mark fenced: job_id=7 held_generation=1 current_generation=2 rowcount=0`.
+- **The grep discriminator matters and this is why:** `Conflict on mark` and `Mark fenced` are the same
+  `rowcount = 0` reached through *different* predicate failures. Din 2's job `132` produced the former with no
+  second worker in play (`status` failed, generation did not); Din 4's job `7` produced the latter. Reading
+  `rowcount` alone cannot separate them `[MEASURED]`.
+- **The counter is monotonic across the full cycle, and the reaper does not touch it:**
+  `pre_generation = post_generation` on every measured reclaim — Din 2's job `132`, Din 5's job `1`
+  (`pre_generation=1 post_generation=1`) `[MEASURED]`.
+- **Four claims are distinguishable from four reclaims because of this column:** Din 4's Interleaving B′ had
+  `attempts = 4` **and** `claim_generation = 4` moving together `[MEASURED]`. `attempts` alone could not have
+  told those apart.
+- **A negative control exists:** Din 1 job `127`, fresh owner, uncontested — `succeeded`, `attempts = 1`,
+  generation `1`, execution stamped `1`, mark `rowcount = 1` `[MEASURED]`. Without it, `rowcount = 0`
+  everywhere would be indistinguishable from a broken predicate.
+
+**Cost:**
+1. **`8` bytes per row, plus a generation term in every lifecycle predicate and every call signature that
+   reaches one** `[INFERRED]`. `bigint` overflow at `2^63` is not a real bound; the boilerplate is.
+2. **The single-writer property is an assumption, not a constraint** `[INFERRED from source]`. Nothing in the
+   schema stops a future code path from writing `status = 'running'` without incrementing the counter, and such
+   a path reopens exactly the window this entry closes. Enforcing it would need a trigger or a check the
+   project does not have.
+3. **The fence rejects stale lifecycle *writes*; it does not cancel stale *work*** `[MEASURED]`. Worker A in
+   job `128` had already attempted its effect insert before being fenced. `effect_key` uniqueness (`D-25`) is a
+   separate layer and remains load-bearing.
+4. **Liveness cost, measured on the fenced row itself** `[MEASURED-R]`. Job `128` is `running|2|2` in the
+   evidence database because the fence discarded the only terminal mark that was offered, and worker B's mark
+   also failed. Before the fence a wrong terminal state was written; after it, **no** terminal state is written
+   and the row waits for the lease and the reaper. The problem changed shape; it was not eliminated.
+5. **Historical rows carry `NULL`, and the count is `113` of `145`** `[MEASURED 2026-09-11]`. Any query
+   correlating executions to claims must handle the `NULL` era explicitly (`D-21`'s amendment). The alternative
+   — `DEFAULT 0` — would have made *"never fenced"* and *"generation zero"* the same value.
+6. **`attempts` is incremented in the claim's `UPDATE` while the `MAX_ATTEMPTS` comparison is evaluated in the
+   `except Exception` block, and a database outage's cost therefore depends on when it lands.** Three cases,
+   and only the first has been run:
+
+   | Outage lands | Cost in `attempts` | Status |
+   |---|---|---|
+   | During the claim | The increment was in the rolled-back transaction → **`0` spent** | `[MEASURED]` Din 5 |
+   | During the handler | Claim's increment is **already committed**; the mark also fails; row sticks `running`; reaper reclaims; the next claim increments again → **one outage costs two attempts** | `[NOT TESTED]` |
+   | After the handler succeeds, before the mark | The same, **plus one duplicate execution** | `[NOT TESTED]` |
+
+   At `MAX_ATTEMPTS = 3`, cases 2 and 3 can push a healthy job to `dead_letter` for an infrastructure fault it
+   did not cause. This is the exact inverse of `P-36`, where `os._exit` skips the bound's branch and a poison
+   pill never terminates — **one root cause, the location of the bound, two opposite harms.**
+
+**Rejected:**
+- **(a) `claimed_at` as the token** — the heartbeat rewrites `claimed_at = now()` every `10 s`, so it is not an
+  identity; it is a liveness timestamp that changes **while the same claim is still current**. A stale worker
+  comparing against the value it read at claim time would be fenced by its own peer's heartbeat, and a worker
+  re-reading it would see a value it never held `[INFERRED from source]`. Measured corroboration that the
+  column really does move: `claimed_at` pushed `40.295 s` past dispatch on Week 3's job `96` `[MEASURED-R]`.
+- **(b) per-claim `uuid`** — sufficient for equality fencing and **not monotonic**, so it cannot answer *"is
+  the value I hold older than the row's current one?"* Equality alone is enough to reject a stale write, but
+  the ordering is what makes an audit possible: `attempts = 4, generation = 4` was readable as four real claims
+  precisely because the numbers are comparable `[INFERRED]`. A `uuid` also gives no cheap way to detect the
+  Cost 2 violation above.
+- **(d) reaper also increments** — makes the reaper a lifecycle writer, which means two increment sites to keep
+  consistent and a reaper that now needs its own `rowcount = 0` handling and its own compare-and-set semantics
+  `[INFERRED]`. It also destroys a property that turned out to be diagnostic: because the reaper leaves the
+  counter alone, `attempts` and `claim_generation` moving **together** proves claims, and moving **apart**
+  proves reclaims. Din 4's B′ result depends on that `[MEASURED]`.
+- **A `CHECK` or trigger enforcing monotonicity** — would close Cost 2 and is not built. Rejected on scope
+  today, and it is the cheapest of the open items `[NO EVIDENCE]`.
+
+**Revisit when:** a second code path legitimately writes `status = 'running'` (Cost 2 stops being theoretical);
+the bound moves out of the `except` block (Cost 6's cases 2 and 3 become answerable, and `P-36`'s inverse
+closes with it); or `job_executions`' `NULL` era is old enough that a backfill decision has to be taken rather
+than deferred.
+
+---
+
+## D-27: a transactional outbox makes local effect and delivery intent atomic; delivery is at-least-once and exactly-once is the receiver's job
+
+**Problem:** A handler that must do something outside Postgres — send an email, `POST /charge`, call a
+webhook — cannot do it inside the transaction that records it. Only resources living in Postgres's own WAL and
+MVCC storage can participate in a `COMMIT`; an HTTP call cannot be rolled back. Doing both directly is a **dual
+write**, and it has no safe ordering:
+
+| Ordering | Crash window | Result |
+|---|---|---|
+| effect committed, then HTTP call | crash after `COMMIT`, before the call | local record exists, the external world never heard |
+| HTTP call, then commit | crash after the call, before `COMMIT` | the external world acted, Relay has no record — and the retry acts **again** |
+
+Neither window can be closed by ordering, and `D-25` Cost 3 has said so since Week 3: a local `UNIQUE`
+constrains a local table and nothing else.
+
+**Options:**
+- (a) call the external endpoint directly inside the handler
+- (b) two-phase commit / XA across Postgres and the HTTP endpoint
+- (c) transactional outbox — persist the delivery **intent** in the same `COMMIT` as the local effect, and let
+  a separate dispatcher process deliver it
+
+**Chose:** (c). `outbox (id, job_id, effect_key, payload jsonb, dispatched_at timestamptz NULL, attempts,
+created_at)`, written by the handler in the **same transaction** as the `side_effects` row.
+`src/dispatcher.py` polls with `SELECT … FOR UPDATE SKIP LOCKED`, `POST`s to the receiver, and sets
+`dispatched_at`. `dispatched_at IS NULL` serves as both status and timestamp (Din 3 Faisla 2) — no second state
+machine, no `CHECK` constraint to keep in sync with `jobs`'. The `payload` is a **snapshot**, so a delivery is
+not re-derived from a `jobs` row that may have moved on. Rows are never deleted after dispatch.
+
+**Chose, second half, and it is the part that must be stated as a boundary rather than a guarantee:**
+delivery is **at-least-once**. Relay does not deliver exactly once and does not claim to. Exactly-once
+*storage* at the far end is enforced by the receiver's own `UNIQUE (idempotency_key)` plus
+`INSERT … ON CONFLICT DO NOTHING` — which is a **requirement Relay places on the receiver**, in a different
+service, not a property Relay can enforce.
+
+**Evidence:**
+- **Atomicity of intent, both directions** `[MEASURED]` Din 3: effect row and outbox row commit together; on a
+  crash before that `COMMIT`, **both** are absent. Din 4's Interleaving B′ is the sharper form — four handler
+  runs, `side_effects = 0` and `2` sequence values burned per iteration, so the rollback took the pair every
+  time `[MEASURED]`.
+- **Duplicate delivery does not duplicate storage** `[MEASURED]` Din 4 Interleaving C, and reproduced
+  independently at review with all five requests issued from one `asyncio.gather()`: `1 × 200 applied`,
+  `4 × 200 duplicate`, **`1`** row stored `[MEASURED-R 2026-09-09]`. Serial `N=1`, concurrent `N=2`, and
+  concurrent `N=5` all store `1`.
+- **The `~4 ms` check-then-insert race that preceded the constraint was itself measured**, at `N=2 → 2 rows`
+  and `N=5 → 5 rows` (`P-33`) `[MEASURED]`. The current result means dedup rather than a delivery that never
+  repeated only because that earlier measurement exists.
+- **Current state** `[MEASURED 2026-09-11]`: `4` outbox rows (ids `1, 3, 4, 5`; id `2` is a sequence gap),
+  keys `job:135`, `job:137`, `job:138`, `job:139`, all with `dispatched_at` set and `attempts = 1`.
+  `7` rows at the receiver under `7` distinct keys.
+
+**Cost:**
+1. **A fourth long-running process, and no supervisor for it** `[MEASURED-R]`. `docker-compose.yml` runs only
+   Postgres; there is no `restart:` policy, systemd unit, or orchestrator manifest anywhere in the repository.
+   `src/dispatcher.py` also has no exception boundary around its poll, the same shape as `P-43`'s worker and
+   reaper. A dispatcher that dies stops all delivery silently; `dispatched_at IS NULL` rows simply accumulate.
+2. **The dispatcher has no backoff and no attempt bound** `[MEASURED-R]` (`P-35`). A permanently failing
+   receiver is retried as fast as the poll allows, forever, and `outbox.attempts` counts **committed marks**
+   rather than attempts — so the column that looks like an attempt counter cannot bound anything.
+   `MAX_ATTEMPTS` lives in `src/worker.py` and governs jobs, not deliveries.
+3. **The row lock is held across the HTTP call, by choice** (Din 3 Faisla 4) `[INFERRED from source]`. That is
+   what makes a rival dispatcher skip an in-flight delivery and what makes a crash release the lock with no
+   outbox reaper. The price is a pooled connection sitting `idle in transaction`
+   (`wait_event = Client/ClientRead`) for the full duration of an external call.
+4. **`INSERT … ON CONFLICT DO NOTHING` *waits*; it does not skip** `[REPORTED, NOT VERIFIABLE]` (`P-41`). To
+   decide whether the conflicting tuple commits, it blocks on that transaction's lock. Reported: a
+   `POST /deliver` against a key held by an open transaction took **`2.8133 s`** against an uncontended
+   **`0.4703 s`**, a `6.0×` slowdown; the artifact for this run is not in the repository (`P-45`). The
+   mechanism is the interesting half and it is derivable from source: this is the **opposite** of the claim
+   query's `SKIP LOCKED`, which returns immediately with less data. Composed with Cost 3 and a small pool, a
+   slow receiver-side lock consumes Relay connections — that composition is `[INFERRED]`; no run has produced
+   it. The receiver sets no `lock_timeout` and no `statement_timeout`.
+5. **Delivery identity has no written invariant, and it is the third idempotency layer** `[MEASURED-R]`
+   (`P-42`). `src/dispatcher.py` mints `f"job:{job_id}"` — one key per **job**, not per delivery attempt and
+   not per effect. The property that makes `result = duplicate` safe is *one key ⇒ one intended payload*, and
+   that property is asserted nowhere, tested nowhere, and stated in no design file. `D-24` covers enqueue
+   identity and execute identity; this is the layer it does not cover. Measured consequence: a request with a
+   seen key and a different body returns `200 duplicate` and the divergent payload is discarded with no error
+   and no log line naming the divergence.
+6. **The receiver's `500` path is reachable and unexercised** `[MEASURED-R]` (`P-40`). With `SINK_DEDUP=0` the
+   plain `INSERT` still sits under the constraint, so two concurrent same-key requests give `200 applied` and
+   `500 Internal Server Error` from an unhandled `IntegrityError`. A `500` is indistinguishable from a receiver
+   bug in any log; a named `409` would not be.
+7. **The dedup fix consumed the evidence for the problem it fixed, and this is the most expensive line here**
+   `[MEASURED-R 2026-09-11]` (`P-46`, `P-40`). Adding `UNIQUE (idempotency_key)` required deleting the existing
+   duplicate rows, and those rows **were** `P-33`'s original race measurement and `P-40`'s negative control.
+   `sink_deliveries` went `10 → 7`; ids `3, 5, 10` are gone; the sequence still reads `10`. The
+   `SINK_DEDUP=0` arm is no longer a negative control — it produces a `500`, and a `500` is not a duplicate.
+   Din 3's Run A / Run B numbers remain valid **as history** and are not reproducible against current `HEAD`.
+8. **Append-only retention has a cost that is currently invisible** `[INFERRED]`. `payload` duplicates JSON
+   between `jobs` and `outbox` heap pages, and nothing prunes dispatched rows. At `4` rows this is theory; the
+   retention decision is Month 2, and `D-21`'s no-index reasoning applies to `outbox` too.
+9. **A handler dedup conflict skips the outbox write, so a failed first outbox write is not self-repairing**
+   `[INFERRED from source]` (Din 3 Faisla 2). The second execution sees `rowcount = 0` on the effect and writes
+   no intent, which is correct for avoiding a duplicate intent and wrong if the first intent was never
+   committed.
+
+**Rejected:**
+- **(a) direct HTTP inside the handler** — rejected on the table in *Problem*: neither ordering has a safe
+  crash window `[INFERRED]`, and Week 3 already measured the crash seam between the effect commit and the
+  terminal mark that this ordering would sit inside `[MEASURED]`. It is also the option that makes retry
+  semantics undefinable, since the handler cannot know whether its own previous call landed.
+- **(b) 2PC / XA** — HTTP endpoints do not implement a prepare phase, so this is not merely expensive but
+  inapplicable to the actual sink. Even confined to Postgres, `prepared_transactions` introduces a blocking
+  coordinator: a coordinator crash leaves an orphaned prepared transaction **holding locks and pinning WAL
+  indefinitely**, recoverable only by an operator running `ROLLBACK PREPARED`. That is a strictly larger blast
+  radius than the duplicate delivery it would prevent `[INFERRED]`.
+- **(c′) dispatcher mints a fresh `uuid` per delivery attempt** — makes every redelivery a distinct identity
+  and removes receiver-side dedup entirely; the receiver would store one row per attempt and the `UNIQUE`
+  constraint would never fire `[INFERRED]`. This is the same failure shape as generation-scoping `effect_key`
+  in `D-25`'s amendment: a key that changes per attempt cannot dedupe attempts.
+- **(c″) use the outbox row `id` as the delivery key** — couples external delivery identity to an internal
+  sequence, so a re-created intent for the same logical effect gets a new identity, and the receiver's dedup
+  namespace becomes a Relay implementation detail `[INFERRED]`.
+- **Releasing the lock before the HTTP call** (claim, commit, then deliver) — frees the connection for the
+  call's duration, which is a real gain, and permits rival dispatchers to deliver the same row concurrently
+  while leaving `dispatched_at IS NULL` orphans on crash with no outbox reaper to collect them `[INFERRED]`.
+  Reconsider once an outbox reaper exists; the two decisions are one decision.
+- **A dedicated `status` column on `outbox`** — recreates an auxiliary state machine needing its own `CHECK`
+  and its own transition guards, duplicating `jobs`' machinery for a row with two states `[INFERRED]`.
+- **Deleting rows after dispatch** — destroys the audit trail that makes a delivery count checkable after the
+  fact, which is `D-21`'s argument applied to a second table `[INFERRED]`.
+
+**Revisit when:** the dispatcher gains a bound and a backoff (Cost 2 — it is the largest open item here); a
+delivery-identity invariant is written down with a payload discriminator such as a body hash and a named `409`
+(Costs 5 and 6); the receiver moves to its own database and its own Alembic tree, which would restore the
+boundary `P-34` argued for and make the negative control runnable again (Cost 7); or an outbox reaper is
+designed, at which point the lock-lifetime rejection above is re-opened as one decision rather than two.
+
+---
+
+## D-28: observability is four SQL queries plus a liveness-only `/healthz`, and the endpoint that reports nothing is the decision
+
+**Problem:** Relay had no way to answer *"is it keeping up?"* or *"is it stuck?"* without a human reading
+`psql`. Two separable questions: **what to measure**, and **what to expose over an unauthenticated HTTP
+interface**. Conflating them is how a debugging convenience becomes an information-disclosure boundary, and
+`D-03` already recorded that Relay has no authentication anywhere.
+
+**Options:**
+- (a) a `/metrics` or `/stats` endpoint returning queue depth, latency, retry rate, DLQ count
+- (b) a Prometheus exporter plus Grafana
+- (c) SQL queries kept in the repository, run by a human, plus a minimal `/healthz` that reports only whether
+  this process can reach the database
+- (d) no health endpoint at all beyond the existing `/health`
+
+**Chose:** (c). Four metrics, defined as SQL and nothing else:
+
+| Metric | Definition | Din 5 reading |
+|---|---|---|
+| Queue depth | `count(*) … WHERE status='pending'` | `214` during load `[MEASURED]` |
+| Latency p50 / p99 | percentiles of `completed_at − created_at` | `10.2849 s` / `18.3357 s` `[MEASURED]` |
+| Retry rate | `count(*) … WHERE attempts > 1` as a fraction | `0.0000` (`0.0%`) `[MEASURED]` |
+| DLQ count | `count(*) … WHERE status='dead_letter'` | `0` on the load DB; `5` on the evidence DB `[MEASURED 2026-09-11]` |
+
+And `/healthz`: a single `SELECT 1` through this process's engine, documented as **liveness** — *"this process
+is running and can reach the database"* — and explicitly not readiness and explicitly not inventory.
+
+**Evidence, and the drain rate is the strongest number Month 1 produced:**
+- **`7.01 jobs/s` single-worker drain, `0.1427 s` per job** `[MEASURED]` Din 5 — `186` terminal marks between
+  the first claim (`15:11:37.299`) and the last mark (`15:12:03.690`), `26.391 s`. Including the engine
+  handshake it is `6.53 jobs/s`. `186 + 214 = 400` closes against the enqueued total, and there were `0`
+  empty-queue polls during the backlog. Recomputed from `w4d5_step4_worker.stdout.log` timestamps at review
+  `[MEASURED-R]`.
+- **Arrival `19.8 jobs/s`** — `400` jobs enqueued in `20.16 s`, giving net accumulation of `+12.8 jobs/s`
+  `[MEASURED]`.
+- **`POLL_INTERVAL_SECONDS = 2.0` is discovery latency on an empty queue, not a throughput divisor**
+  `[MEASURED]` — the worker loop did not sleep while a backlog existed. This was a live misconception before
+  Din 5.
+- **`/healthz` fails under pool saturation, which is the whole point of measuring it** — two concurrent
+  `/slow-hold` calls at `4.0 s` against `pool_size=2, max_overflow=0`, and `GET /healthz` timed out after
+  **`3.1618 s`** `[REPORTED, NOT VERIFIABLE]` (`P-45`).
+- **Pool exhaustion is client-side and says so in the error** — `sqlalchemy.exc.TimeoutError: QueuePool limit
+  of size 2 overflow 0 reached`, raised after **`3.0055 s`**, with **zero** corresponding errors in the
+  Postgres log because Postgres never saw the request `[REPORTED, NOT VERIFIABLE]` (`P-45`).
+- **Connection budget** `[MEASURED]` — `max_connections = 100`, `superuser_reserved_connections = 3`, so `97`
+  effective. Five idle Relay processes hold exactly `5` connections, one each; `QueuePool` allocates lazily.
+
+**Cost:**
+1. **`/healthz` drinks from the same pool it is reporting on, and that converts saturation into an outage**
+   `[REPORTED, NOT VERIFIABLE]` for the number, `[INFERRED]` for the cascade. Under saturation the probe queues
+   in `QueuePool`'s FIFO behind user traffic and exceeds an orchestrator's probe timeout; the orchestrator
+   `SIGKILL`s a process that is healthy and merely busy, aborting in-flight transactions and prompting client
+   retries. **A liveness probe that fails under load is worse than no probe**, because its remediation is a
+   restart and the condition is not fixed by restarting. The fix is a dedicated pool or an aggressive timeout,
+   and neither is built.
+2. **Four things `/healthz` deliberately does not report, and each has its own reason:**
+   - **Worker liveness** — the heartbeat runs only *during* a job (`P-21`), so an idle worker is
+     indistinguishable from a dead one and any heartbeat-derived health signal produces false outages on an
+     empty queue `[MEASURED]`.
+   - **Dispatcher liveness** — nothing observes it at all; a dead dispatcher shows up as `outbox` rows with
+     `dispatched_at IS NULL` accumulating and no alarm (`D-27` Cost 1) `[INFERRED]`.
+   - **Queue backlog** — `pending` is commercial volume on an unauthenticated endpoint (`D-03`'s enumeration
+     argument) `[INFERRED]`.
+   - **Its own pool saturation** — it cannot report the condition described in Cost 1, because measuring it
+     requires the resource that is exhausted `[INFERRED]`.
+3. **Connection headroom is `~3–5`, not `22`, and the earlier figure must not be quoted.** Din 5's log recorded
+   `97 − 75 = 22 comfortable`. The `75` counts five Relay processes at `pool_size=5 + max_overflow=10`, and
+   omits the load script's own engine (up to `+15`) and the `psql` / `docker exec` sessions used to observe the
+   run (`+2–4`). A full count is `~92–94` against `97`, leaving **`~3–5`** `[INFERRED from the same
+   measurements]`. The phrase *"comfortable single-digit/double-digit buffer"* is self-contradictory and is not
+   reused. This is a **narrow** margin under full theoretical saturation, and full saturation has not been run.
+4. **The binding constraint on throughput is handler duration, not `echo=True`, and Din 5's Faisla 1 has this
+   backwards.** Per-job cost is `0.1427 s`, of which the handler's own `sleep` is `0.1 s`; `echo=True` accounts
+   for `~11 ms`, roughly `8%` `[MEASURED]`. So *"`echo=True` bounds throughput to `7–10 jobs/s`"* is wrong in
+   attribution: removing `echo` would move `7.01` to roughly `7.6`. `DIN_05_ANSWERS.md` had this right and the
+   day's log regressed from it; the source of truth is the arithmetic above.
+5. **Three of this entry's numbers cannot be re-derived from the repository** `[REPORTED, NOT VERIFIABLE]`
+   (`P-45`): the pool timeout (`3.0055 s`), the `P-41` receiver wait (`2.8133 s` vs `0.4703 s`), and the
+   `/healthz` timeout (`3.1618 s`). No `w4d5_step2*` or `w4d5_step3*` log survives and no probe script exists
+   in the tree. One gate is unverifiable as a direct consequence: the `pool_size=2` override was never
+   *observed* loading, only configured. `.gitignore` contains `logs/`, so retained logs are local-only —
+   `P-29`'s shape, now costing a verification rather than a convenience.
+6. **The endpoint inventory is larger than the decision, and one entry is a hazard** `[MEASURED-R]`:
+
+   | Endpoint | Does | Standing |
+   |---|---|---|
+   | `/health` | returns `{"ok": true}`, no database | keep — the only probe that cannot be starved by the pool |
+   | `/healthz` | `SELECT 1` via the app pool | keep, as liveness, with Cost 1 written down |
+   | `/db-ping` | `SELECT 1` via the app pool | **duplicate of `/healthz`**; one should go, Month 2 |
+   | `/slow-hold?seconds=` | holds a pooled connection for a caller-chosen duration | **`P-44`** — unauthenticated, **no upper bound**, and it is the amplifier for the exact cascade Cost 1 describes. `?seconds=100000` is reachable by anyone who can reach the API |
+
+   `/slow-hold` is in `src/main.py` because the Cost 1 measurement *requires* it to share the app's pool — a
+   harness with its own engine would have measured nothing. So the honest options each weaken the measurement
+   slightly: a separate app factory used only under test, an environment-gated router, or a hard cap on
+   `seconds` plus a `statement_timeout`. **Month 2 picks one on the record.** It is not removed today because
+   Din 6 changes no `src/`, and because this entry's subject would disappear with it.
+7. **The four metrics are queries a human runs, so there is no history and no alerting** `[INFERRED]`. A
+   percentile is computed over whatever is in the table at the moment of asking, and `completed_at − created_at`
+   includes queue dwell (Din 2 Faisla 1) — under a backlog these percentiles measure waiting, not work.
+
+**Rejected:**
+- **(a) `/metrics` or `/stats` returning counts** — rejected on `D-03`'s boundary, not on effort. With no
+  authentication, `pending` is a business-volume readout and the DLQ count is a reliability readout, both
+  available to anyone who can reach the port `[INFERRED]`. Revisit the moment authentication exists; the
+  queries are already written.
+- **(b) Prometheus + Grafana** — a new runtime dependency and a new failure domain, added in the final week of
+  Month 1, to serve exactly one reader who is a human with `psql` access. `D-04`'s asymmetric-reversibility
+  heuristic: adding it is cheap and removing it is not `[NO EVIDENCE]`. Revisit when there is more than one
+  operator or a retention requirement.
+- **A static `200 OK` for `/healthz`** — reports event-loop liveness while concealing a database outage, which
+  is the failure that actually stops work. Din 5's chaos run is the counter-example: the worker died on a
+  database restart and a static probe would have said `200` `[MEASURED-R]` (`P-43`).
+- **Queue depth inside `/healthz`** — same disclosure boundary as (a), and it makes a health probe fail for a
+  business condition rather than a technical one `[INFERRED]`.
+- **Worker-heartbeat-coupled health** — false negatives on an idle queue, per Cost 2 (`P-21`) `[MEASURED]`.
+- **`locust` for load generation** — `pip install --dry-run` showed **`28`** transitive dependencies including
+  Flask, Werkzeug, `gevent` monkey-patching, `pyzmq`, and `pywin32`, roughly doubling the virtualenv footprint
+  to acquire a web UI and a distributed runner that Relay's CLI verification contract does not use. `httpx` is
+  already a dependency `[MEASURED]`. **With one honest caveat:** the in-tree harness that replaced it
+  (`step4_load_probe.py`) is **not in the tree** (`P-45`), so this rejection's chosen alternative currently has
+  no retained implementation.
+- **`pool_pre_ping=True`, and this rejection is re-taken here because Din 5's version rests on a false
+  premise.** `DIN_05_DESIGN.md` Faisla 4 rejects it on the ground that workers and reapers are *"polling loops
+  with built-in exception handling"*. **They are not** — `src/worker.py`'s `except Exception` wraps only handler
+  execution, and `src/reaper.py`'s loop has no `try` at all `[MEASURED-R]` (`P-43`). Its `Cost` line
+  (*"raises an unintercepted `InterfaceError`"*) understates the outcome: the process **exited**. With the true
+  premise the deletion test inverts — `pool_pre_ping` would have replaced the stale connection **inside** the
+  checkout, the claim query would have succeeded, and the process would have lived. **The order is therefore
+  fixed and it is not a preference:** put the exception boundary in first, then price `pool_pre_ping` against a
+  process that can actually retry. Both are Month 2. Today's flag stays `False` because changing it now would
+  implement a decision written on a false premise, and Din 6 changes no `src/`.
+
+**Revisit when:** authentication exists ((a) unblocks); the exception boundary lands (`pool_pre_ping` gets
+re-priced, and `/healthz`'s meaning changes because a dead process is no longer the likely failure); a
+dedicated health pool or timeout is added (Cost 1); or `/slow-hold` and `/db-ping` are resolved (Cost 6).
+
+---
+
+## D-29: no leader election — one reaper, and the reclaim `UPDATE`'s own predicate is what makes a second one safe
+
+**Problem:** The reaper is the component that makes *"crashes are recoverable"* true: it moves expired-lease
+rows from `running` back to `pending`. Two questions follow, and they are not the same question. **Is more than
+one reaper *safe*?** And **should Relay guarantee that only one runs?** The second is a leader-election
+question, and leader election is the canonical distributed-systems answer that this project deliberately did
+not reach for.
+
+**Options:**
+- (a) an external consensus lease — Raft via etcd or Consul
+- (b) a Redis lock with a TTL
+- (c) a Postgres advisory lock as a leader gate (`pg_try_advisory_lock`)
+- (d) no coordination at all — run one reaper, and rely on the reclaim statement's own guard
+
+**Chose:** (d). One reaper process, no leader gate, no coordination primitive. The safety argument is in the
+statement rather than in the deployment: the reclaim `UPDATE` **re-checks the lease predicate**
+(`WHERE status = 'running' AND (claimed_at IS NULL OR claimed_at < now() - interval '30 seconds')`) and reads
+`matched` from `RETURNING`. So a second reaper racing the first finds `rowcount = 0` rather than performing a
+second reclaim `[INFERRED from source]`. This is `D-06`'s compare-and-set applied to the reaper, and it is the
+same reason the worker's claim needs no coordination.
+
+**Evidence:**
+- **The reclaim works and reports itself** `[MEASURED]` Din 5, job `1`:
+  `[reclaim] job_id=1 pre_status=running matched=1 post_status=pending pre_generation=1 post_generation=1`.
+  `matched = 1` is read from the statement, not assumed.
+- **The reaper does not advance `claim_generation`**, measured on every reclaim across Din 2, Din 4, and Din 5
+  `[MEASURED]`. This is what makes `D-26`'s counter diagnostic and is a deliberate choice (`D-26`, rejected
+  option (d)).
+- **Terminal rows are untouched by the reclaim predicate** across four weeks of runs `[MEASURED]`.
+- **`FOR UPDATE SKIP LOCKED` is measured as non-blocking in the claim path** — `B_blocked = False` on Din 3's
+  probe, `claim_conflict_lines = 0` with zero blocked claims on Din 4 `[MEASURED]` — which is the same
+  primitive family this decision leans on.
+
+**Cost:**
+1. **One reaper is a single point of failure with no supervisor, and Din 5 measured the process half of that**
+   `[MEASURED-R]` (`P-43`). `src/reaper.py`'s loop is `while not SHUTDOWN_REQUESTED: await reap_stuck_jobs()`
+   with no `try` anywhere. A database blip kills it, and nothing restarts it. **When the reaper is dead,
+   recovery latency is unbounded** — the lease expires and no one is looking.
+2. **The recovery bound is conditional on the reaper being alive, and that condition was not met in the one run
+   that tested it** `[MEASURED-R]`. Stated honestly: *time from database recovery to reclaim* = the lease's
+   **remainder** `+` one reaper poll (`2.0 s`) `+` possibly one failed poll. The lease runs on the server's
+   wall clock, so a `35 s` outage spends the whole `30 s` lease and the row is reclaimable **immediately** on
+   recovery — the answer is a function of the outage's length, which is counter-intuitive. Din 5's reported
+   `7.9 s` is **not** this number; it is process-launch latency (`D-22`'s amendment).
+3. **A second reaper is bounded to `rowcount = 0` by the predicate, and that is `[INFERRED from source]`, not
+   measured** — no two-reaper run exists. The inference is strong because it is the same statement shape
+   measured repeatedly in the claim path, and it is still an inference.
+4. **Reaper throughput at scale is unmeasured** `[NO EVIDENCE]`. Every observed pass had at most one candidate.
+   `D-22` Cost 3 already owes a re-measurement with pass duration as a variable, and a single reaper is the
+   configuration in which that would first bind.
+
+**Rejected:**
+- **(a) Raft via etcd or Consul** — a correct leader election, and it brings an entire new failure domain:
+  another cluster to run, another quorum to lose, and a new class of incident (leader flapping, clock/lease
+  interaction between the consensus lease and Relay's own `30 s` lease) to hold in mind while debugging a job
+  queue whose current failure list is already `46` named entries `[NO EVIDENCE]`. Relay's whole premise
+  (`D-01`) is that one `COMMIT` in one database beats coordinating two systems; adding a third to protect a
+  process that reads one table contradicts it.
+- **(b) Redis lock with a TTL** — cheaper to run than (a) and unsound in the same well-known way: a TTL lock
+  plus a process pause equals two holders, so it needs a fencing token to be safe — and Relay's fencing token
+  already lives in Postgres (`D-26`) `[INFERRED]`. It would add a second store to hold a lock protecting a
+  table in the first store.
+- **(c) Postgres advisory lock as a leader gate — this is the strongest rejected option and it is rejected on
+  scope, not on measurement.** It is available with **zero** new dependencies, it costs one function call, and
+  it would literally enforce one reaper at a time. **The numbers that would price it were not taken this
+  month.** Din 5's chaos run produced no two-reaper double-reclaim count and no usable single-reaper recovery
+  distribution — the reaper was not running during the outage, and its observed `7.9 s` is process-launch
+  latency, not recovery latency (`P-43`). What **is** derivable without a new run: the reclaim `UPDATE`
+  re-checks the lease predicate and reads `matched` from `RETURNING`, so a second reaper is already bounded to
+  `rowcount = 0` rather than to a double reclaim — **which is an argument that the problem is small, not
+  evidence about the lock's cost.** And the lock adds one failure mode a lease does not have: it has **no
+  expiry**, so a session that is killed releases it, while a **hung-but-alive** holder keeps it forever — the
+  reaper silently stops and nothing reports it. **Revisit when** a two-reaper run produces a double-reclaim
+  count, at which point that failure mode is priced against Cost 1 rather than asserted alongside it.
+- **`LISTEN` / `NOTIFY` to replace polling** — not a leader-election alternative, and recorded here because it
+  is the adjacent thing that keeps getting suggested. It removes the poll interval and cannot replace the
+  reaper: a dead worker sends no notification, so lease expiry has nothing to fire on and still needs a timer
+  `[INFERRED]`. Month 2 at the earliest, and as a latency change rather than a recovery change.
+
+**Revisit when:** the exception boundary and a supervisor exist (Cost 1 shrinks, and the case for a leader gate
+gets weaker rather than stronger — a reaper that restarts reliably needs less protection from its own
+duplicate); or a two-reaper run is done, which is the single measurement that would let option (c) be rejected
+on evidence rather than on scope. **That run is the honest owner of this entry's weakest field.**

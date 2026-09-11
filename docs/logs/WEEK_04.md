@@ -1772,7 +1772,12 @@ temporary script nahi bani. Evidence DB review ke pehle aur baad me same hai: `1
 #### 1B — Actual Live DB Counts & Audit Shape
 
 - **Status histogram (`jobs` table):**
-  - `dead_letter`: `5` (Jobs 122, 125, 128, 129, 130)
+  - `dead_letter`: `5` (Jobs **104, 105, 108, 129, 130**) — **corrected at closeout.** This line first read
+    *"Jobs 122, 125, 128, 129, 130"*, which is wrong: `select status, count(*), string_agg(id)` returns
+    `dead_letter|5|104,105,108,129,130` `[MEASURED 2026-09-11]`. Job `128` is `running|2|2` (the fenced row) and
+    jobs `122`/`125` are not `dead_letter` at all. **The count `5` was right and three of the five ids were
+    wrong** — which is exactly the shape Q1(c) is about: a total that joins is not evidence that the lines are
+    right. The reconcile chain itself is unaffected because it reconciles counts, not ids
   - `failed`: `15`
   - `running`: `1` (`Job 136`: `136|running|1|1`)
   - `succeeded`: `112`
@@ -1791,3 +1796,365 @@ temporary script nahi bani. Evidence DB review ke pehle aur baad me same hai: `1
 
 **Gate C1 verdict:** `C1=pass` (Chain mathematically reconciled, negative controls accounted for, and `P-46` deletion transparently documented).
 
+
+---
+
+### Step 2 — `D-26` · `D-27` · `D-28` · `D-29` published, plus five amendments [PASS]
+
+**Aaj koi naya mechanism nahi bana. Jo bana wo `Cost` aur `Rejected` field hai** — chaar din ke `Faisla`
+inputs pe, aur wo fields Din 1–5 ki measurements ke bina likhi hi nahi ja sakti thi.
+
+| Entry | Subject | `Rejected` me kaun mara gaya |
+|---|---|---|
+| **`D-26`** | `jobs.claim_generation` — monotonic fencing token, **sirf** claim CAS increment karti hai | `claimed_at` as token (heartbeat usko har `10 s` badalta hai → identity nahi hai) · per-claim `uuid` (monotonic nahi → *"naya kaun hai"* compare nahi hota) · reaper bhi increment kare (do increment sites, aur wo diagnostic property maar deta hai jispe Din 4 ka `attempts=4, generation=4` khada hai) · `CHECK`/trigger se monotonicity enforce karna (Cost 2 band karta, scope pe reject) |
+| **`D-27`** | Transactional outbox — intent effect ke saath atomic, delivery **at-least-once**, exactly-once **receiver ka kaam** | Handler ke andar seedha HTTP (dono ordering ka crash window band nahi hota) · 2PC/XA (HTTP prepare phase implement hi nahi karta; aur orphaned prepared transaction locks + WAL pin karti hai — duplicate delivery se bada blast radius) · per-attempt `uuid` key (redelivery distinct ho jaati, dedup poora khatam) · outbox `id` ko key banana · lock HTTP se pehle release karna · `outbox` pe alag `status` column · dispatched rows delete karna |
+| **`D-28`** | Observability — chaar SQL metrics `+` `/healthz` **liveness-only** | `/metrics`/`/stats` (auth nahi hai — `D-03` enumeration, `pending` = business volume) · Prometheus/Grafana (Month 1 ke aakhri hafte me naya dependency, ek human reader ke liye) · static `200 OK` · queue depth `/healthz` me · heartbeat-coupled health (`P-21` → idle worker *"dead"*) · `locust` (`28` transitive deps) · **`pool_pre_ping=True` — aur ye rejection yahan dobara li gayi hai** |
+| **`D-29`** | Leader election **nahi** — ek reaper, aur reclaim `UPDATE` ka apna predicate hi doosre reaper ko `rowcount = 0` pe bound karta hai | Raft/etcd/Consul (poora naya failure domain) · Redis TTL lock (TTL + process pause = do holder; fencing token chahiye, aur wo already Postgres me hai) · **Postgres advisory lock — `rejected on scope, not on measurement`** · `LISTEN`/`NOTIFY` (latency change hai, recovery change nahi — mara hua worker notify nahi karta) |
+
+**`D-29` ka imaandar hissa, aur ye Q4 ka exact subject hai.** Advisory lock sabse strong alternative hai kyunki
+wo **already available** hai, zero naya dependency maangta hai, aur *"ek waqt me ek reaper"* literally enforce
+kar deta hai. Usko maarne ke liye jo number chahiye tha — **do reaper ek saath, aur unka double-reclaim count**
+(ya ek honest single-reaper recovery latency distribution) — **wo number Month 1 me liya hi nahi gaya.** Din 5
+me do-reaper ka koi run nahi hua, aur single-reaper ka `7.9 s` process-launch latency hai (`P-43`). To entry
+likhti hai: *rejected on scope, not on measurement*, plus advisory lock ka **apna** failure mode jo lease ke
+paas nahi hai — **hung-but-alive holder lock rakhta hai aur uska koi expiry nahi hai**, to reaper chup-chaap ruk
+jaata hai. Jo bina naye run ke derivable hai wo alag likha gaya hai: reclaim `UPDATE` lease predicate dobara
+check karta hai aur `matched` `RETURNING` se padhta hai, to doosra reaper already `rowcount = 0` pe bound hai —
+**ye argument ki problem chhoti hai, lock ki keemat ka evidence nahi.**
+
+#### Paanch amendments — naye entries nahi
+
+| Entry | Kya badla |
+|---|---|
+| `D-06` | Compare-and-set ab **generation-aware** hai. Original title ka *"enforced by compare-and-set"* adhoora hai; padho *"values `CHECK` se, transitions `(status, claim_generation)` pe guarded `UPDATE` se"*. Cost 5 ne ye predict kiya tha aur wo **do baar** measure hua (job `126` harm, job `128` + Din 4 job `7` fence) |
+| `D-21` | `job_executions.claim_generation` aa gaya, nullable, no default. **Number correction:** BRIEF aur Din 1 notes *"107 historical rows"* kehte hain — `107` Week 3 close ka execution count tha. Aaj `NULL` carry karne wali rows **`113`** hain, `145` me se `[MEASURED 2026-09-11]`. `113` use karo |
+| `D-22` | Cost 7 (fencing) aur Cost 11 (claim identifier) **built**. Cost 10 (`completed_at`) **built**, aur wo terminal mark ke usi guarded `UPDATE` me hai to generation gate inherit karta hai — wahi objection tha jisne usko defer kiya tha. Cost 8 **measured**, aur uska jawab `[INFERRED]` version se **kamzor** hai |
+| `D-23` | `last_error` aa gaya; `dead_letter` ab verdict **aur** diagnosis carry karta hai. Do era: `104/105/108` pre-Din-2 (`last_error` `NULL`, cause unrecoverable), `129/130` dono columns ke saath |
+| `D-25` | `effect_key` ka do rishta alag-alag likha: generation se **jaan-boojh ke azaad** (generation ghusane se dedup **toot** jaata hai aur `UNIQUE` index maujood rehte hue kuch report nahi karta), aur delivery key ke roop me **reuse** (per-attempt UUID dedup khatam kar deta) |
+
+**Ek `Cost` line jo aaj teen entries me gayi aur wo sabse mehngi hai (`P-46`):** receiver ke dedup fix ne uss
+problem ka **evidence kha liya** jise wo fix kar raha tha. `UNIQUE` lagane ke liye duplicate rows delete karni
+padi, aur wahi rows `P-33` ka original race measurement aur `P-40` ka negative control thi. Ye irreversible hai
+aur ab unki **absence** hi record hai.
+
+**Gate C2 verdict:** `C2=pass` — chaaron `D-` numbers C0 pe grep hue the (**likhne se pehle**, kyunki collision
+do baar ho chuki hai), chaaron me non-empty `Rejected` **named** alternatives ke saath, har `Cost` line pe
+provenance tag, aur paanchon amendments apni original entry ke **neeche** hain (naye entry nahi — warna do jagah
+do sach ho jaate).
+
+---
+
+### Step 3 — `README.md` rewrite [PASS]
+
+Purana README Week 1/2 ka artifact tha aur do tarah se galat ho chuka tha: `dead_letter` aur idempotency ko
+`🔜` roadmap pe dikha raha tha (dono ship ho chuke hain), `BASE_BACKOFF_SECONDS` `3.0` likha tha (source me
+`5.0` hai), aur *"three independent processes"* kehta tha (paanch hain). Poora rewrite hua.
+
+- **Problem statement** feature se shuru nahi hoti: *"kaunsi guarantee, kaunse failure ke against"*, aur paanchon
+  promises ka verdict pehle screen pe hai.
+- **Architecture diagram** me paanch process **aur aath transaction boundaries** (`TX-1`..`TX-8`) dashed
+  subgraph ke roop me hain. Chaar boundary facts naam se: handler **kisi** transaction me nahi chalta ·
+  **`TX-4` ek `COMMIT` hai jo do table cover karta hai** (yahi poora outbox argument hai) · `TX-5` aur `TX-6`
+  ek hi column likhte hain aur race nahi karte kyunki `TX-5` generation carry karta hai · `TX-7` row lock
+  **HTTP call ke aar-paar** hold karta hai, jaan-boojh ke.
+- **Failure matrix — nau row, zero khaali cell.** Teen `[NO EVIDENCE]`: worker mid-handler outage, worker `+`
+  reaper dono ek outage me mare, aur (row 7 me) worker ke *"remained alive"* claim ka correction.
+- **Numbers section** do hisse me: repository/evidence DB se re-derivable, aur teen jo
+  `[REPORTED, NOT VERIFIABLE]` hain (`3.0055 s` pool timeout · `2.8133 s` vs `0.4703 s` receiver wait ·
+  `3.1618 s` `/healthz`). Har number ke saath uska `n` aur condition.
+- **Do corrections README me naam se hain:** headroom `~3–5`, `22` nahi; aur throughput ka binding constraint
+  **handler duration** hai, `echo=True` nahi (`0.1 s` of `0.1427 s`; echo `~8%`).
+
+**Gate C3 verdict:** `C3=pass`.
+
+```text
+banned vocabulary grep (production-ready|scalable|robust)  -> zero match
+soft-adjective sweep (gracefully|battle-tested|resilient|
+  bulletproof|enterprise|seamless|highly available|...)    -> zero match
+empty table cells (`| |` / `|  |`)                          -> zero match
+bare `protected` used as a verdict                          -> zero (teen occurrence hain,
+                                                               teeno definitional/prose)
+```
+
+**Ek cheez jo grep pakad nahi sakti aur usko haath se check karna pada:** har adjective ke aage *"kis failure ke
+against?"* poochna. Grep ek **floor** hai, ceiling nahi — `production-ready` pe zero match aakar bhi
+*"handles failures gracefully"* likha ja sakta tha.
+
+---
+
+### Step 4 — blog post: **deliberately deferred, owner ke saath**
+
+`DIN_06_BRIEF.md` ke cut order ke hisaab se: Step 1 (chain) aur Step 5 (verdict + DoD) kabhi nahi kat sakte →
+`D-26`–`D-29` kabhi nahi → README ka failure matrix rakho → README ka *"Numbers"* trim ho sakta hai → **blog
+kaat sakte ho.** Wajah: blog ek **publishing** artifact hai, baaki sab **evidence** hai, aur *adhoora evidence
+adhoore blog se bura hai.*
+
+**Owner: Month 2, Week 1 ka writing slot.** Title aur aathon section ka skeleton `DIN_06_BRIEF.md` Step 4 me
+fixed hai. Ye *"kal likh doonga"* **nahi** hai — DoD audit me `deliberately deferred` ek naam wale owner ke saath
+likha gaya hai.
+
+---
+
+### Step 5 — handoff, Month 1 verdict, DoD audit [PASS]
+
+`docs/daily/WEEK_04_HANDOFF.md` likhi gayi — pehli do heading `WEEK_01`/`02`/`03` se **word-for-word**
+(*What Stuck* · *What Needs Reinforcement*), teesri *What Month 2 Must Not Assume*. Chaar hafte ka handoff
+series side-by-side padha jaata hai; reword karna wo comparison tod deta hai.
+
+#### Month 1 ka final verdict table
+
+| # | Promise | Verdict | Kis pe khada hai |
+|---|---|---|---|
+| 1 | accepted job never silently lost | **`narrowed`** | Scope `202` ke semantics se: *accepted* = committed row. DB down pe request **reject** hoti hai, accept nahi — **reject kiya hua job lost nahi hai.** Aur `protected` nahi kyunki jo evidence chahiye tha (*ek accepted `running` job, uska worker mara, phir bhi wapas aayi*) wo Din 5 me bana hi nahi |
+| 2 | duplicate execution ≠ duplicate side effect | **`narrowed`**, aur **dono layer ka verdict alag hai** | **Local (Relay ka apna):** `UNIQUE (effect_key)` + `ON CONFLICT DO NOTHING` ke peeche ek job ka effect row **ek** rehta hai. **Duplicate execution hota hai aur usko rokne ki koshish nahi ki gayi** — bound *effect* pe hai, *run* pe nahi. **External (Relay ki guarantee nahi):** delivery at-least-once; exactly-once **receiver ka kaam**. `narrows` ka noun **storage** hai, *delivery* nahi |
+| 3 | retries bounded | **`narrowed`** | Bound **scheduling** pe hai, dispatches pe nahi — job `108` `attempts = 4` (`P-27`). `os._exit` bound ka branch skip kar deta hai (`P-36`). Teesra case `[NOT TESTED]` |
+| 4 | crashes recoverable | **`narrowed`** (row) · **`[NO EVIDENCE]`** (process) | Chaar interleavings ne har row recover ki. Process recover nahi hota — DB restart pe worker exit kar gaya, koi supervisor nahi (`P-43`). **Ye do alag claim hain jo ek likhe ja rahe the** |
+| 5 | terminal failures → DLQ | **`narrowed`** — paanchon me sabse strong, aur phir bhi `protected` nahi | `dead_letter` real status hai, `5` rows, aur Din 2 se diagnosis bhi (`last_error`). `protected` nahi kyunki wo **sirf** handler-exception path se reachable hai, to `P-36` aur `P-27` dono uske bahar baithe hain |
+
+**Paanch me se koi bhi bare `protected` nahi hai, aur wo imaandar nateeja hai** — teen hafte ka `narrows` /
+`bounds` / *under the failures tested* ek unqualified `protected` se undo ho jaata.
+
+#### DoD audit — Week 4
+
+Line-by-line `planning/WEEK_04.md` ke against, handoff me poora. Har untick pe **ek** line: `deliberately
+deferred` (owner ke saath) **ya** `slipped` (kya specifically chahiye). Summary:
+
+| Bucket | Count | Naam se |
+|---|---:|---|
+| ✅ satisfied | `23` | Fencing chain, outbox chain, chaar interleavings, `completed_at`/`last_error`, chaar metrics, chaar decisions, paanch amendments, README, handoff, verdict table |
+| ⚠️ `slipped` — retention/artifact | `5` | Pool override observation · pool exhaustion `3.0055 s` · `/healthz` `3.1618 s` · load-time connection counts · `requirements.txt` zero pins (`P-45`) |
+| ⚠️ `slipped` — measurement no longer obtainable | `2` | Dedup-off negative control (`500`, not `2` rows — `P-40`) · Postgres-down ka doosra failure (galat describe hua, aur *"dono mare"* case bana hi nahi — `P-43`) |
+| ⚠️ `slipped` — transcription | `1` | Queue lag series: log `91 → 133 → 177 → 221 → 267`, `ANSWERS` `91 → 155 → 221 → 267`. Do alag rate (`+8.8/s` vs `+12.8/s`); doosra `19.8 − 7.0` se milta hai. Ek ko authoritative declare karna hai |
+| ❌ `slipped` — writing owed by the user | `3` | Chhe din ka `💡` apne shabdon me (Week 2 ka wahi debt, teesra hafta) · paanch Week 2 answers · `DDIA_CH8_LINKS.md` lines `10`–`13` (reviewer ne likhi thi, confirm nahi hui — items ghayab **nahi** hain, neeche correction dekho) |
+| ❌ `deliberately deferred` (owner named) | `1` | **Blog post → Month 2 Week 1 writing slot** |
+| ⚠️ `deliberately deferred` (owner named) | `7` | `POSTMORTEMS.md` · `P-43` fix · `P-44` fix · `pool_pre_ping` re-decision · `P-03` index · handler timeout/retention/partitioning · `DDIA_CH9_LINKS.md` |
+
+**Do carried debts ke numbers aaj naapे gaye, kyunki *"carried"* likhna aur *"kitna carried"* likhna do cheezein
+hain:**
+- `DDIA_CH8_LINKS.md`: **saare `18` items maujood hain** `[MEASURED 2026-09-11]` — `1`–`13` aur `17`–`18` Ch 8
+  links hain, `14`–`16` Din 4 ke Marc Brooker links hain. **Reviewer ki pehli reading galat thi** (grep sirf
+  `**Ch 8` pe tha, to `14`–`16` chhoot gaye aur *"teen items ghayab hain"* likha gaya — wo **galat** hai, aur
+  correction yahan hai). Asli debt **absence nahi, authorship** hai: lines `10`–`13` Din 3 ke close pe
+  **reviewer ne likhi thi** aur user ne unhe apne shabdon me confirm nahi kiya. Owner: user.
+- `logs/WEEK_01.md`: `Day 1`–`Day 5` hain, **`Day 6` aur `Day 7` ki koi entry nahi** `[MEASURED 2026-09-11]` —
+  aur Din 6 wahi din hai jab `D-01`/`D-02` likhe gaye, to reasoning ka ghar hai aur din ka nahi.
+
+**Gate C5 verdict:** `C5=pass`.
+
+---
+
+### 🧠 Prediction review — frozen text only
+
+**Score: `0.0 / 5.0`** `[MEASURED from DIN_06_PREDICTIONS_FROZEN.md against DIN_06_KEY.md rubric]`
+
+Frozen file SHA-256 `934764139408B2DAFBEC93CCA2BD8385FFEF2B105F75752F275A0296C82C9D97`, C0 se C6 tak unchanged.
+Sirf `### Prediction` block grade hota hai; `### Observed + meri explanation` aur `### After KEY` ko credit
+**nahi** milta.
+
+| Q | Subject | Frozen answer (quoted, verbatim) | Score | Rubric row |
+|---|---|---|---:|---|
+| Q1 | Reconcile chain ka `0`, aur wo bucket jispe `0` galat hai | `idk` | `0.0` | `idk` = `0` |
+| Q2 | Promise #2 ka verdict aur scope statement | `idk` | `0.0` | `idk` = `0` |
+| Q3 | Promise #1 ka verdict, `202` ka semantics, aur ek bound | `idk` | `0.0` | `idk` = `0` |
+| Q4 | `D-29` ka strongest rejected alternative | `idk` | `0.0` | `idk` = `0` |
+| Q5 | Failure matrix ka `[NO EVIDENCE]` row | `idk` | `0.0` | `idk` = `0` |
+
+**Paanchon `idk`, aur aaj wo pichhle paanch dino se alag kism ka `0` hai — yahi iss entry ki asli baat hai.**
+Din 1–5 ke sawaal library aur database behaviour pe the; unpe `idk` ka matlab *"ye naapa nahi ja saka"* tha, aur
+wo ek legitimate answer hai. **Aaj ke paanchon sawaalon ka jawab tumhare hi record me pehle se likha hua tha** —
+`P-43`, `P-45`, `P-46`, `P-40`, `P-42`, aur Din 5 ke reviewer close me. To aaj ka `0` ek **reading gap** hai, ek
+knowledge gap nahi.
+
+Aur wo farq Month 2 ke liye zyada maayne rakhta hai, kyunki Month 2 ka poora kaam apne hi likhe hue record pe
+khada hai. Concretely: Q1 ka jawab `P-46` ke pehle paragraph me tha, Q3(b) ka `P-43` ke title me tha, Q4(b) ka
+`P-45` ke pehle vaakya me tha, aur Q5(a) ka `P-43` ke *"Owner"* line me. **Chaar sawaal, chaar problem cards jo
+kal likhe gaye the.**
+
+`idk` likhna phir bhi guess se behtar hai aur wo rule nahi badla — ek likha hua `idk` sahi data hai
+(*not-answered*), aur ek guess dressed as knowledge nahi. **Iss hafte ka frozen total: `1.0 + 0.0 + 0.25 + 1.5 +
+1.0 + 0.0 = 3.75 / 31.0`.**
+
+---
+
+### 💡 What the session established — **user must rewrite this in his own words**
+
+> Ye reviewer ka likha hua hai. Iska matlab ye **nahi** hai ki ye tumne samjha; iska matlab ye hai ki session me
+> ye establish hua. Neeche apne shabdon me dobara likho, aur ye text pehle **band karke**.
+
+1. **Ek total jo jud jaata hai, lines ke sahi hone ka evidence nahi hai.** Do galtiyan ulti direction me total
+   me cancel ho jaati hain — iska naam **compensating errors** hai. Aaj iska live example bana: agar
+   `sink_deliveries` ka `-3` na likha jaata aur usi chain me kahin `+3` ki transcription slip hoti, chain band
+   ho jaati aur **dono** galtiyan chhup jaati. Isi liye chain **per-line** check hoti hai aur har line ka
+   **source** likha jaata hai.
+2. **`count(*)` `DELETE` ke baad jhooth bolta hai; sequence sach bolti hai.** `sink_deliveries` pe `7` rows aur
+   `last_value = 10`. Jo reader sirf pehla dekhta hai wo *"saat deliveries hui"* padhega — **das** hui thi. Jis
+   table pe kabhi `DELETE` chala ho, wahan `count(*)` ke saath uski sequence padho. Ye `P-05` ke rollback gaps
+   se **alag cause** hai aur unhe ek likhna galat hai.
+3. **`[NO EVIDENCE]` aur *"toota hua"* do alag verdict hain, aur *Recovery mechanism* aur *Evidence* do alag
+   column hain.** Recovery ek **claim** hai (bina run ke likhi ja sakti hai), Evidence ek **observation** hai.
+   *"Worker aur reaper dono mare"* row ka Recovery cell *"koi nahi"* kehta hai aur Evidence `[NO EVIDENCE]` —
+   khaali cell reader ko *"ye socha hi nahi gaya"* batati hai, ye jodi *"socha gaya, aur ye ek gap hai"* batati
+   hai. **Interview me sirf doosri kaam aati hai.**
+4. **`protected` bina scope ke likhna ek shabd me teen hafte undo kar deta hai.** Aur imaandar nateeja ye hai ki
+   paanchon promises me se **koi bhi** bare `protected` nahi hai — promise #5 sabse strong hai aur wo bhi `P-36`
+   aur `P-27` ke saath rehta hai.
+5. **Ek fence stale *writes* rokti hai, stale *work* nahi — aur isi liye do layer chahiye.** Job `128` me worker
+   A ne fence hone se **pehle** apna effect insert attempt kar liya tha. Aur generation ko `effect_key` me
+   ghusana dedup ko **todta** hai: har redispatch nayi key mintta hai, `ON CONFLICT` kabhi fire nahi hota,
+   duplicates commit ho jaate hain — `UNIQUE` index maujood rehte hue, bina koi error.
+6. **Ek number jo do run me same aata hai, dono ke baare me kuch nahi bolta.** `signal_to_exit_s` clean finish
+   aur contested loss dono me `~42.2–42.5 s` tha. Isi liye Cost 8 ko **do** run chahiye the, aur asli naya
+   number `signal_to_handler_s = 42.068 s` nikla.
+7. **Ek `Rejected` field ka sabse aasaan jhooth *"jo numbers liye hi nahi gaye"* se reject karna hai.** `D-29`
+   advisory lock ko single-reaper ke Din 5 numbers se maar sakta tha aur wo interview me ek hi sawaal me girta
+   (*"wo number kya tha?"*). Jo likha gaya: **rejected on scope, not on measurement** — plus lock ka apna
+   failure mode.
+
+---
+
+### ⚠️ Closeout corrections
+
+1. **`dead_letter` ids Step 1 me galat likhe gaye the.** *"122, 125, 128, 129, 130"* → actual
+   **`104, 105, 108, 129, 130`** `[MEASURED 2026-09-11]`. Count `5` sahi tha, teen ids galat. Job `128`
+   `running|2|2` hai (fenced row) aur `122`/`125` `dead_letter` nahi hain. Step 1 ki line inline correct kar di
+   gayi. **Chain iss se affected nahi hai** — wo counts reconcile karti hai, ids nahi — par yahi Q1(c) ka shape
+   hai aur usko chhupana nahi.
+2. **`job_executions` ka `NULL` count `107` nahi, `113` hai.** `DIN_06_BRIEF.md` aur Din 1 ke notes *"107
+   historical rows"* kehte hain; `107` Week 3 **close** ka execution count tha, Din 1 ke apne drain aur
+   experiment rows se pehle. Aaj: `113` `NULL` / `32` stamped / `145` total `[MEASURED 2026-09-11]`. `D-21` ke
+   amendment me correct hai.
+3. **Din 5 ka *"worker remained alive"* README ke failure matrix row 7 me naam se correct kiya gaya**, log ka
+   original paragraph chhoda nahi gaya — `P-43` usko already carry karta hai, aur ek galat claim ko delete karna
+   uska record bhi delete kar deta hai.
+4. **`D-28` me do numbers theek karke gaye:** headroom `~3–5` (`22` nahi), aur binding constraint **handler
+   duration** (`echo=True` nahi). `DIN_05_ANSWERS.md` ne pehla sahi likha tha aur log usse peeche chala gaya —
+   source of truth arithmetic hai.
+5. **`DIN_05_DESIGN.md` ka Faisla 4 `D-28` me copy nahi kiya gaya.** Uska premise (*"polling loops with built-in
+   exception handling"*) jhoota hai (`P-43`), aur uska `Cost` line asar chhupa deti hai — nateeja transient
+   error nahi, **process ki maut** hai. `D-28` me wo rejection **dobara** li gayi, sahi premise ke saath, aur
+   order fix kiya gaya: **pehle exception boundary, phir `pool_pre_ping` ki keemat.**
+6. **Old README me do stale facts the** jo rewrite me gaye: `BASE_BACKOFF_SECONDS` `3.0` likha tha (source `5.0`
+   hai) aur *"three independent processes"* (paanch hain).
+
+---
+
+### 🚧 Unresolved at Month 1 close
+
+Poora line-by-line `WEEK_04_HANDOFF.md` ke DoD audit me. Sabse upar ke paanch:
+
+1. **`P-43` — worker/reaper/dispatcher pe koi exception boundary nahi, aur koi supervisor nahi.** Month 2 ka
+   **pehla** item. Aaj jaan-boojh ke fix nahi kiya: wo promise #4 ke `[NO EVIDENCE]` verdict ka **input** hai.
+2. **`P-45` — retention.** `.gitignore` me `logs/` hai, to teen numbers `[REPORTED, NOT VERIFIABLE]` hain aur ek
+   gate unverifiable hai. Sabse sasta high-value item.
+3. **Do-reaper run** — `D-29` ki sabse kamzor field ka owner. Uske bina advisory lock scope pe reject hota hai,
+   evidence pe nahi.
+4. **Chhe din ka `💡` apne shabdon me** — Week 2 ka wahi debt, teesra hafta. Owner: user.
+5. **`requirements.txt` me zero pins** — gyarah dependencies unconstrained, to aaj ke numbers ka environment
+   kal reproduce nahi hota.
+
+Evidence DB me naam se carried rows: job `136` (`running|1|1`, poison pill, `P-05`/`P-36`), job `128`
+(`running|2|2`, fenced), job `108` (`dead_letter`, `attempts = 4`), `113`/`145` executions `NULL` generation,
+`3`/`19` effects `NULL` key, `sink_deliveries` gaps `3, 5, 10`, `outbox` gap `2`.
+
+---
+
+### ❓ Next thought — Month 2
+
+Month 1 ka nateeja ek line me: **queue kabhi mushkil hissa nahi tha.** Har mechanism jo maayne rakhta tha —
+`SKIP LOCKED`, compare-and-set, `ON CONFLICT DO NOTHING`, lease, outbox — mutthi bhar lines hai aur lagbhag
+turant sahi ho gaya tha. Chaar hafte **ye seekhne** me lage ki har ek **kya nahi karta**, aur wo sirf failure
+paida kar ke output padhne se aaya: `14.783 s` overlap, galat writer ka `rowcount = 1`, `42.068 s` signal delay,
+ek worker jo DB restart pe chup-chaap mar gaya, aur teen rows jo ek migration ne uda di aur jinka ekmatra
+gawaah ek sequence tha.
+
+Month 2 ka pehla kaam isi list ka sabse ooncha item hai, aur wo ek naya feature nahi hai: **`P-43`.** Uske baad
+`pool_pre_ping` dobara price hota hai, aur uske baad hi handler timeout ka sawaal (*timed-out handler ka status
+kya hai?*) poocha ja sakta hai. `BACKEND_ROADMAP_PART2.md` ab khul sakti hai — Month 1 band hai. Naye numbers:
+**`D-30`** aur **`P-48`** (`P-47` aaj commit karte waqt khul gaya, neeche).
+
+---
+
+### Gate C6 — `src/` untouched aur Month 1 close
+
+```text
+C6 src untouched      : git diff --stat -- src/  -> empty
+                        git rev-parse HEAD:src   -> 394338c77dc87b6c75141ab62ee072d0729c049e (== C0)
+C6 evidence DB delta  : 133|145|19|4|7|39|5|0|1  (== C0, nau data counters)
+C6 revision           : w4d4_sink_unique         (== C0, aaj koi migration nahi thi)
+C6 job 136            : 136|running|1|1          (== C0)
+C6 frozen seal        : 934764139408B2DAFBEC93CCA2BD8385FFEF2B105F75752F275A0296C82C9D97 (== C0)
+C6 probe DBs          : 0
+C6 decisions written  : 4   (C0 pe 0 the)
+C6 banned vocabulary  : 0 matches
+C6 relay processes    : 0
+C6=pass
+```
+
+**Aaj ka delta claim exactly ye hai, aur wording load-bearing hai:** *delta `0` on the **nine** asserted data
+counters, revision unchanged* — **`sink_deliveries` aaj frozen set ke andar hai**, kyunki aaj receiver ka schema
+nahi badla. Din 5 pe wo jaan-boojh ke bahar tha, aur wahi exclusion wo jagah thi jahan change landed (`P-46`).
+Ek frozen set with a documented exclusion theek hai; ek delta claim jo apni exclusion ka naam nahi leti jab
+change usi exclusion me hua ho, theek nahi.
+
+**Din 6 verdict:** `C0` · `C1` · `C2` · `C3` · `C5` · `C6` **pass**. `C4` (blog) **deliberately deferred** ek
+named owner ke saath — skip nahi, `deferred`.
+
+#### Ek naya problem card jo commit karte waqt nikla — `P-47`
+
+**`[MEASURED 2026-09-11]`** Poore din ke documentation edits ke baad `git status --porcelain` ne **paanch** file
+dikhayi. **`WEEK_04_HANDOFF.md` aur `CURRENT_WEEK.md` unme nahi the.** Cause:
+
+```text
+.gitignore:45:docs/daily/     docs/daily/WEEK_04_HANDOFF.md
+.gitignore:47:docs/roadmap/   docs/roadmap/CURRENT_WEEK.md
+```
+
+`.gitignore` `docs/planning/`, `docs/daily/`, `docs/ddia_summaries/`, `docs/roadmap/`, `docs/design/` — paanchon
+exclude karti hai. `git ls-files docs/` **baarah** file deti hai: paanch root documents, paanch weekly logs, do
+DSA files. **`docs/` ke baaki ~90 files repository me hai hi nahi** — chaaron handoffs, unatis BRIEF/KEY pairs,
+**baarah `PREDICTIONS_FROZEN.md`**, chhe DESIGN files, dono roadmaps, aur `DDIA_CH8_LINKS.md`.
+
+**Sabse tez wala case frozen seal hai, aur wo convenience nahi — ek verification hai.** Poori prediction
+discipline `PREDICTIONS_FROZEN.md` ke immutable hone pe khadi hai, aur wo C0 pe hash kar ke C6 pe dobara compare
+kar ke check hoti hai. Aaj ka seal `934764…C9D97` verified unchanged hai — **aur wo comparison usi session ke ek
+shell variable ke against hai, ek aisi file pe jo kisi commit me nahi hai.** Seal asli hai aur kisi doosre ke
+liye auditable nahi, iss machine ke liye bhi nahi ek `git clean` ke baad. `P-45` teen missing log artifacts pe
+jo argument deta hai, wahi baarah frozen files pe lagta hai — aur wo baarah `logs/` ke **har score** ke liye
+load-bearing hain.
+
+**Aur yahi gap aaj dikha kyunki teen tracked files ab untracked files ko point kar rahi hain:**
+`LEARNING_LOG.md` (do jagah), `MAP.md` ka Month 1 close section, aur `CURRENT_WEEK.md` (jo khud untracked hai) —
+sab `daily/WEEK_04_HANDOFF.md` pe link karte hain, aur wo ek clone me **dead link** hai. Pichhle teen hafton me
+wahi defect tha aur pata nahi chala kyunki aaj se pehle koi tracked file kisi handoff ko link nahi karti thi.
+
+**Ye `.gitignore` ki typo nahi hai — ye ek classification problem hai, aur isi liye card banta hai.** Teen
+exclusions ka defensible reason hai: `docs/daily/` me **sealed KEY files** hain, aur ek public repo me KEY seal
+rule ko har uss reader ke liye tod deta hai jo repo se seekh raha hai. Par directory exclusion ki **unit** hai,
+aur wo *"publish nahi hona chahiye"* (KEYs) aur *"publish hona chahiye"* (handoffs, frozen seals, week pointer,
+DDIA links) ko ek saath bandh deti hai. **Jis rule ki unit uss distinction se mothi hai jo wo enforce kar rahi
+hai, wo ek direction me hamesha galat rahegi.**
+
+**Aaj fix nahi kiya, aur wo jaan-boojh ke hai.** `.gitignore` badalna ek repository-policy faisla hai — *kya
+public hoga* — aur wo reviewer bina poochhe nahi le sakta; saath hi Din 6 ka gate close pe scope widen karne se
+mana karta hai. To aaj ka commit paanch tracked files aur `P-47` carry karta hai, **aur ye record karta hai ki
+jo handoff aaj likhi gayi wo uss commit me nahi hai.** Owner: Month 2, `P-45` aur `P-29` ke saath — teenon ek hi
+root cause ke teen chehre hain (`logs/` ignored · probe scripts retained nahi · `docs/` subtrees ignored) aur ek
+retention faisla teenon band karta hai.
+
+**Aur `P-47` ka ek forward-looking hissa jo Month 2 ke pehle hafte me kaatega, aur wo isi commit ko stage karte
+waqt naapa gaya.** `.gitignore:39` bare pattern `logs/` hai, jo repository-root ke `logs/` ke saath-saath
+**`docs/logs/`** ko bhi match karti hai. `git add docs/logs/WEEK_04.md` sirf isliye chala ki wo file **already
+tracked** hai — tracked path ignore rule ko override karti hai — aur `git status` ne usi waqt
+*"The following paths are ignored: docs/logs"* print kiya jabki uske andar ki file stage ho rahi thi. Matlab
+paanchon weekly logs **history ke accident se** tracked hain, rule se nahi:
+
+```text
+git check-ignore -v docs/logs/WEEK_05.md   ->  .gitignore:39:logs/   docs/logs/WEEK_05.md
+git check-ignore -v docs/logs/WEEK_04.md   ->  (no output — tracked, to rule lagti hi nahi)
+```
+
+**To Month 2 ki pehli nayi log file `git status` me dikhegi hi nahi aur chup-chaap kisi commit me nahi
+jaayegi** `[MEASURED 2026-09-11]`. Paanch hafte ke daily logs iss project ka ekmatra continuously-produced
+artifact hain, aur jo rule chhathve ko gira degi wo already lagi hui hai. Fix ek character ka hai — pattern ko
+anchor karo (`/logs/`) — aur **teenon retention items me ye sabse ooncha priority hai**, kyunki baaki do already
+kho chuke evidence ke baare me hain aur ye uss evidence ko maaregi jo abhi bana hi nahi.
