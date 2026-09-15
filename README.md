@@ -202,7 +202,7 @@ time from DB recovery to reclaim
 ```
 
 The lease runs on the **server's wall clock**, not on activity, so a `35 s` outage spends the full `30 s` lease
-and the row is reclaimable *immediately* on recovery. The answer is a function of the outage's length. If the
+and the row is reclaimable *immediately* on recovery. The answer is a function of the outage's length.. If the
 reaper is dead, the bound is **unbounded**.
 
 ---
