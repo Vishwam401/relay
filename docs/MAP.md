@@ -4,7 +4,7 @@
 files that do, plus the connections between them that none of those files can structurally contain.
 
 ## What each file is for, so you stop asking this file to be them
-
+.
 | File | Its job | Ask it |
 |---|---|---|
 | `DECISIONS.md` | ADR. Why X was chosen, what was rejected, what it costs, when to revisit | *"I am about to change this column / endpoint — what did I already decide and why?"* |
