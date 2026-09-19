@@ -1,7 +1,7 @@
 # WEEK 1 — Relay Core: Queue banao, at-least-once ka matlab dekho
 
 **Layer: L1** · Daily log with measurements, self-checks, and unresolved items.
-Plan: [`../planning/WEEK_01.md`](../planning/WEEK_01.md) · Decisions: [`../DECISIONS.md`](../DECISIONS.md)
+Plan: [`../planning/WEEK_01.md`](../planning/WEEK_01.md) · Decisions: [`../DECISIONS.md`](../../DECISIONS.md)
 
 ---
 
@@ -1212,7 +1212,7 @@ And one question for `D-02` that nothing has touched: option (c), `UPDATE ... WH
 
 # DIN 6 — `D-01` and `D-02` written, and the two experiments that had never been run
 
-**Date:** 2026-08-19 · **Budget:** ~2h15m · Plan: [`../planning/WEEK_01.md`](../planning/WEEK_01.md) (Din 6) · BRIEF: [`../daily/DIN_06_BRIEF.md`](../daily/DIN_06_BRIEF.md)
+**Date:** 2026-08-19 · **Budget:** ~2h15m · Plan: [`../planning/WEEK_01.md`](../planning/WEEK_01.md) (Din 6) · BRIEF: [`../daily/week_01/DIN_06_BRIEF.md`](../daily/week_01/DIN_06_BRIEF.md)
 
 > **Delivery, stated first because it changes how the rest reads.** Din 6 had nine steps. **Three were
 > delivered, and they are the three that mattered most** — Step 1 (transactional enqueue), Step 5 (the

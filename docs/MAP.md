@@ -9,7 +9,7 @@ files that do, plus the connections between them that none of those files can st
 |---|---|---|
 | `DECISIONS.md` | ADR. Why X was chosen, what was rejected, what it costs, when to revisit | *"I am about to change this column / endpoint — what did I already decide and why?"* |
 | `PROBLEMS.md` | Failure-mode catalog. One entry per edge case, with what is measured vs inferred | *"I have this symptom — has it already been characterised?"* |
-| `logs/WEEK_NN.md` | Evidence and provenance, in time order. What was measured, what was guessed, what was corrected | *"Is this claim trustworthy, and who established it?"* |
+| `month_NN/logs/WEEK_NN.md` | Evidence and provenance, in time order. What was measured, what was guessed, what was corrected | *"Is this claim trustworthy, and who established it?"* |
 | **`MAP.md`** (this) | Index + recurring patterns. Pure cross-reference | *"Where do I look?"* and *"how does this connect to the rest?"* |
 
 **Honest limit of this file.** Reading it produces *recognition*, not recall. It is a lookup tool
@@ -478,7 +478,7 @@ deferred cancellation of in-flight I/O (rejected by measurement)
 
 # Month 1 close — `2026-09-11`
 
-**Authoritative documents, in reading order:** [`daily/WEEK_04_HANDOFF.md`](daily/WEEK_04_HANDOFF.md) (verdict
+**Authoritative documents, in reading order:** [`daily/WEEK_04_HANDOFF.md`](month_01/daily/WEEK_04_HANDOFF.md) (verdict
 table + line-by-line DoD audit) → [`../README.md`](../README.md) (nine-row failure matrix) →
 [`DECISIONS.md`](DECISIONS.md) (`D-26`–`D-29` and five amendment blocks).
 

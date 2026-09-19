@@ -324,6 +324,25 @@ Update on jobs
   ->  Seq Scan on jobs   Filter: (id = $0)
 ```
 
+**Amendment — `2026-09-19`, Step 6 re-measured on a disposable database while scaffolding blog post 01.
+`[MEASURED]`** All three variants reproduced: variant 1 duplicate claim (`rowcount = 1`, same id),
+variant 2 `rowcount = 0`, variant 3 the next row with no blocking. Postgres `16.14`, `READ COMMITTED`,
+minimal 3-row `jobs` table, two `asyncpg` connections, `n = 1` per variant. Two refinements:
+
+1. **The outer node above is not stable.** On the re-run it is
+   `Index Scan using jobs_pkey · Index Cond: (id = $0)`, not `Seq Scan · Filter: (id = $0)`. The node
+   choice is size-and-statistics dependent. **The mechanism is unchanged** — `status` is absent from the
+   outer qualification either way — but the plan text should not be quoted as if the node name were part
+   of the finding.
+2. **New, and it strengthens the entry: the variant-1 vs variant-2 difference is visible in `EXPLAIN`
+   before any race is run.** Variant 2's outer node carries one extra line,
+   `Filter: (status = 'pending'::text)`, and that single line is the whole of the safety. `D-02` argued
+   this from the recheck mechanism; it is also statically readable off the plan.
+3. **Variant 1 and variant 2 leave identical final table state** — `1 running, 2 pending, 3 pending`.
+   `[MEASURED]` This upgrades the *"`jobs` cannot record that this happened"* claim below from an
+   inference about the schema to an observation: the safe run and the duplicate run are indistinguishable
+   afterwards. The failure is observable only while in flight.
+
 The subquery does not reference the outer row, so it is **uncorrelated** and Postgres evaluates it
 **once, before the scan, as an `InitPlan` producing a constant `$0`.** The outer qualification is
 therefore literally `Filter: (id = $0)` — **`status` appears nowhere in it.**
@@ -419,7 +438,17 @@ it serialises the claim path across all workers rather than per-job, converting 
 a global bottleneck. Its genuine advantage is that it works when the contended resource is not a row at
 all. Worth measuring in Week 4 alongside `P-03` if the claim query becomes a bottleneck.
 
-**(e) `SERIALIZABLE`.** `[NO EVIDENCE]` on this project — never run against `jobs`. `[INFERRED]` from
+**(e) `SERIALIZABLE`.** **Amendment `2026-09-19`: no longer `[NO EVIDENCE]`, for one scenario.**
+`[MEASURED]` The naive claim statement was run in two sessions on a disposable database, PostgreSQL
+16.14, session 1 committing while session 2 was blocked. Under `READ COMMITTED` session 2 received
+the **same row** session 1 had claimed. Under **both** `REPEATABLE READ` and `SERIALIZABLE` session 2
+instead raised `40001 could not serialize access due to concurrent update`. So the inference below is
+confirmed for this scenario: the higher levels do prevent the duplicate, and they do it by erroring
+rather than by blocking-then-rechecking. `n = 1` per level, single-row contention only; nothing here
+says anything about write skew, phantoms, or throughput. Full flow in
+`docs/design/EVALPLANQUAL.md`. The original text follows.
+
+`[NO EVIDENCE]` on this project — never run against `jobs`. `[INFERRED]` from
 Week 0 Day 5 and DDIA Ch 7: SSI detects the conflict at commit and aborts with `40001` rather than
 blocking, so the loser has already done its work and must retry, and every caller needs `40001` handling.
 For a claim that is contended by design, abort-and-retry is the wrong shape — the conflict is expected,

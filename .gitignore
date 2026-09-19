@@ -40,12 +40,16 @@ logs/
 *.sqlite
 *.db
 
-# Weekly execution plans, daily briefs/keys & reading summaries
-docs/planning/
-docs/daily/
-docs/ddia_summaries/
+# Weekly execution plans, daily briefs/keys & reading summaries.
+# Depth-independent on purpose: the month_NN/ archive folders must inherit the same
+# exclusions, otherwise archiving a month silently publishes its sealed KEY files.
+# This preserves the pre-archive status quo and does not settle P-47, which is the
+# open question of what SHOULD be public.
+**/planning/
+**/daily/
+**/ddia_summaries/
+**/design/
 docs/roadmap/
-docs/design/
 design/
 
 # Local chat handoffs

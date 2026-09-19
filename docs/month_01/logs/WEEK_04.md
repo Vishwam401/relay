@@ -1,7 +1,7 @@
 # WEEK 4 — Fencing, outbox, load, aur production writeup
 
 **Layer: L4 ka taste · Month 1 ka aakhri hafta** · Daily log with measurements, prediction scoring, and unresolved items.  
-Plan: [`../planning/WEEK_04.md`](../planning/WEEK_04.md) · Decisions: [`../DECISIONS.md`](../DECISIONS.md)
+Plan: [`../planning/WEEK_04.md`](../planning/WEEK_04.md) · Decisions: [`../DECISIONS.md`](../../DECISIONS.md)
 
 > **Plan intent rakhta hai; ye file outcome rakhti hai.** Har factual claim ke saath provenance hai:
 > `[MEASURED]` user ke retained output se · `[MEASURED-R]` reviewer rerun/read se · `[INFERRED]`

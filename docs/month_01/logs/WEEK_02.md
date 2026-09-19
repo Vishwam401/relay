@@ -1,7 +1,7 @@
 # WEEK 2 — Lease, heartbeat, reaper: atka hua job wapas kaun laayega
 
 **Layer: L0 + L2** · Daily log with measurements, self-checks, and unresolved items.
-Plan: [`../planning/WEEK_02.md`](../planning/WEEK_02.md) · Decisions: [`../DECISIONS.md`](../DECISIONS.md)
+Plan: [`../planning/WEEK_02.md`](../planning/WEEK_02.md) · Decisions: [`../DECISIONS.md`](../../DECISIONS.md)
 
 > **Plan intent rakhta hai, ye file outcome rakhti hai.** Jo bhi number, verdict ya score iss hafte me
 > nikla, wo yahan aata hai — plan me kabhi nahi. Aur plan ko reality se match karne ke liye **edit nahi**
