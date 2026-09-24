@@ -64,3 +64,8 @@ large*.json
 # DSA drill scratch (coach compiles probes here, then deletes)
 .dsa_tmp/
 *.exe
+
+# Career & DSA personal tracking
+docs/career/
+docs/dsa/
+
