@@ -1,637 +1,322 @@
-# DSA Playbook — end to end
+# DSA Playbook — do track, ek app
 
-Ye file **tere** liye hai, agent ke liye nahi. Jab confusion ho, yahi kholo.
+Ye file **tere** liye hai. Rules aur unke reasons yahan hain.
 
-- `PLAYBOOK.md` (ye file) — kya karna, kaise, kyun. Rules aur decisions.
-- `DRILL_LOG.md` — kya hua. Numbers, history, progress. Agent isko bharta hai.
+- `PLAYBOOK.md` (ye file) — kyun. Rules, tradeoffs, aur kya cut kiya.
+- `DRILL_LOG.md` — kya hua. Numbers aur history.
+- **Algo-Path app** (`D:\PROJECTS\Algo-Path DSA`) — **aaj kya karna hai.** Wo authoritative hai.
 
-Goal: **LeetCode contest ke Q1 aur Q2, har baar, time ke andar.** Q3/Q4 abhi target nahi hai.
+> Aaj ka plan is file mein nahi hai. App kholo, batao aaj kitne minute hain, plan bana hua milega.
+> Wo live progress se derive hota hai. Ye file wo batati hai jo app nahi bata sakti — **kyun**.
 
-Asli target **MNC interview ka OA round** hai, CP nahi. Kyun aur kab tak — section 0B mein.
-
----
-
-## 0. Ek page mein sab
-
-```
-ROZ (75 min)
-├─ 15 min  SCALES        syntax reps, koi problem nahi
-└─ 60 min  din ka kaam
-
-Mon   guided   2 problems (Q1+Q2 purane contest se), coach ke saath, timer nahi
-Tue   timed    2 problems, akela, timer on
-Wed   guided   2 problems, coach ke saath, timer nahi
-Thu   timed    2 problems, akela, timer on
-Fri   blank    hafte ke 2 problems SCRATCH SE, notes band
-Sat   contest  virtual contest 90 min + upsolve 60 min      <- sabse important din
-Sun   rest     30 min postmortem, baaki chhutti
-
-INTERFACE
-  nayi chat -> dsa-coach agent -> "aaj kya karna hai" -> problems paste karo
-  Tujhe din/mode/timer yaad rakhne ki zaroorat nahi. Agent batayega.
-```
+Goal wahi hai: **OA clear karna.** Easy 8-10 min, Medium 20-25 min, reliably. LC `1600-1700`.
+CP rating nahi. Iska poora reasoning section 6 mein hai.
 
 ---
 
-## 0B. DSA kyun, aur kab tak — real target
+## 1. Ek page mein
 
-**Goal MNC interview clear karna hai. CP nahi. 1800-1900 rating nahi.** Ye section wahi define
-karta hai, taaki hafta 6 pe jab bore ho tab reason likha mile.
+```
+ROZ — app mein minute daalo, plan khud banega
 
-### 2026 ke interview rounds — kya badla, kya nahi
+  blocks priority order mein aate hain, aur ye order hi poora design hai:
+    1  skeleton     warm-up, trigger phrase se blank file mein type
+    2  review       FIXED commitment — due recall + re-solve + park se wapsi
+    3  blind        TRACK A — kholo, padho, predict, phir 8 station · 60 min budget
+    4  log          cause code + kis minute pe idea aaya
+    5  fast         pehle solve ki hui problems, timer on
+    6  implement    jo "mind-solved" chhoda tha
+    7  acquire      TRACK B — naya pattern. SABSE AAKHIR MEIN, aur backlog >= 4 pe BAND
 
-**Badla — later rounds.** Ek analysis kehti hai 2026 ke onsite loops mein Amazon, Google, Meta,
-Palantir mein ~60% loops mein kam se kam ek round aisa hai jahan candidate **existing code padhta
-hai**, scratch se likhta nahi. Google ne "code comprehension" round add kiya — 200-500 line ka
-unfamiliar codebase, 60 min, bugs dhoondho, design discuss karo, aur Gemini AI assistant available
-hota hai; evaluate hota hai AI fluency, prompt engineering, output validation, debugging. Stripe
-LeetCode hi nahi poochhta — real codebase, failing test, debug karo.
+  Sunday    rest — 30 min postmortem, koi solving nahi
+  Saturday  contest + upsolve
+  kharab din  60 min floor: skeleton + 1 blind + log. YE COUNT HOTA HAI
+```
 
-**Nahi badla — OA round.** Ye important hai. OA abhi bhi pure DSA hai:
-- Visa: CodeSignal/HackerRank, 70-90 min, 4 questions Easy/Medium se Medium/Hard, aage badhne ke
-  liye 3/4 fully solve
-- D.E. Shaw: 90-120 min, 2-3 medium-to-hard coding problems
-- Palantir new grad: HackerRank OA, DSA-focused
-- Salesforce intern/new grad: 2-3 coding problems, aur intern roles ke liye **OA hi main technical
-  filter** hai
+---
 
-Sources: [debugging round analysis](https://dglearning.substack.com/p/reading-code-like-an-interviewer) ·
-[Google code comprehension](https://careers.northeastern.edu/blog/2026/05/13/googles-ai-assisted-coding-interview-2026-guide/) ·
-[Stripe](https://www.interviewcoder.co/blog/stripe-software-engineer-interview) ·
-[Visa OA](https://www.techprep.app/blog/visa-interview-process) ·
-[D.E. Shaw OA](https://www.techprep.app/blog/de-shaw-interview-process) ·
-[Palantir](https://articles.shadecoder.com/palantir-software-engineer-interview-process-every-round-explained-2026-complete) ·
-[Salesforce](https://www.lodely.com/companies/salesforce/online-assessment)
+## 2. Do track, do **ulti** rules — ye playbook ka core hai
 
-*Content licensing ke liye rephrase kiya gaya. Ye interview-prep blogs aur candidate reports hain,
-official company docs nahi — company se company vary karega.*
+Do strong practitioners exactly opposite advice dete hain, aur dono sahi hain, kyunki dono alag
+cheez optimize kar rahe hain:
 
-### Isse nikalta hua conclusion
+| | [Um_nik](https://codeforces.com/blog/entry/98806) | [Practice guide](https://codeforces.com/blog/entry/116371) |
+|---|---|---|
+| Editorial | **kabhi nahi.** Fail hui problem 1 mahine baad wapas | **15-30 min soch, phir padh lo** |
+| Kya train hota hai | khud se solve karna | naye concepts ki **rate** |
+
+Resolution, aur ye teri hi baat se nikla hai — *"old pattern mein hustle kar sakta hu, new mein
+intuition bithane mein struggle"*:
+
+```
+TRACK A — COVERED patterns
+  Concept already pata hai. Editorial kuch NAYA nahi sikhata, sirf recognition rep jala deta hai.
+  => No editorial. Atak gaya toh PARK. 30 din baad blind wapas aayega.
+
+TRACK B — NAYE patterns
+  Concept genuinely naya hai. 3 ghanta standard technique dobara-invent karna bura trade hai.
+  => 20-30 min soch, phir padh lo. Par chaar gates paas karo, warna baad mein dobara seekhna padega.
+```
+
+*Content licensing ke liye rephrase kiya gaya.*
+
+---
+
+## 3. Chaar gates — Track B ka "wapas na karna pade" ka jawab
+
+Tere covered patterns ko redo karna pad raha hai kyunki wo **sirf ek direction mein** seekhe gaye:
+`pattern → question`. Contest `statement → pattern` chalata hai. Gates wahi missing direction add
+karte hain.
+
+| Gate | Kab | Kya | App kahan |
+|---|---|---|---|
+| **G1 derive** | Day 0 | `coreMove` **padhne se pehle** BRUTE / WASTE / KILL likho. Galat hona allowed | pattern card, reveal se pehle |
+| **G2 trigger** | Day 0 | canonical trigger **dekhne se pehle** apna likho | wahi form |
+| **G3 skeleton** | Day +1 | trigger phrase se skeleton **type** karo, blank file, compile | pattern card ke neeche |
+| **G4 blind** | Day +7 se +10 | unlabeled problem pe **kholne se pehle** pehchano | Track A se |
+
+**G4 hi asli gate hai.** Baaki teen support hain. G4 tak nahi pahuncha toh pattern acquired nahi hai,
+chahe teeno question tick ho.
+
+App ab yahi count karti hai. Header mein `acquired` aur `ungated` dono dikhte hain — `ungated` matlab
+"tick hai, gate nahi". **Wahi teri asli re-do list hai, aur uska size wahi teri asli problem ka size
+hai.**
+
+---
+
+## 3B. Station map — ek problem ke andar aath jagah
+
+"Atak gaya" ek state nahi hai, aath hain. Aur aath mein se **paanch pe kuch padhna galat move hai.**
+App ek station live rakhti hai, aur do exit deti hai: `ho gaya` ya `atak gaya`.
+
+| # | Stall | Time | Karo | Mat karo |
+|---|---|---|---|---|
+| 1 | Statement samajh nahi aayi | 8m | Sample **haath se** trace karo. **Trace likhna mandatory hai** — bina uske station 1 chhoot nahi sakta | Pattern guess karna |
+| 2 | Brute force nahi aa raha | 8m | Brute **enumeration** hai, cleverness nahi. O(n^3) bhi chalega | Optimal dhoondhna |
+| 3 | Waste nahi dikh raha | 6m | `n=3` pe brute chalao aur steps **gino** | Dimaag mein loop karna |
+| 4 | Kill nahi aa raha | 10m | "Dobara dekhna" ko O(1) kaun banata hai — map/prefix/stack/heap/memo? | Statement dobara padhna |
+| 5 | Approach hai, code nahi ban raha | 10m | Plan ko **numbered comments** mein, phir neeche bharo | Seedha likhna shuru |
+| 6 | Code chala, galat answer | 10m | Failing test pe **khud dry-run**, comments ke against | Random badal ke resubmit |
+| 7 | Code sahi, par TLE | 8m | Kill galat tha — **station 3 pe wapas** | Micro-optimisation |
+| 8 | H4 ke baad bhi nahi | — | **Park.** Valid terminal state | Aaj hi khatam karna |
+
+**Jahan minute jama hote hain wahi tera asli gap hai.** App `station_log` rakhti hai. Zyadatar time
+station 2 pe gaya toh gap brute-force enumeration hai, pattern knowledge nahi — aur dono ka kaam
+bilkul alag hai.
+
+### Station 1 pe trace mandatory kyun hai
+
+Ye station pehle button dabane se clear ho jaata tha, jo kuch prove nahi karta. Do cheezein kehti
+hain ki yahi station sabse zyada sakht hona chahiye:
+
+- Contest literature: **galat answer ki sabse badi wajah statement misread karna hai**, algorithm gap
+  nahi ([faceprep](https://faceprep.in/article/how-to-approach-a-competitive-programming-question-face-prep/)).
+- Tera apna baseline: `3020` pe "subset" ko "substring" padha tha. `[MEASURED]`
+
+Aur tere **purane** playbook mein "manual trace mandatory" tha — ye build usko chup-chaap gira chuka
+tha. Audit mein pakda gaya aur wapas daala. Gate **server** pe lagta hai, sirf disabled button nahi —
+disabled button suggestion hai, gate nahi.
+
+*Content licensing ke liye rephrase kiya gaya.*
+
+### Hint ladder — chaar rung, time + station dono se gated
+
+| Rung | Deta hai | Rokta hai | Khulta hai |
+|---|---|---|---|
+| **H1** family | window / hash / BS / stack / greedy / DP | approach | `8m` + station 1 |
+| **H2** waste | brute kya dobara kar raha hai | kill | `20m` + station 2 |
+| **H3** structure | actual kill ka naam | code | `32m` + station 4 |
+| **H4** editorial | poora | kuch nahi | `50m` + station 4 |
+
+Gate **server** pe lagta hai — tera bheja hua level trust nahi hota. Aur **dono** condition chahiye,
+sirf time nahi: warna problem khol ke ek ghanta gayab hone se poori ladder khul jaati.
+
+Purana rule *"editorial sirf C6 pe, warna kuch nahi"* **bahut binary tha.** Research kehti hai
+productive failure aur productive struggle mein farak support ke **timing** ka hai, uski absence ka
+nahi — poora withhold karna unproductive struggle deta hai, jo kuch nahi sikhata. Rungs wahi beech
+ka rasta hain.
+
+---
+
+## 3C. Circuit breakers — kab sheet khud bole "ruk, plan badal"
+
+Har breaker pe number, aur **instruction**. Number laal ho jaana kuch nahi badalta.
+
+| Breaker | Trigger | Kya hota hai |
+|---|---|---|
+| **problem-leech** | ek problem `2` baar fail | Wo problem band. Usi idea ki **aasan** problem aayegi |
+| **idea-wheelspin** | ek idea `3` baar fail, alag problems pe | Us idea ke blind band. anchor → skeleton → **labeled** problem |
+| **hint-creep** | last 10 mein `>50%` ne H3/H4 liya | Band `-100`. **Solve rate se pehle** dikhta hai |
+| **band-slide** | solve rate `<30%` | Band `-100`. Normal correction, kuch karna nahi |
+| **floor-breach** | solve rate `<20%` **aur** band `1200` pe | **Blind ek hafta BAND.** Sirf labeled + FAST |
+| **park-flood** | parked `>40%` of attempts | Band `-100` **aur** naya pattern band |
+| **burnout** | `3` din miss, ya `5` floor din | Naya pattern band, blind slot `1`. Catch-up nahi |
+| **stall** | `3` hafte mein dono headline number flat | *Plan galat hai.* Postmortem, aur **sirf ek** cheez badlo |
+
+**`floor-breach` aur `park-flood` wo do hain** jo tere sawaal ka jawab hain — "low rating ke bhi nahi
+ho rahe, sab bucket mein jaa raha hai". Us waqt app **khud** blind band kar deti hai. Tujhe decide
+nahi karna.
+
+Aur jab breaker rokta hai, **problems sach mein nahi aate.** Banner dikha ke phir bhi problems dena
+decoration hota; kaam rok dena hi intervention hai.
+
+### Ye numbers kahan se aaye
+
+- **`2` lapses** — Anki `8` lapses pe card suspend karta hai. Ek problem flashcard se bahut mehnga
+  hai, toh `2` uska equivalent hai. Logic wahi: **baar baar fail hona matlab material galat hai**,
+  reps kam nahi. [Anki manual](https://docs.ankiweb.net/leeches.html)
+- **`3` fails per idea** — ITS literature mein ise **wheel-spinning** kehte hain: bahut practice ke
+  baad bhi mastery nahi. Aur published response **alag strategy** hai, zyada reps nahi — zyada reps
+  hi wheel-spinning hai. [EDM](https://files.eric.ed.gov/fulltext/ED599222.pdf)
+- **Method badalna, volume nahi** — Bloom ka mastery learning **method aur time dono** vary karta
+  hai, sirf time nahi.
+
+*Content licensing ke liye rephrase kiya gaya.*
+
+---
+
+## 4. Chhe cause, ek dawa nahi
+
+*"Editorial dekh ke laga itna aasan tha, mere dimaag mein kyun nahi aaya"* — ye symptom hai, aur chhe
+alag failures isko produce karte hain. Teeno abhi tak ek hi dawa mili hai: "aur problems karo".
+Isliye kuch move nahi hua.
+
+| Code | Kya hua | Iska fix |
+|---|---|---|
+| **C1** | Brute force hi nahi likha | BRUTE line mandatory |
+| **C2** | Brute tha, **waste nahi dikha** | WASTE line pe rukna |
+| **C3** | **Reframe miss** — ulta, pairs mein, endpoint fix | reframe ledger |
+| **C4** | Invariant / monotonicity check nahi kiya | "operation ke baad kya constant hai?" |
+| **C5** | Pattern pata tha, detail galat | comments-first + skeleton reps |
+| **C6** | Technique hi nahi pata thi | **sirf yahan editorial theek hai** |
+
+Har fail hui problem pe **ek hi** code. App usko `attempts.cause` mein rakhti hai. ~20 rows baad
+distribution bata dega kahan kaam karna hai — **ye naapna hai, predict nahi karna.** Mera guess C2 +
+C3 hai aur wo `[INFERRED]` hai, measured nahi.
+
+---
+
+## 5. Kya cut kiya, aur kyun
+
+Ye section sabse zaroori hai, kyunki purana playbook padhke confusion hogi.
+
+| Cut hua | Kyun |
+|---|---|
+| **40-minute rule** ("koi help 40 min se pehle nahi") | Ek hi number dono tracks pe lagta tha. Track A mein 40 min bhi kam hai — wahan editorial hi allowed nahi. Track B mein 40 min bekaar wait hai jab concept hi naya hai. Track-specific rule ne isko replace kiya |
+| **"Koi problem adhoori nahi chhodni"** | Ye seedha Um_nik ke ulta tha, aur yahi wo rule tha jo editorial kholne pe majboor karta tha. Ab: Track A mein fail = **park**, 30 din baad blind wapas. Editorial sirf C6 pe |
+| **New problems pe timer** | Timed din pe naye problems pe timer lagta tha. Wo dono kharab karta hai — time pressure solve attempt corrupt karta hai, aur speed build nahi hoti kyunki solution pata hi nahi. Ab timer sirf FAST block mein, **pehle solve ki hui** problems pe |
+| **`retire pattern` = 3 checkbox** | Completion naapta tha, recall nahi. Chaar gates ne replace kiya |
+| **Recall = "bas bolo"** | Card khula rakh ke pattern ke baare mein bolna kuch test nahi karta. Ab recall = skeleton blank se **type** karo |
+| **`TARGET_DAYS = 90`** | Code ka comment khud admit karta tha ki 2-patterns-per-day sirf 3-mahine ke target ke liye tha. Deadline ne load decide kiya, capacity ne nahi — aur wahi burnout ka source tha. Ab 1 pattern/din, aur calendar `[MEASURED] 127 din` pe girta hai |
+| **Scales = STL API drill** | Galat target. Mistake ledger ke top 2 (dono count 6) mein ek `plan→code` hai, API nahi. Ab skeleton drill hai — 22 skeletons, prompt **trigger phrase** hai, aur har ek pe `trap` likha hai: wo exact line jo memory se type karne pe gayab hoti hai |
+
+---
+
+## 6. DSA kyun, aur kab tak
+
+**Goal MNC OA clear karna hai. CP nahi.**
 
 ```
 DSA        = FILTER          OA. Isse pass hue bina koi interview hi nahi hoga
 Debugging  = DIFFERENTIATOR  later rounds. Yahan offer banta ya tootta hai
 ```
 
-Toh DSA **chhodna nahi hai** — par uska bar clear hai:
-
-> **DSA pe utni mehnat jitni OA clear karne ke liye chahiye. Usse ek rupya zyada nahi.**
-
 OA ka bar: 70-90 min mein 4 ka 3, mostly Easy/Medium. Yani **Easy 8-10 min, Medium 20-25 min,
-reliably.** Rating terms mein `1600-1700`, `1900` nahi. Aur ye exactly wahi target hai jo iss
-playbook mein already hai — Q1+Q2 reliable. Plan sahi size ka hai.
+reliably.** Rating terms mein `1600-1700`, `1900` nahi.
 
-### Relay iss plan ka doosra half hai
+App ka blind band `1400-1600` se shuru hota hai aur measured solve rate se upar chadta hai. Target
+band pe pahunchna hi Phase 1 khatam hone ka signal hai.
 
-Debugging round mein exactly ye poochha jaata hai: "ye code kya karta hai, kahan toot sakta hai,
-tumne ye design kyun chuna". Relay — durable job engine, crash recovery, retries, idempotency, DLQ,
-aur `DECISIONS.md` / `PROBLEMS.md` mein measured postmortems — us round ka answer hai.
+**Relay iss plan ka doosra half hai.** Debugging round mein exactly ye poochha jaata hai: "ye code
+kya karta hai, kahan toot sakta hai, tumne ye design kyun chuna". Relay ke `DECISIONS.md` /
+`PROBLEMS.md` us round ka answer hain. Relay pe kaam interview prep se alag nahi hai.
 
-**Relay pe kaam interview prep se alag nahi hai.** Wo doosra half hai.
+### Phase shift kab
 
-### Time allocation
-
-**Phase 1 — ab se ~8-10 hafte, OA gate cross karne tak**
-
-| Kaam | Share |
-|---|---|
-| DSA (ye playbook, 75 min/din) | 60% |
-| Relay | 40% |
-
-Reason: OA hard gate hai aur tu abhi uske neeche hai. 10 Sep pe ek Q2 untimed bhi submit nahi hua.
-
-**Phase 2 — jab OA-reliable ho jaaye** (Easy 8 min, Medium 25 min, lagataar)
-
-| Kaam | Share |
-|---|---|
-| DSA — maintenance: 2-3 din/hafta + Saturday contest | 25% |
-| Relay + system design | 50% |
-| **Debugging practice** (naya block) | 25% |
-
-Phase 2 ka debugging block:
-- Apne Relay codebase mein deliberately bug daalo, ek hafte baad dhoondho
-- Mid-size open-source repo ka code padho, likho "ye kahan toot sakta hai"
-- GitHub pe active repos ke open PRs padho — PR review practice
-- **AI fluency** — Google explicitly evaluate kar raha hai. AI ka output validate karna, uske galat
-  jawab pakadna. 10 Sep pe coach ka code review karwana aur measured output maangna — wahi skill hai
-
-### Phase 1 se Phase 2 kab shift hoga
-
-Section 8 ke chaar leading indicators hit hone pe. Calendar se nahi. Agent log ke data se propose
-karega.
-
-System design abhi **third** priority hai — fresher/new-grad loops mein wo usually senior rounds
-mein aata hai.
+Section 7 ke chaar indicators hit hone pe — calendar se nahi. Tab DSA maintenance pe (2-3 din/hafta +
+Saturday contest) aur weight Relay + system design + debugging practice pe.
 
 ---
 
-## 1. Why — ye plan aisa kyun hai
+## 7. Progress kaise naapna
 
-Poora plan **ek** measurement pe khada hai: 10 Sep 2026 ka session, Weekly 381 ke 3019 + 3020.
+**Hafte ginne se kuch pata nahi chalta.** Ye chaar number dekh — teeno naye hain, aur teeno app khud
+bharti hai:
 
-Us din ye hua:
-
-| Observation | Iska matlab |
-|---|---|
-| 3020 (Q2) ka **poora logic khud derive kiya** — pattern, ones parity, `-1` rule, overflow | Knowledge **hai**. Sochna aata hai |
-| Ek hi syntax galti (`freq()` vs `freq[]`) **6 baar** | Ungli ko syntax nahi pata. Working memory syntax mein bhar gayi |
-| Pseudocode sahi likha, phir C++ mein `value *= value` **gayab** ho gaya | Working memory full thi, toh structure gir gaya |
-| Apne code ko **ek baar bhi** khud dry-run nahi kiya | Coach ko compiler aur debugger dono bana diya |
-| Counter-examples **saare coach ne banaye**, tune ek bhi nahi | Edge case generate karna develop nahi hua |
-| Manual trace **do baar skip** kiya, verbal summary de diya | Gate 1 ka discipline nahi hai |
-
-Aur ek aur cheez: **270 LeetCode problems already solved**, graphs tak. Par upar wali galtiyan 270
-genuinely solve kiye hue problems ke baad nahi hoti. Honest read: un 270 mein se kaafi editorial ya
-help ke saath nikle. Usse **recognition** banti hai ("ye maine dekha hai") par **production** nahi
-("main ye khud likh sakta hoon").
-
-### Isliye plan ka har hissa kyun hai
-
-| Plan ka hissa | Kis observation ko address karta hai |
-|---|---|
-| **Scales** (roz 15 min syntax) | 6 baar wali syntax galti. Syntax reflex banega toh working memory logic ke liye free hogi |
-| **Gates** (Socratic drill) | trace skip karna, aur bina cost gine shortcut sochna |
-| **Gate 3 mein tere 3 counter-examples** | counter-example generate karna absent hai |
-| **Gate 4 solo** (coach syntax nahi batata) | coach ko compiler banane wali aadat |
-| **Mixed untagged problems** (topic batches nahi) | sheet problems pre-labeled aate hain, contest problems nahi. Recognition chahiye |
-| **40-minute rule** (help se pehle) | 270 problems mein editorial shortcut lene wali aadat |
-| **Friday blank re-solve** | "samjha" aur "seekha" ka farak — recognition vs recall |
-| **Saturday contest, non-negotiable** | rating sirf contest se badhti hai, practice se nahi |
-| **Sunday rest** | 3 hafte mein burnout se plan chhod dene wala failure mode |
-
-Agar tujhe koi rule bekaar lage — upar table mein dekh ki wo kis measured galti se aaya hai.
-
----
-
-## 2. Scales — roz, 15 min, non-negotiable
-
-### Kya hai
-
-Piano wala scales. Roz 15 minute **sirf syntax** — koi problem solve nahi.
-
-### Kyun
-
-10 Sep pe teri galti sochne ki nahi thi, ungli ki thi. Aur jab ungli sochti hai, dimaag ka logic
-gir jaata hai — `value *= value` isliye gayab hua.
-
-Dimaag ek waqt mein 4-5 cheezein hold kar sakta hai. Agar syntax unmein 3 slot le raha hai, toh
-structure ke liye jagah nahi bachti. Isko **chunking** kehte hain — syntax reflex ban jaaye toh wo
-ek slot leta hai, teen nahi.
-
-### Kaise
-
-1. Nayi khali file: `scales.cpp`
-2. Notes band, browser band, purana code band
-3. Neeche ki 8 cheezein **memory se** type karo
-4. `g++ scales.cpp -o scales.exe` phir `.\scales.exe`
-5. Error aaye toh error message **khud padho** aur fix karo
-6. File delete kar do. Kal scratch se
-
-### 8 cheezein
-
-```cpp
-// 1. map banao aur bharo
-unordered_map<int,int> freq;
-for (int x : {5,3,5,1,3}) freq[x]++;
-
-// 2. count() se existence check
-if (freq.count(5)) cout << "5 hai\n";
-
-// 3. find() + end() se existence check
-if (freq.find(9) != freq.end()) cout << "9 hai\n";
-
-// 4. operator[] ka side effect
-cout << freq.size() << "\n";
-cout << freq[100] << "\n";     // 100 map mein nahi tha
-cout << freq.size() << "\n";   // size badh gaya? khud dekho
-
-// 5. range loop
-for (auto& p : freq) cout << p.first << " -> " << p.second << "\n";
-
-// 6. sort with lambda
-vector<int> v = {5,2,9,1};
-sort(v.begin(), v.end(), [](int a, int b){ return a > b; });
-
-// 7. two-pointer skeleton
-int l = 0, r = v.size()-1;
-while (l < r) { l++; r--; }
-
-// 8. prefix sum
-vector<int> pre(v.size()+1, 0);
-for (int i = 0; i < v.size(); i++) pre[i+1] = pre[i] + v[i];
-```
-
-Pehle din 25 min lagenge. Ek hafte mein 8 min. Do hafte mein bina sochne.
-
-### Ye kab khatam hoga
-
-**Ye permanent nahi hai.** 3-4 hafte baad, agar syntax errors per session `0-1` pe aa gaye — Scales
-5 min pe cut ya band. Agent khud propose karega, log ke data se.
-
-### List badalti rahegi
-
-Jo galti mistake ledger mein **3 baar** aa jaaye, wo Scales mein add ho jaati hai. Agent roz batayega
-aaj kaunsi 2-3 cheezein focus karni hain.
-
----
-
-## 3. Problems kahan se laane hain
-
-### Rule
-
-**Roz ek purana contest ka Q1 (Easy) + Q2 (Medium).** Mixed, untagged, roz alag contest.
-
-### Kaise
-
-1. LeetCode → Contest → past contests
-2. Koi bhi purana contest — **Weekly ~340-380 ya usse neeche**
-3. Uska Q1 aur Q2 utha lo
-4. Verify: problem page pe contest ka naam likha hona chahiye
-
-### Do cheezein jo mat karo
-
-**Recent contests (Weekly 400 aur upar) practice mein mat chhuo.** Wo Saturday virtual contests ke
-liye reserved hain. Agar practice mein khatam kar diye, Saturday ke liye kuch unseen nahi bachega —
-aur virtual contest ka pura point unseen hona hai.
-
-**LeetCode ka "Topics" aur "Hint" section collapsed rakho.** Wo kholna Gate 2 ka jawab dekh lena
-hai. Sheet practice ne tujhe ye muft de rakha tha; contest mein nahi milega.
-
-### Topic batch kab hoga
-
-**Upfront nahi.** Tere paas 270 problems ki knowledge hai — topic coverage tera bottleneck nahi
-hai. Topic batch **reactive** hai:
-
-> Log mein ek hi topic pe **3 failures** cluster ho jaayein → us topic ke **10 problems** ka batch →
-> phir wapas mixed untagged.
-
-Agent ye trigger log se khud dekhega aur propose karega. Tujhe track nahi karna.
-
-### Problem tu pick karta hai, agent nahi
-
-Kyun: agar agent problem chunega toh usko technique pehle se pata hogi. Phir Gate 2 mein "kaunsi
-technique ki khushbu aa rahi hai" poochhna dikhawa hoga, aur uske sawaalon ka phrasing hi answer
-leak kar dega. Agent ko **blind** rehna chahiye — tabhi uska counter-example genuine hai.
-
-**Exception:** Friday. Wahan agent log se `pending` problems ke naam batayega, kyunki wo already
-solved hain.
-
----
-
-## 4. Din ke hisaab se — poora detail
-
-### MONDAY / WEDNESDAY — Guided
-
-```
-15 min  Scales
-60 min  Q1 (compressed gates) + Q2 (full 4 gates)
-```
-
-**Timer nahi.** Session 75 min pe khatam, chahe problem adhoori ho — agli guided din continue.
-
-**Q1 (Easy) — compressed gates:**
-
-| Gate | Kya |
-|---|---|
-| 1 | Ek line restatement + sample ka trace. **Trace mandatory hai** |
-| 2 | Ek line: allowed complexity + max `n` |
-| 3 | **1** counter-example |
-| 4 | Poora review — tu code likhta hai, compile karta hai, dry-run karta hai, phir paste |
-
-**Q2 (Medium) — full gates:**
-
-| Gate | Kya | Kyun |
+| Indicator | Target | Abhi |
 |---|---|---|
-| 1 | Restatement + **poora manual trace**, step-by-step table | Tu fast padh ke misread karta hai. 3020 mein "subset" ko "substring" padha tha |
-| 2 | Constraints ka **cost calculate** — actual number nikalna hoga | "bada hai" accept nahi hoga. 3020 mein bina cost gine 3 galat shortcut aaye |
-| 3 | Plan 3-4 bullets + **tere 3 counter-examples**, phir agent ka counter-example | Tera counter-example count 0 hai. Ye gate wahi number move karta hai |
-| 4 | Tu code likhta hai **solo**. Compile na ho toh agent errors nahi batayega | Tu agent ko compiler bana raha tha |
+| **Blind hit rate** — prediction sahi nikli | measure karna hai, pehle 20 attempts | not recorded |
+| **Time-to-first-idea** ka median | girta hua | not recorded |
+| **Hint level** — H3/H4 ka share | girta hua | not recorded |
+| Blind band ka centre | `1600+` | `1400` (cold start) |
 
-**Gate 4 ka exact flow:**
+> **Yahan se do indicator HATA diye gaye:** *"syntax errors per session `0-1`"* aur FAST ke
+> *"Easy 8 min, Medium 20 min"*. Audit mein pata chala ki `attempts.syntax_errors` aur
+> `attempts.fast_seconds` dono columns hain jinme **koi code kuch likhta hi nahi** — FAST block mein
+> timer hi nahi hai. Jis indicator ka data source nahi hai, wo list mein rehna bura hai: wo dekh ke
+> conclusion nikalta hai jo kisi cheez pe khada nahi. Jab timer banega, tab wapas aayenge.
 
-```
-tu code likhta hai
-   ↓
-tu compile karta hai (g++ ya LeetCode Run)
-   ↓  error aaya?  -> tu khud padh ke fix karta hai. Agent ek line bolega:
-   │                  "compile nahi hoga, compiler ka error padh ke fix kar"
-   ↓  compile ho gaya
-tu apna code Gate 1 wale example pe KHUD dry-run karta hai
-   ↓  output galat?  -> tu khud dhoondhta hai
-   ↓  output sahi
-NOW paste karo
-   ↓
-agent review karta hai: boundary, naming, plan->code fidelity
-agent tera code .dsa_tmp/ mein compile+run karke MEASURED output deta hai
-agent temp files delete karta hai
-   ↓
-Contest Takeaway (1 line)
-```
+**Solve rate jaanbujh ke list mein nahi hai.** Teri volume pe wo bahut noisy hai, aur band khud usko
+`30-40%` pe hold karta hai — toh wo number hil nahi sakta chahe tu kitna improve kar le. Blind hit
+rate aur time-to-first-idea hil sakte hain. Wahi dekh.
+
+**Pehla hafta: sirf naapna. Kuch change nahi karna.** 15 problems, blind mode, teen cheez per
+problem: cause code, time-to-first-idea, blind hit. Apna solving style badalna mat. Kyun: tu already
+teen baar system redesign kar chuka hai bina data ke, aur `git log docs/dsa` mein ek hi commit hai
+(`2026-09-11`). `[MEASURED]`
 
 ---
 
-### TUESDAY / THURSDAY — Timed
+## 8. Chaar rules jo nahi todne
 
-```
-15 min  Scales
-        PHASE 1 - MEASUREMENT (akela, agent se baat nahi)
-          Easy  : timer on
-          Medium: timer on
-        PHASE 2 - CLOSE OUT (agent ke saath)
-```
+**1. Prediction code se pehle — problem se pehle nahi.** Teen step hain: problem kholo → statement
+padho → **phir** trigger + idea + BRUTE/WASTE/KILL seal karo → tab code likho.
 
-**Timer kitna?** Fixed number nahi. Rule: **aisa timer jisme ~30-40% problems solve ho jaayein.**
-90% pass ho raha hai matlab problems bahut aasan; 10% matlab bahut mushkil. Agent log ke recent
-results dekh ke roz batayega.
+> Pehla version galat tha aur usko badal diya gaya. Wo BRUTE/WASTE/KILL **problem dene se pehle**
+> maangta tha, jo impossible hai — wo teeno statement se **derive** hote hain. Rating number dekh ke
+> BRUTE likhna kuch naap hi nahi raha tha.
+>
+> "Blind" ka matlab hai **problem pe koi pattern label na ho.** Wo feed ki property hai (zerotrac
+> mein tags nahi hote), UI gate ki nahi. Jo seal hona chahiye wo prediction hai, aur wo **code se
+> pehle** hoti hai. Ab `blind_hit` zyada meaningful hai: *statement padh ke sahi pattern pehchana?* —
+> wahi contest skill hai.
 
-**Kyun 30-40%?** Kyunki ye CP practice ka established target hai — apni ability se thoda upar
-practice karna. 90% pass ho raha hai toh tu comfort zone mein hai, kuch seekh nahi raha.
+**2. Track A mein editorial nahi.** Sirf C6. Baaki paanch causes mein answer pahunch mein tha, aur
+padh lena rep jala deta hai. Park karo.
 
-**Phase 1 ka exact flow:**
+**3. Reveal se pehle apna trigger.** G2 timestamp compare karta hai. Baad mein likhna copy hai, aur
+app usko count nahi karegi.
 
-```
-timer on
-   ↓
-timer khatam  -> HAATH UTHAO, turant. Chahe 1 line baaki ho
-   ↓
-2 min: likho kaunse gate tak pahuncha, kahan atka
-   ↓
-+15 min UNTIMED, phir bhi akela, koi help nahi
-   ↓
-result se diagnosis:
-   "Gate 3 tak gaya, extension mein solve ho gaya"  -> tu SLOW hai. Speed pe kaam
-   "Gate 2 pe tha, extension mein bhi Gate 2"       -> KNOWLEDGE GAP. Topic pe kaam
-```
-
-**Phase 2:** ab agent ke paas laao. Wahi problem guided mode mein **poora solve** hoga. Time nahi
-bacha toh ye agle guided din ka Q2 ban jaayegi.
-
-**Zaroori:** measurement **pehle** hota hai, isliye record honest rehta hai. "40 min mein Gate 2"
-wala sach nahi badalta chahe baad mein solve ho jaaye.
-
-**Metric:** timed din pe `solved: yes/no` bekaar hai. Metric hai **furthest gate reached** —
-`Gate 1 / 2 / 3 / 4 / Solved`. Hafta 1 mein tu Gate 2 tak jaayega, hafta 6 mein Gate 4. Progress
-dikhega chahe solve na ho.
+**4. Rest din rest hai.** Sunday solving nahi. Consolidation neend aur gap mein hoti hai. Teen hafte
+7-ghante ke baad 2 hafte zero = net zero, aur wo do baar ho chuka hai.
 
 ---
 
-### FRIDAY — Blank re-solve
-
-```
-15 min  Scales
-60 min  Hafte ke 2 problems (1 Easy + 1 Medium) SCRATCH SE
-```
-
-**Kaise:** notes band, purana code band, editorial band, agent se help nahi. Bilkul zero se dobara
-likhna.
-
-**Kyun:** ye hafte ka sabse honest test hai. 3020 dobara likhoge — kya `-1` rule khud aayega? Kya
-`1` ka case yaad aayega? Agar nahi aaya, wo **seekha nahi** tha, sirf **samjha** tha. Recognition
-aur recall ka farak yahi pakadta hai.
-
-**Timer nahi**, par ek problem 40 min se zyada le toh ruk jao.
-
-**Result:**
-
-```
-blank se aa gaya   -> tracker mein "pass". Wo topic solid hai
-nahi aaya          -> close-out mein solve karo, AUR status "pending" wapas
-                      agle hafte phir blank test hoga
-```
-
-Ek baar solve karna bar nahi hai. **Blank se recall aana bar hai.**
-
----
-
-### SATURDAY — Virtual contest + upsolve
-
-```
-15 min  Scales (warm-up)
-90 min  Virtual contest, RECENT unseen contest (Weekly 400+), 4 problems
-60 min  UPSOLVE
-```
-
-**Contest ke rules:** phone door. Koi extra tab nahi. Koi AI nahi. Koi editorial nahi. Jo aaya aaya.
-
-**Upsolve kya hai:** jo problems contest mein nahi hui, unhe contest ke **turant baad** karna:
-
-```
-1. pehle SCRATCH SE try karo (15-30 min per problem, bina editorial)
-2. phir editorial padho
-3. phir core idea KHUD DOBARA implement karo — copy nahi
-```
-
-**Kyun upsolve sabse important hai:** ye hafte ka highest-value block hai. Strong competitive
-programmers ka ye universal habit hai — contest ke baad 1-2 ghante disciplined upsolve. Contest
-tumhe exactly wo problems deta hai jo tumhari current limit pe hain, aur upsolve us limit ko
-aage dhakelta hai.
-
-**Ye din non-negotiable hai.** Rating sirf contest se badhti hai. Roz practice karo par contest na
-do — rating **exactly wahi** rahegi.
-
-Baad mein agent ko do: rank, kitne solve, rating, aur ek line "time kahan gaya".
-
----
-
-### SUNDAY — Postmortem + rest
-
-```
-Scales    — aaj nahi
-30 min    — postmortem agent ke saath
-baaki din — REST. Koi solving nahi
-```
-
-**Postmortem mein kya:** kya galat gaya, kaunsa pattern pehchana nahi, kahan time gaya, kya ek
-cheez agle hafte badalni hai.
-
-**Rest kyun plan ka hissa hai:** consolidation neend aur gap mein hoti hai, screen pe nahi. Sunday
-bhi solve karega toh 3 hafte mein thak ke poora schedule chhod dega — aur wahi sabse common
-failure mode hai. Rest chhutti nahi hai, training ka hissa hai.
-
----
-
-## 5. "Agar aisa hua toh kya karna" — decision table
-
-Ye section sabse zyada kaam aayega.
-
-### Problem solve nahi ho rahi
+## 9. Agar aisa hua toh
 
 | Situation | Kya karna |
 |---|---|
-| **Guided din, problem samajh nahi aa rahi** | Agent se poochho — par wo sawaal wapas karega, answer nahi. Ye by design hai |
-| **Guided din, 75 min ho gaye, problem adhoori** | Session khatam. Log mein note. Agli guided din wahi problem continue |
-| **Timed din, timer khatam, solve nahi hua** | Haath uthao. Gate note karo. +15 min untimed. Phir close-out |
-| **Timed + extension dono mein solve nahi hua** | Normal hai, especially hafta 1-3. Close-out mein guided mode se solve hoga |
-| **40 min ho gaye aur kuch bhi samajh nahi aa raha** | **Ab help allowed hai.** 40-minute rule cross ho gaya. Agent se hint le sakta hai (phir bhi wo sawaal ke roop mein hi dega) |
-| **40 min se pehle help chahiye** | **Nahi.** Ye rule hi tera asli problem address karta hai. Chhoti problem pe shift karo ya `n = 2` ke liye haath se solve karo |
-| **Ek problem 2 din se atki hui hai** | Band karo. Agent ke saath poora solve karo, log mein `knowledge gap` mark karo. Us topic ka failure count badhega |
-
-### Code / syntax
-
-| Situation | Kya karna |
-|---|---|
-| **Compile error aa gaya** | **Khud padho aur fix karo.** Agent errors enumerate nahi karega. Ye deliberate hai — tune usko compiler bana rakha tha |
-| **Compile ho gaya par output galat** | Apne code ko Gate 1 wale example pe **khud trace karo**. Line by line. Agent ko paste karne se pehle |
-| **Ek hi syntax galti baar baar** | Log mein count badhega. `3` cross karte hi wo Scales mein add ho jaayegi |
-| **STL ka koi API yaad nahi aa raha** | Agent se **ek baar** poochh sakta hai — vocabulary free hai. Doosri baar wahi API poochha toh wo docs pe bhejega aur ledger mein daal dega |
-| **Pata nahi kaunsa data structure use karu** | Ye vocabulary nahi, ye **outcome** hai. Nahi poochh sakta. `idk` likho aur try karo |
-
-### Din miss ho gaya
-
-→ Section 5B dekho.
-
-### Performance signals
-
-| Situation | Iska matlab | Kya karna |
-|---|---|---|
-| **Timed Easy 8 min ke andar, lagataar 3 baar** | Speed aa gayi | Easy `review-only` pe shift. Bacha time Q2 ko |
-| **Syntax errors per session 0-1** | Scales ka kaam ho gaya | Scales 5 min pe cut ya band |
-| **Friday blank pass rate 80%+** | Seekha hua hai | Difficulty badhao — Q2 se Q3 ki taraf |
-| **90% timed problems pass ho rahe hain** | Problems bahut aasan | Timer kam karo ya harder problems |
-| **10% timed problems pass ho rahe hain** | Bahut mushkil | Timer badhao. Panic nahi |
-| **Ek hi topic pe 3 failures** | Real knowledge gap | Us topic ka 10-problem reactive batch |
-| **Tere counter-examples agent se zyada bug pakad rahe hain** | Gate 3 develop ho gaya | Gate 3 compress karo |
-
-### Motivation / thakan
-
-| Situation | Kya karna |
-|---|---|
-| **Bahut thak gaya, aaj nahi ho payega** | Sirf Scales karo, 15 min. Streak bach jaayega, load nahi padega |
-| **6 hafte ho gaye, koi progress nahi dikh raha** | Log kholo aur numbers dekho — feeling pe bharosa mat karo. Chunking silent hoti hai. Agar 4 leading indicators mein se ek bhi move nahi hua, tab plan galat hai aur badalna chahiye |
-| **Lag raha hai ye sab rule bekaar hai** | Section 1 ka table dekho — har rule ek measured galti se aaya hai, opinion se nahi |
+| Bahut din gap ho gaya, sab late dikh raha hai | App ke "Aaj" tab pe banner aayega — ek click, saare khaali din rest ban jaayenge, plan aage khisak jaayega. Backlog banta hi nahi |
+| Aaj sirf 1 ghanta hai | App mein `60 min` daalo. Floor plan milega: skeleton + 1 blind + log. **Ye count hota hai** |
+| Blind problem pe atak gaya | 30-40 min genuine, phir **park**. Editorial nahi. 30 din baad wapas aayegi aur tab tak tu badal chuka hoga |
+| Naye pattern pe kuch samajh nahi aa raha | 20-30 min baad editorial theek hai — par pehle G1 (BRUTE/WASTE/KILL) likh ke reveal karo, warna gate jal jaayega |
+| Review backlog bada ho gaya | App khud naya pattern band kar degi (`>= 4` due pe). Force mat karo |
+| Rating feed nahi mil raha | Track A band, baaki blocks chalenge. Net check |
+| 6 hafte ho gaye, progress nahi dikh raha | Section 7 ke chaar number dekho, feeling pe nahi. Agar blind hit rate aur first-idea dono nahi hile, **tab plan galat hai** aur badalna chahiye |
 
 ---
 
-## 5B. Gap handling — bas itna
+## 10. Kaun kya karta hai
 
-Structure **kabhi nahi badalta**: roz 2 problems, guided/timed schedule wahi.
+| Kaam | Tu | App | Coach |
+|---|---|---|---|
+| Aaj ka plan | minute batana | ✅ generate | ❌ |
+| Blind problem chunna | ❌ | ✅ deterministic, reroll nahi | ❌ |
+| Prediction, derive, trigger | ✅ | seal karti hai | ❌ |
+| Code likhna | ✅ | ❌ | ❌ kabhi nahi |
+| Compile + syntax fix | ✅ | ❌ | ❌ deliberately |
+| Cause code assign karna | ✅ | store karti hai | review mein challenge karega |
+| Counter-example se attack | ❌ | ❌ | ✅ tere 3 ke baad |
+| Numbers track karna | verify | ✅ | padhta hai |
 
-| Situation | Kya |
-|---|---|
-| Kal nahi ho payega (kahin jaana hai, Relay heavy) | Agent ko bata do. Wo din skip. Bas |
-| Wapas aa gaya | Aaj ke **weekday** ka normal kaam. 2 problems, wahi mode |
-| Catch-up | **Nahi.** Miss hua din gaya. Kabhi 4 problems ek din mein nahi |
-| Exams / travel — lamba gap | Pehle se bol do ("18-28 Sep frozen"). Agent log mein mark karega, missed days nahi ginega |
-| Lamba gap ke baad pehla Medium fail | Ye **warm-up loss** hai, skill loss nahi. Agla din normal |
-| Bahut thak gaya, 15 min hi hai | Sirf Scales. 0 se better |
-| Saturday contest miss | Agle available din kar lo — iska substitute nahi hai |
-
-**Timeline:** `6-10 hafte` 6 problems/hafta pe. Kam karega toh lamba hoga — agent actual rate se
-recompute karega, purana number repeat nahi karega.
-
----
-
-## 6. Ye chaar rules kabhi nahi todne
-
-**1. Gate 4 solo.** Compile error agent se nahi poochhna. Compiler 2 second mein batata hai aur us
-error message ko padhna contest mein kaam aata hai.
-
-**2. Plan se pehle tere 3 counter-examples.** Gate 3 mein plan ke saath 3 aise test bhejne hain jo
-tere plan ko tod sakte hain. Ye number `0` hai abhi. Yahi gate usko move karta hai.
-
-**3. Paste karne se pehle apna dry run.** Jo example Gate 1 mein trace kiya, usi pe apna **code**
-trace karo. 10 Sep pe tu ek baar bhi ye nahi kiya.
-
-**4. 40 minute se pehle koi help nahi.** Editorial, hint, agent — kuch nahi. Ye seedha tere 270
-problems wale pattern ko address karta hai.
-
----
-
-## 7. Kaun kya karta hai
-
-| Kaam | Tu | Agent |
-|---|---|---|
-| Problem chunna | ✅ (Friday chhod ke) | ❌ blind rehna hai |
-| Din/mode/timer decide karna | ❌ | ✅ date + log se |
-| Trace, plan, counter-examples | ✅ | poochhta hai |
-| Code likhna | ✅ | ❌ kabhi nahi |
-| Compile + syntax fix | ✅ | ❌ deliberately |
-| Apne code ka dry-run | ✅ | ❌ |
-| Code review (logic, boundary, naming) | ❌ | ✅ |
-| Tera code compile+run karke measured output | ❌ | ✅ `.dsa_tmp/` mein, phir delete |
-| Counter-example se attack | ❌ | ✅ tere 3 ke baad |
-| Drill log update | ❌ | ✅ roz, khud |
-| Progress numbers track karna | verify karna | ✅ likhna |
-
----
-
-## 8. Progress kaise naapna
-
-**Hafte ginne se kuch pata nahi chalta.** Ye chaar number dekh:
-
-| Indicator | Target | Abhi (10 Sep) |
-|---|---|---|
-| Timed Easy ka time | 8 min ke andar, lagataar 3 baar | not recorded |
-| Syntax errors per session | `0-1` | bahut |
-| Friday blank pass rate | 80%+ | 0 (abhi shuru nahi hua) |
-| Tere counter-examples jo bug pakde | agent se zyada | 0 vs 4 |
-
-Chaar hit ho gaye toh Q1+Q2 reliable hai, chahe hafta 6 ho ya 12.
-
-**Expected timeline** (270 problems ki knowledge base count karke):
-
-| Kab | Kya |
-|---|---|
-| Hafta 1-3 | Scales se syntax settle. Timed days pe fail hona normal |
-| Hafta 4-6 | Q1 consistent. Q2 kabhi-kabhi |
-| Hafta 6-10 | **Q1+Q2 reliable.** Rating `1650-1750` |
-
-Condition: Saturday contests miss nahi hone chahiye, aur 40-minute rule tootna nahi chahiye. Dono
-mein se ek toot gaya toh timeline `3-4 mahine` ho jaayega.
-
-**Rating ke baare mein ek honest baat:** rating **sirf contest dene se** badhti hai. Roz practice
-karo aur contest na do — rating exactly wahi rahegi. Aur LeetCode ka rating moving average hai,
-asli skill dikhne mein 5-8 contests lagte hain. Toh hafta 3 pe rating dekh ke conclusion mat
-nikalna.
-
----
-
-## 9. Confusions jo already aa chuki hain
-
-**"Days kaise count honge? Mujhe track karna hai?"**
-Nahi. Agent ko system se date aur weekday milta hai. Schedule weekday ke naam se hai, koi
-"Day 1, Day 2" counter nahi. Tu bas "aaj kya karna hai" poochh.
-
-**"Nayi chat mein context paste karna padega?"**
-Nahi. Agent prompt aur drill log dono auto-load hote hain. Kuch paste nahi karna.
-
-**"Scales 15 min ka hai, toh solve kab karunga?"**
-Scales warm-up hai, uski jagah nahi. `75 min = 15 Scales + 60 solving`. Sunday chhod ke roz solve
-hota hai.
-
-**"Problem agent dega?"**
-Nahi, tu dega. Sirf Friday pe agent naam batayega (already solved problems hain).
-
-**"Timed din pe solve nahi hua toh guided pe shift ho jaun?"**
-Nahi. Guided timed ke **baad** aata hai, uski jagah nahi. Warna measurement khatam.
-
-**"Koi problem adhoori chhodni hai?"**
-Nahi. Har problem eventually solve hoti hai. Sirf timing badalti hai — measurement pehle, close-out
-baad mein.
-
-**"Ye sab rule chochle hain? Log aise karte hain?"**
-Aadha. **Core validated hai** — har contest + upsolve, ~30-40% success rate wali difficulty,
-postmortem notes, blank/spaced recall, editorial se pehle genuine attempt. Ye sab established CP
-practice hai.
-**Ceremony meri thi** — gates, Scales, drill log. Ye scaffolding hai, permanent nahi. Strong log ye
-implicitly 60 second mein karte hain. Tere liye justified hai kyunki tu trace skip karta hai aur ek
-syntax galti 6 baar karta hai. Jaise jaise wo theek hoga, ye scaffolding hategi. Agent ko bola hai
-ki khud propose kare kab hataana hai.
-
----
-
-## 10. Kal ka kaam (11 Sep, Friday)
-
-```
-15 min  Scales — focus: freq.find() vs freq[], aur post-loop logic ki placement
-60 min  Blank re-solve:
-          3019 Number of Changing Keys   (Easy)
-          3020 Max Elements in Subset    (Medium)
-        Notes band. Purana code band. Scratch se.
-```
-
-Dekhna hai: 3020 mein `-1` rule aur ones-parity blank se aata hai ya nahi.
-
-**Aur ek verification:** nayi chat kholke `dsa-coach` agent select karo, "aaj kya karna hai" likho.
-Agar wo 3019 aur 3020 ke naam leta hai — drill log theek load ho raha hai. Agar sirf "blank re-solve
-karo" bol ke ruk gaya — mujhe batao, path fix karna padega.
+Coach ka kaam ab **naapna aur challenge karna** hai, plan batana nahi — wo app karti hai.

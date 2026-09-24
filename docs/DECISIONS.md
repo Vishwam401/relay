@@ -2353,3 +2353,187 @@ same reason the worker's claim needs no coordination.
 gets weaker rather than stronger — a reaper that restarts reliably needs less protection from its own
 duplicate); or a two-reaper run is done, which is the single measurement that would let option (c) be rejected
 on evidence rather than on scope. **That run is the honest owner of this entry's weakest field.**
+
+---
+
+# Month 2 decisions
+
+> **Numbering:** `D-30` was grepped free before being written (`docs/`, `docs/planning/`, `docs/daily/` — the
+> only hits were the *reservations* in `MONTH_02.md`, `WEEK_05.md`, `MAP.md`, and the Din 1 BRIEF/KEY, which is
+> what a reservation looks like). `D-09`–`D-20` still belong to `roadmap/BACKEND_ROADMAP_PART2.md`.
+> **Next free: `D-31`** — reserved for `pool_pre_ping`, re-priced on Week 5 Din 2. **`D-32`** is reserved for the
+> evidence-retention / `docs/` classification decision on Din 3.
+
+---
+
+## D-30 — `OPEN` — the worker's poll-loop exception boundary, and what the loop does after the catch
+
+> **Status: OPEN, and deliberately half-written.** `WEEK_05.md` scopes `D-30` as *"exception boundary **+
+> supervisor**"* and publishes it on Din 6. Din 1 only produced the first half. The `Supervisor` section below
+> is empty on purpose, with a named owner. **Do not read this entry as closed, and do not quote its `Cost`
+> field as complete.**
+
+**Problem:** `src/worker.py`'s `except Exception` wrapped **only** handler execution. The claim poll — where an
+idle worker spends nearly all of its time — was unguarded, so a database restart ended the process through
+`asyncio.run`. Measured twice, on two different days, frame-for-frame identical: `worker.py:321
+asyncio.run(run_worker())` → `worker.py:185 await session.execute(claim_query)` →
+`sqlalchemy.exc.InterfaceError: ... connection is closed` `[MEASURED-R Week 4 Din 5]` `[MEASURED Week 5 Din 1
+Step 1]`. This is `P-43`, and it is the reason Month 1's promise #4 is `narrowed` at the **row** level and
+`[NO EVIDENCE]` at the **process** level.
+
+**Two questions, not one**, and Din 1 answered the second one with a measurement nobody had:
+
+- **(A) Where does the boundary go, and what exception class does it catch?**
+- **(B) What does the loop do after the catch?**
+
+---
+
+### (A) The boundary's placement and its caught class
+
+**Options:**
+- (a) `except sqlalchemy.exc.DBAPIError` around the claim poll
+- (b) `except sqlalchemy.exc.OperationalError`
+- (c) `except Exception` around the whole `async with async_session()` block
+- (d) no per-iteration `try` at all — let the process die and have a supervisor restart it
+
+**Chose:** **(c)**, wrapping the entire `async with async_session() as session:` block for the claim poll, with
+`print` of `type(exc).__name__`, then a wait, then `continue`.
+
+**Evidence — and this is the field that could not be written before Din 1 ran:**
+
+Postgres going down produces **four** distinct exception classes on this code path, not two, and **they do not
+share a SQLAlchemy ancestor** `[MEASURED 2026-09-24, logs/w5d1_step2_exc.log + logs/w5d1_step{4,5,6}_*]`:
+
+| Class | Moment | `__mro__` root path | `e.orig` |
+|---|---|---|---|
+| `sqlalchemy.exc.InterfaceError` | stale pooled connection, `connection is closed` | `→ DBAPIError → StatementError → SQLAlchemyError → Exception` | `asyncpg` InterfaceError |
+| `ConnectionRefusedError` (`WinError 1225`) | fresh connect, port closed | `→ ConnectionError → OSError → Exception` | **`None`** |
+| `ConnectionError: unexpected connection_lost() call` | connection accepted then dropped (Postgres mid-shutdown / Docker port proxy) | `→ OSError → Exception` | — |
+| `CannotConnectNowError: the database system is starting up` | Postgres up and rejecting clients | asyncpg error | — |
+
+**`Exception` is the first common ancestor of that set.** Options (a) and (b) are therefore not "narrower but
+adequate" — they are **structurally insufficient**, and insufficient in the direction that hides itself: a
+`DBAPIError` boundary catches the *first* failure of a real outage (the stale connection) and dies on the
+*second* (the refused reconnect). It would have passed Din 1's Step 3 normal-path gate and its aliveness check.
+
+**Measured outcome of (c)** `[MEASURED 2026-09-24, logs/w5d1_step4_worker.stdout.log]`, `n = 1`, outage as seen
+by the worker `26.373 s`, `POLL_INTERVAL_SECONDS = 2.0`:
+
+- worker `ALIVE`, stderr `0` bytes
+- `poll_failures = 5` — `InterfaceError × 1` + `ConnectionRefusedError × 4`
+- the **first poll after recovery succeeded**; `17` consecutive clean `2.0 s` cycles follow, with no
+  `PendingRollbackError` anywhere. README's *"possibly one failed poll"* term did **not** materialise for the
+  worker, which confirms that SQLAlchemy invalidates the whole pool **generation** rather than one connection
+  `[MEASURED]` — previously `[INFERRED]`.
+- no explicit `session.rollback()` is needed **in this shape**: the `try` wraps the session's context manager,
+  so the poisoned session is discarded at block exit and each poll builds a new one. That is a property of the
+  code's per-poll session scope, **not** a general SQLAlchemy fact — a long-lived session would leave the
+  process alive and permanently broken, and `Get-Process` cannot tell those two apart `[INFERRED from source +
+  MEASURED recovery]`.
+
+---
+
+### (B) What the loop does after the catch — two arms, and the expected answer inverted
+
+**Options:**
+- (a) immediate retry (`continue`, no sleep)
+- (b) `await asyncio.sleep(POLL_INTERVAL_SECONDS)` then `continue`
+- (c) bounded exponential backoff with a cap
+
+**Chose:** **(b)**, `await asyncio.sleep(POLL_INTERVAL_SECONDS)` — `2.0 s`.
+
+**Evidence** — both arms under the same outage, and the "same length" precondition is itself measured: worker-
+visible outage `26.082 s` (arm 1) vs `26.373 s` (arm 2), within `0.29 s`
+`[MEASURED-R 2026-09-24, derived from SQL echo timestamps]`:
+
+| | (a) immediate retry | (b) `POLL_INTERVAL` wait |
+|---|---|---|
+| `poll_failures` | `33` `[MEASURED]` | `5` `[MEASURED]` |
+| Mean cycle | `0.79 s` `[MEASURED-R, derived]` | `5.27 s` `[MEASURED-R, derived]` |
+| Attempt inside Postgres's startup window | **yes** — `CannotConnectNowError` `[MEASURED]` | no `[MEASURED]` |
+| `recovery_to_first_claim` | `2.176 s` | `1.668 s` |
+| | `[REPORTED, NOT VERIFIABLE]` | `[REPORTED, NOT VERIFIABLE]` |
+| stdout log size | `9210` bytes `[MEASURED-R]` | `13899` bytes, and it ran a whole job too `[MEASURED-R]` |
+
+**The reason for the choice is the opposite of the reason that was expected.** The prediction was that
+immediate retry buys lower recovery latency and pays for it in load. Measured, immediate retry was **slower**
+(`2.176 s` vs `1.668 s`) because a spinning client arrives inside Postgres's startup window and Postgres itself
+rejects it, costing another attempt; the `2.0 s` sleep let the server finish starting. **Zero backoff made
+recovery slower, not faster.** Direction `[MEASURED]`; magnitude `[REPORTED, NOT VERIFIABLE]`, `n = 1`.
+
+**Cost:**
+
+1. **`5` failed polls per `~26 s` outage are normal and must not be read as a defect** `[MEASURED]`. The fix
+   means *"failing does not kill the process"*, not *"it will not fail"*.
+2. **The failure-rate bound that was assumed is wrong, and the corrected one has a term nobody had measured**
+   `[MEASURED-R, derived]`. It is not `outage / POLL_INTERVAL` (`≈ 12–13`); it is
+   `outage / (POLL_INTERVAL + failure_cost)`, and `failure_cost ≈ 3.3 s` on this machine. A failed connect is
+   **not** free, even against a closed port on `localhost`.
+3. **The loop is rate-limited by the connection attempt, not by the sleep** `[MEASURED]`. With zero sleep the
+   mean cycle was still `0.79 s`, so removing the sleep buys `6.6×` the attempts — not the three orders of
+   magnitude that were predicted. Two consequences: the log-volume cost of option (a) did **not** materialise
+   at this outage length, and the real cost of (a) is the startup-window rejection, not CPU.
+4. **The connection-storm risk is `[INFERRED, NOT MEASURED]`.** Everything above is `n = 1`. One client issuing
+   one attempt into a startup window is not a herd. Five Relay processes plus, from Week 7, a second shared
+   dependency is where this becomes a real number, and that number has not been taken.
+5. **The boundary swallows every `Exception`, including bugs** `[INFERRED from source]`. A malformed claim query
+   or a type error becomes an infinite `2.0 s` retry loop, one stdout line per iteration, with no escalation
+   and no distinction from a database outage.
+6. **The boundary is not instrumented** `[MEASURED-R from source]`. `poll_failures` is only obtainable by
+   grepping stdout, and `[poll_error]` is a bare `print()` with no timestamp — so per-failure spacing cannot be
+   read from a log, only the aggregate. Both `recovery_to_first_claim` numbers above are unverifiable for
+   exactly this family of reasons (`P-45`, `P-50`).
+7. **The biggest cost is what the boundary does not cover, and it has a line number** `[MEASURED-R 2026-09-24]`.
+   The terminal-mark block is still unguarded. With a `side_effects` + `outbox` COMMIT already done and the
+   database stopped before the mark, the worker died at **`worker.py:305`** —
+   `mark_result = await session.execute(mark_stmt)`. **The boundary moved the crash from line `185` to line
+   `305`; it did not remove it.** The job was left `running | attempts = 1 | claim_generation = 1` with a live
+   `claimed_at`, and nothing restarted the worker. Recovery required a human starting a reaper and a second
+   worker: `attempts` reached `2`, `side_effects` stayed `1` (`rowcount = 0` on the repeat insert),
+   `side_effects_id_seq.last_value` advanced to `2`, `job_executions` held `2` rows at generations `1` and `2`,
+   and the job reached `succeeded`. `logs/w5d1r_step6_*`. **This makes `D-26`'s `Cost 6` `[MEASURED]`: one fault
+   costs two attempts, so at `MAX_ATTEMPTS = 3` two such outages dead-letter a healthy job.** `P-48`.
+8. **`send_heartbeat`'s database call is unguarded and is re-raised out of a `finally`** `[INFERRED from source]`
+   `[NOT TESTED]`. For any handler outliving `HEARTBEAT_INTERVAL_SECONDS = 10`, an outage should kill the worker
+   at a **third** line, before it ever reaches the mark. Din 1's Step 6 used `seconds = 8.0` deliberately, so
+   this path was never entered. Owner: Din 2.
+
+**Rejected:**
+
+- **(a) `except sqlalchemy.exc.DBAPIError`** — because `ConnectionRefusedError` is an `OSError` with `e.orig is
+  None` and never reaches `DBAPIError` `[MEASURED]`. It would survive the first failure of an outage and die on
+  the second, while passing every normal-path gate.
+- **(b) `except sqlalchemy.exc.OperationalError`** — narrower still, and it does not even catch
+  `InterfaceError`, which is the class of **every run's first failure** `[MEASURED]`.
+- **`except BaseException`** — rejected before measurement and confirmed by grep (`0` matches in `src/`).
+  `asyncio.CancelledError`, `KeyboardInterrupt` and `SystemExit` are `BaseException`'s direct children, and
+  graceful shutdown rests on them `[INFERRED from Python's exception tree]`. It would also not help with
+  `P-36`, since `os._exit` bypasses all three.
+- **(a) immediate retry** — rejected on a measured *latency* result rather than the expected load result:
+  slower recovery (`2.176 s` vs `1.668 s`), `6.6×` the polls, and one `CannotConnectNowError` inside Postgres's
+  startup window `[MEASURED / REPORTED, NOT VERIFIABLE for the two latencies]`.
+- **(c) bounded exponential backoff with a cap** — **`[NOT TESTED]`, and this is the entry's weakest field.**
+  It is plausibly better than what was chosen: it would keep recovery latency bounded *and* avoid the startup
+  window. Running it needs a third arm, which was not in Din 1's budget. **Owner: Din 2.** Note that Din 1's
+  measurements changed its expected value in both directions — arm 1's `0.79 s` floor means the spin was never
+  as harmful as assumed, while the startup-window rejection means the *first* retry's timing matters more than
+  assumed.
+- **(d) no boundary, supervisor only** — not rejected. **Deferred, and Din 1's own measurement is why.** A
+  supervisor restarts a dead process; it does not stop a transient blip from discarding in-flight work. But
+  Din 1 also measured that the boundary alone leaves fault-to-reclaim **unbounded**, because the reaper has no
+  boundary at all and nothing restarts it. **The `3.44 s` from reaper launch to reclaim is process-launch
+  latency, not recovery latency** — the lease had already been expired for `~64 s` when a human started the
+  reaper `[MEASURED-R]`. That is Week 4 Din 5's `7.9 s` trap reproduced exactly. So the honest reading is:
+  **the boundary is a prerequisite for a supervisor, not a substitute for one.**
+
+### Supervisor — `[NOT WRITTEN]`
+
+Owner: **Week 5 Din 2, Step 3.** Needs `docker-compose.yml` `restart:` on all five processes, a
+restart-to-first-claim measurement, and the run Month 1 never did — worker and reaper killed in the **same**
+outage. Until then README row 9 stays `[NO EVIDENCE]` and promise #4's process half stays open.
+
+**Revisit when:** Din 2 adds the reaper and dispatcher boundaries and the supervisor (which fills the empty
+section above and is what closes this entry on Din 6); when the third backoff arm is run; when the terminal-mark
+and heartbeat paths are guarded (`P-48`, which turns `Cost 7` and `Cost 8` into settled behaviour rather than
+open defects); and when a multi-process outage produces a real connection-storm number, which is the one place
+`Cost 4` stops being an inference.

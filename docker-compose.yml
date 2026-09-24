@@ -7,5 +7,12 @@ services:
       POSTGRES_DB: relay
     ports:
       - "5433:5432"
+    volumes:
+      - relay_data:/var/lib/postgresql/data
+
+volumes:
+  relay_data:
+    external: true
+    name: fce3921d0991139c305837a9f17a1d2945985c349604915b79e3fe6830bad18c
 
 

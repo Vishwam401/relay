@@ -1,256 +1,273 @@
 # DSA Drill Log
 
-DSA/CP training ka single source of truth. Relay backend docs se alag — dono mix nahi hone chahiye.
+DSA/CP training ka record. Relay backend docs se alag — dono mix nahi hone chahiye.
 
-Coach (`dsa-coach` agent) session start pe ye file padhta hai aur session end pe khud update karta
-hai. Tujhe manually bharna nahi hai, verify karna hai.
+**Rules aur "kyun" ke liye → `PLAYBOOK.md`. "Aaj kya karna hai" ke liye → Algo-Path app.**
+Ye file sirf **numbers aur history** hai.
 
-**Rules aur "kya karna hai" ke liye → `PLAYBOOK.md`.** Ye file sirf record hai (numbers, history).
+Coach (`dsa-coach` agent) session start pe ye padhta hai aur session end pe khud update karta hai.
+
+> **Bahut saara measurement ab app mein hai, is file mein nahi.** `attempts` table har solving event
+> pe cause code, time-to-first-idea aur blind hit rakhti hai. Coach yahan **summary** likhta hai —
+> row-by-row dobara nahi. Jahan app authoritative hai, wahan "app dekho" likhna theek hai.
 
 ---
 
-## 1. Current state (last updated: 2026-09-10)
+## 1. Current state (last updated: 2026-09-22)
 
-**Background:** ~270 LeetCode problems solved (sheet-style, topics tak graphs bhi). Knowledge base
-hai. Missing cheez knowledge nahi hai — **recognition** (untagged problem pe technique pehchanna)
-aur **production** (bina help khud likh paana) hai.
+**Background:** ~250-270 LeetCode problems solved (sheet-style, graphs tak). Knowledge base hai.
+Missing cheez knowledge nahi — **direction** hai.
+
+**Diagnosis, measured:** sheet mein `trigger` ek field hai **`Pattern` pe**, aur questions pattern ke
+**andar nested** hain. Toh question tak pahunchne ka ek hi rasta tha: pattern card → trigger padho →
+question kholo. Retrieval direction `pattern → question`. Contest `statement → pattern` chalata hai.
+**Wo direction 250 problems mein ek baar bhi practice nahi hui.** Isliye recognition 80% pe hai aur
+production 0 pe.
 
 | Cheez | Level | Note |
 |---|---|---|
-| Topic knowledge (breadth) | ok | 270 problems, graphs tak |
-| Untagged recognition | weak | sheet problems pre-labeled aate hain, contest problems nahi |
-| Independent production | **weak** | 270 mein se kaafi editorial/help ke saath nikle honge |
-| Problem decode + manual trace | ok, par **trace skip karta hai** | isi wajah se gates zaroori hain |
+| Topic knowledge (breadth) | ok | bottleneck nahi hai |
+| Untagged recognition | **weak** | ab naapa jaayega — blind hit rate |
+| Independent production | **weak** | |
 | Constraints → allowed complexity | weak | cost gine bina optimize karta hai |
-| Edge case pakadna (jab dikhaya jaaye) | strong | turant samajh jaata hai |
 | Edge case khud generate karna | absent | |
-| STL syntax reflex | weak | biggest time sink |
-| Plan → code translation | weak | structure likhte waqt gir jaata hai |
+| Plan → code fidelity | **weak** | mistake ledger ka top entry, count 6 |
+| STL syntax reflex | weak | skeleton drill isko target karti hai |
 | Apne code ka self dry-run | kabhi nahi kiya | |
 
-**Rating:** not recorded. Pehle virtual contest ke baad bharna hai.
+**Rating:** not recorded.
 
-**Baseline (2026-09-10):** Weekly 381 ke 3019 + 3020. 35 exchanges total. Ek hi syntax galti
-(`freq()` vs `freq[]`) 6 baar. Self-generated counter-examples 0.
-
-**Diagnosis, evidence se:** 3020 (ek Q2) ka poora logic khud derive hua — pattern, ones parity,
-`-1` rule, overflow. Knowledge maujood tha. Jo nahi tha: usko code mein utaarna. Saath hi
-`for(char c : s)` se next character access karne ki koshish, aur `int len += times;` — 270 solved
-problems ke saath ye galtiyan nahi hoti. Isliye `270` weak evidence hai; ye session strong evidence
-hai. Bottleneck **production + speed** hai, topic coverage nahi.
+**Gap:** `2026-09-11` se `2026-09-22` tak zero entries. `git log -- docs/dsa` mein **ek** commit.
+`[MEASURED]` Iska matlab pehla failure skill ka nahi tha — **system chala hi nahi.**
 
 ---
 
-## 2. Hafta kaise chalta hai
+## 2. Naye instruments — jo pehle maujood hi nahi thay
 
-Roz `75 min`. Saturday `~2.5 hr` — hafte ka sabse important din.
+Ye chaar cheez `2026-09-22` se pehle **kahin record nahi hoti thi**. Isliye "improvement dikhta nahi"
+ka jawab pehle mil hi nahi sakta tha.
 
-| Din | Kaam |
-|---|---|
-| Mon | Scales 15 min + **2 problems, mixed untagged** (guided, koi timer nahi) |
-| Tue | Scales 15 min + **2 problems, mixed untagged** (timed, solo) |
-| Wed | Scales 15 min + **2 problems, mixed untagged** (guided) |
-| Thu | Scales 15 min + **2 problems, mixed untagged** (timed, solo) |
-| Fri | Scales 15 min + **blank re-solve** — hafte ke 2 problems scratch se, notes band |
-| Sat | Scales 15 min + **virtual contest 90 min** + **upsolve 60 min** (jo nahi hui, scratch se, phir editorial) |
-| Sun | **Postmortem 30 min** coach ke saath. Baaki rest. Koi solving nahi |
-
-Timer ka ek hi rule: **aisa timer jisme ~30-40% problems solve ho jaayein.** 90% pass ho raha hai
-matlab bahut aasan; 10% matlab bahut mushkil. Fixed number nahi hai.
-
-Guided din pe timer nahi. Session 75 min pe khatam, chahe problem adhoori ho — agli guided din
-continue.
-
-**Koi problem adhoori nahi chhodni.** Timed din pe pehle measurement (timer, jahan pahuncha wahan
-ruk), phir close-out (guided mode mein poora solve). Record pehle banta hai, isliye honest rehta
-hai.
+| Instrument | Kya naapta hai | Kahan |
+|---|---|---|
+| **Blind hit rate** | unlabeled problem pe prediction sahi nikli ya nahi | `attempts.blind_hit`, sealed prediction se compute hota hai — self-marked nahi |
+| **Time-to-first-idea** | sahi approach kis minute pe aayi (`NULL` = kabhi nahi aayi) | `attempts.first_idea_minutes` |
+| **Cause code C1-C6** | fail kyun hui — chhe alag diagnoses | `attempts.cause` |
+| **Reframe move** | kaunsa move unlock karta hai | `attempts.reframe` |
+| **Skeleton reps** | plan→code reflex | `skeleton_reps.clean_reps` + `best_seconds` |
+| **Gates G1-G4** | pattern acquired hai ya sirf ticked | `pattern_progress.*_at` timestamps |
+| **Station time** | **kahan** atakta hai, aath mein se | `attempts.station_log` |
+| **Hint level** | kaunsa rung laga. `solved y/n` se bahut behtar signal | `attempts.hint_level` |
+| **Lapses** | ek problem kitni baar fail hui (leech) | `attempts.lapses` |
+| **Idea health** | ek idea baar baar fail (wheel-spinning) | `idea_health.fails` + `mode` |
 
 ---
 
-## 3. Problems kahan se — mixed untagged, contest-level
+## 2B. Station time — kahan atakta hai
 
-**Topic batches upfront NAHI karne hain.** Wo beginner ke liye theek hai; 270 problems ke saath
-galat hai. Knowledge already hai — jo missing hai wo untagged problem pe technique **pehchanna** aur
-bina help **khud likhna** hai.
+`station_log` se sum. **Jahan minute jama hote hain wahi asli gap hai** — aur ye wo number hai jo
+"mujhe lagta hai pattern recognition weak hai" ko evidence se replace karta hai.
 
-Toh Mon-Thu: **random purane contests ke Q1 + Q2**, mixed, untagged. Roz ek different contest.
+| Station | Stall | Total minutes | Share |
+|---|---|---|---|
+| 1 | statement samajhna | not recorded | — |
+| 2 | brute force | not recorded | — |
+| 3 | waste dekhna | not recorded | — |
+| 4 | kill | not recorded | — |
+| 5 | plan → code | not recorded | — |
+| 6 | galat answer | not recorded | — |
+| 7 | TLE | not recorded | — |
 
-LeetCode pe kaise:
-1. Contest → past contests → koi bhi purana **Weekly ~340-380** ya usse neeche
-2. Uska Q1 (Easy) + Q2 (Medium)
-3. Verify: problem page pe contest ka naam likha hona chahiye
-4. Recent contests (Weekly 400 aur upar) **chhodo** — wo Saturday virtuals ke liye reserved hain
-
-**LeetCode ka "Topics" aur "Hint" section collapsed rakhna hai.** Wo kholna Gate 2 ka jawab dekh
-lena hai, aur exactly wahi cheez sheet-practice ne pehle se muft de rakhi hai. Contest mein nahi
-milegi.
-
-**Problem tu pick karta hai, coach nahi.** Reason: coach ko technique pehle se pata ho gaya toh
-Gate 2 ka sawaal dikhawa ban jaata hai aur uske counter-examples genuine nahi rahenge.
-
-### Topic batch — reactive, upfront nahi
-
-Topic batch tabhi trigger hota hai jab **diagnosis** kahe, guess nahi:
-
-> Mistake ledger ya Daily log mein ek hi topic pe **3 failures cluster** ho jaayein → us topic ke
-> **10 problems** ka batch, phir wapas mixed untagged.
-
-Coach ko ye trigger dekhna hai aur khud propose karna hai. Iss tarah topic depth wahan jaayegi
-jahan measured gap hai, wahan nahi jahan maine andaaza lagaya tha.
-
-### Reference topic list (batch trigger hone pe)
-
-Hash Table / counting · Sorting + Greedy · Two Pointers / Sliding Window · Prefix Sum ·
-Binary Search (+ on answer) · Stack / Monotonic Stack · BFS / DFS on grids · Basic 1D DP
+**Prediction on record:** bulk `2` aur `3` pe hoga (brute + waste), `4` pe nahi. Ye **`[INFERRED]`**
+hai. Agar sach mein `4` pe nikla toh diagnosis galat tha aur wo likhna hai — kyunki tab gap genuinely
+knowledge ka hai, derivation ka nahi.
 
 ---
 
-## 4. Scales — 15 min, roz
+## 2C. Hint level distribution
 
-Purpose: syntax ko reflex banana, taaki working memory logic ke liye free ho. 10 Sep pe ek hi galti
-6 baar hui kyunki ungli ko syntax nahi pata tha, aur us load ne structure gira diya.
+| Rung | Kitni baar | Matlab |
+|---|---|---|
+| H0 — koi hint nahi | 0 | independent solve |
+| H1 — family | 0 | |
+| H2 — waste | 0 | |
+| H3 — structure | 0 | |
+| H4 — editorial | 0 | |
 
-Kaise: nayi khali `.cpp` file, notes band. Memory se type → compile → run → file delete.
-
-```
-1. unordered_map banao aur bharo
-2. count() se existence check
-3. find() + end() se existence check
-4. operator[] ka side effect: map.size() pehle aur baad mein print karo
-5. range loop se p.first / p.second
-6. sort with lambda comparator
-7. two-pointer skeleton
-8. prefix-sum array
-```
-
-Ye list badalti rahegi — jo galti ledger mein 3 baar aa jaaye, wo add ho jaati hai.
-
-**Ye temporary hai.** 3-4 hafte baad review: syntax errors per session `0-1` pe aa gaye toh Scales
-5 min pe cut ya band. Permanent ritual nahi hai.
+`H3 + H4` ka share `>50%` hote hi **hint-creep** breaker band `-100` kar dega. Ye solve rate se
+**pehle** move karta hai, toh yahi sabse early warning hai.
 
 ---
 
-## 5. Ek hard rule — no help before 40 minutes
+## 2D. Leeches aur idea health
 
-Recognition ko production mein badalne ka ek hi tareeka hai: **genuine solo attempt.**
+| Problem | Lapses | Status |
+|---|---|---|
+| — | — | — |
 
-Koi bhi problem editorial, hint, ya coach ki help se solve nahi hogi jab tak tu genuinely **40
-minute** na de chuka ho. Ye timed days ke timer se alag hai — ye baaki sab din pe bhi lagta hai.
+| Idea | Fails | Passes | Mode |
+|---|---|---|---|
+| — | 0 | 0 | blind |
 
-Reason: pichhle 270 problems mein jo shortcut liye gaye, wahi aaj bhugatne pad rahe hain. Editorial
-padh ke solve karna recognition banata hai, production nahi.
+`lapses >= 2` → problem band, usi idea ki aasan problem. `fails >= 3` → idea `guided` mode mein,
+aur rasta hai anchor → skeleton → labeled problem. Ek pass fail streak `0` kar deta hai aur mode
+`blind` wapas.
 
 ---
 
-## 6. Daily log
+## 2E. Breaker firing log
 
-| Date | Problem | Diff | Topic | Mode | Gate reached | Exchanges | Syntax errs | Solved? |
-|---|---|---|---|---|---|---|---|---|
-| 2026-09-10 | 3019 Number of Changing Keys | Easy | Hash Table | guided | Solved | 10 | 4 | yes |
-| 2026-09-10 | 3020 Max Elements in Subset | Medium | Hash Table | guided | Solved | 25 | many | yes |
+| Date | Breaker | Evidence | Kya kiya |
+|---|---|---|---|
+| — | — | — | — |
 
-- Mode: `guided` / `timed` / `blank` / `contest` / `upsolve` / `batch`
-- Gate reached: `1` / `2` / `3` / `4` / `Solved` — timed din pe `solved?` se zyada useful, kyunki
-  `Gate 2 → Gate 3 → Gate 4` progress dikhata hai chahe solve na ho
-- `Topic` column reactive batch trigger detect karne ke liye hai — failures kis topic pe cluster
-  ho rahe hain
+Breaker fire hona **event** hai, mood nahi. `day_log.breakers` mein bhi store hota hai.
+
+---
+
+## 3. Daily log
+
+Coach roz ek **summary row** likhega. Per-attempt detail app mein hai.
+
+| Date | Clock min | Blocks done | Blind attempts | Blind hits | Causes | Skeleton reps | Note |
+|---|---|---|---|---|---|---|---|
+| 2026-09-10 | not recorded | — | 0 | 0 | — | 0 | baseline session: 3019 + 3020, 35 exchanges, ek syntax galti 6 baar |
+| 2026-09-11 → 2026-09-21 | — | — | — | — | — | — | **gap.** System banaya gaya, chalaya nahi gaya |
+| 2026-09-22 | — | — | — | — | — | — | redesign ship hua. Migration chalana baaki |
+
+---
+
+## 4. Blind hit rate — Track A
+
+App ise khud compute karti hai. Yahan **hafte ka snapshot** rakhna hai, taaki trend dikhe.
+
+| Hafta | Attempts | Solved | Solve rate | Blind hits | Hit rate | Band | Median first-idea |
+|---|---|---|---|---|---|---|---|
+| — | 0 | 0 | — | 0 | — | 1400-1600 (cold) | not recorded |
+
+**Solve rate jaanbujh ke target nahi hai** — band khud usko `30-40%` pe hold karta hai, toh wo hil
+nahi sakta. **Hit rate aur first-idea** hil sakte hain. Wahi dekhna hai.
+
+---
+
+## 5. Cause distribution — asli diagnostic
+
+~20 attempts baad ye table bata dega kahan kaam karna hai. Abhi khaali hai, aur **khaali hona hi
+honest hai**.
+
+| Code | Kya | Count |
+|---|---|---|
+| C1 | brute force hi nahi likha | 0 |
+| C2 | brute tha, waste nahi dikha | 0 |
+| C3 | reframe miss | 0 |
+| C4 | invariant / monotonicity check nahi kiya | 0 |
+| C5 | pattern pata tha, detail galat | 0 |
+| C6 | technique hi nahi pata thi | 0 |
+
+**Prediction on record:** bulk `C2 + C3` hoga, `C6` nahi. Ye **`[INFERRED]`** hai — measured nahi.
+20 rows baad isko check karna aur galat nikla toh likhna.
+
+---
+
+## 6. Gates — pattern acquisition
+
+| Metric | Count | Note |
+|---|---|---|
+| Patterns total | 107 | |
+| Questions total | 319 | 299 LeetCode, 274 distinct slugs |
+| `acquired` (chaaron gate) | 0 | naya metric, zero se shuru |
+| `ungated` (tick hai, gate nahi) | app dekho | **yehi asli re-do list hai** |
+
+Purana `mastered` flag `deprecated` hai — wo "teeno question tick" naapta tha, jo completion hai,
+recall nahi. App ab `acquired` aur `ungated` dono header mein dikhati hai.
 
 ---
 
 ## 7. Mistake ledger
 
-Count `3` cross kare toh wo galti agle din ke Scales mein add hoti hai.
+Count `3` cross kare toh wo skeleton drill mein aa jaati hai.
 
-| Mistake | Count | Last seen | Category | Scales mein? |
+| Mistake | Count | Last seen | Category | Skeleton |
 |---|---|---|---|---|
-| `freq(key)` instead of `freq[key]` / `freq.find(key)` | 6 | 2026-09-10 | syntax | **yes** |
-| `if/else` while ke andar rakha, baahar ki jagah | 6 | 2026-09-10 | plan→code | **yes** |
-| Shortcut socha bina complexity cost gine | 3 | 2026-09-10 | reasoning | **yes** |
-| Loop ki state-advance line (`value *= value`) chhod dena | 2 | 2026-09-10 | plan→code | no |
-| While condition ka ek clause chhod dena | 2 | 2026-09-10 | plan→code | no |
-| Manual trace skip karna, verbal summary de dena | 2 | 2026-09-10 | process | no |
-| Loop bound `n` jahan `n-1` chahiye | 1 | 2026-09-10 | boundary | no |
-| Accumulator ki init value galat | 1 | 2026-09-10 | plan→code | no |
-| `max(int, long long)` type mismatch | 1 | 2026-09-10 | syntax | no |
-| Variable redeclare karna | 1 | 2026-09-10 | syntax | no |
+| `freq(key)` instead of `freq[key]` / `freq.find(key)` | 6 | 2026-09-10 | syntax | `hash-complement` |
+| `if/else` while ke andar rakha, baahar ki jagah | 6 | 2026-09-10 | plan→code | `mono-next-greater` (trap wahi hai) |
+| Shortcut socha bina complexity cost gine | 3 | 2026-09-10 | reasoning | — (Gate 2 / BRUTE line) |
+| Loop ki state-advance line chhod dena | 2 | 2026-09-10 | plan→code | `win-longest` (trap: `l++`) |
+| While condition ka ek clause chhod dena | 2 | 2026-09-10 | plan→code | `mono-deque` (do alag while) |
+| Manual trace skip karna | 2 | 2026-09-10 | process | — |
+| Loop bound `n` jahan `n-1` chahiye | 1 | 2026-09-10 | boundary | `bs-lower` |
+| Accumulator ki init value galat | 1 | 2026-09-10 | plan→code | `kadane` (trap: `v[0]` se init) |
+| `max(int, long long)` type mismatch | 1 | 2026-09-10 | syntax | — |
+
+**Har ledger entry ka ek skeleton hai.** 22 skeletons mein se 6 seedha inhi galtiyon ko target karte
+hain, aur har skeleton pe `trap` field likhi hai — wo exact line jo memory se type karne pe gayab
+hoti hai. Saare 22 `g++ -std=c++17` pe compile verified hain. `[MEASURED]`
 
 ---
 
-## 8. Topic failure tracker — reactive batch trigger
+## 8. Skeleton reps
 
-Yahan failures topic-wise ginte hain. `3` cross karte hi us topic ka 10-problem batch trigger hota
-hai.
-
-| Topic | Failures | Batch triggered? |
-|---|---|---|
-| Hash Table / counting | 0 | no |
-
----
-
-## 9. Blank re-solve tracker
-
-| Problem | Topic | Solved on | Blank re-solve | Status |
-|---|---|---|---|---|
-| 3019 Number of Changing Keys | Hash Table | 2026-09-10 | — | pending |
-| 3020 Max Elements in Subset | Hash Table | 2026-09-10 | — | pending |
-
-Blank re-solve fail hua toh status `pending` wapas — agle hafte phir test. Ek baar solve karna bar
-nahi hai; blank se recall aana bar hai.
+| Metric | Value |
+|---|---|
+| Skeletons total | 22 |
+| Reflex ban gaye (5 clean reps, `<= 90s`) | 0 |
+| Compile verified | 22 / 22 `[MEASURED]` |
 
 ---
 
-## 9B. Freeze windows
+## 9. Blank re-solve / park tracker
 
-Planned pauses (exams, travel) — taaki gap "missed days" na ginne jaaye aur timeline honest rahe.
+Park ka rule badal gaya: fail hui problem **editorial se band nahi hoti**, park hoti hai, aur
+`30 din` baad **blind** wapas aati hai. Pehle `parked_at` likha jaata tha aur kabhi padha nahi
+jaata tha — `dueReviews()` parked rows ko skip karta tha, toh parked problem permanently system se
+nikal jaati thi. Wo bug band hua.
 
-| Se | Tak | Reason |
-|---|---|---|
-| — | — | — |
+| Problem | Parked on | Wapas kab | Status |
+|---|---|---|---|
+| — | — | — | — |
 
 ---
 
 ## 10. Contest log
 
-| Date | Contest | Rank | Solved | Rating after | Upsolve done | Time kahan gaya |
+| Date | Contest | Rank | Solved | Rating after | Upsolve | Unsolved problem pe kitna time gaya |
 |---|---|---|---|---|---|---|
 | — | — | — | — | not recorded | — | — |
 
-Saturday contest ke turant baad upsolve — jo problems nahi hui, pehle scratch se try, phir
-editorial, phir core idea dobara implement. Hafte ka highest-value block.
+Aakhri column naya hai aur zaroori hai: **contest failure often triage failure hoti hai, thinking
+failure nahi.** Agar ek unsolved problem pe `>25 min` gaya, wo triage bug hai — uska fix alag hai
+(shuru mein 3 min saare problems padho aur rank karo), solving practice se theek nahi hoga.
 
 ---
 
-## 11. Leading indicators — calendar se zyada ye dekho
+## 11. Leading indicators
 
-| Indicator | Target | Matlab |
+| Indicator | Target | Abhi |
 |---|---|---|
-| Timed Easy ka time | 8 min ke andar, lagataar 3 baar | speed aa gayi |
-| Syntax errors per session | `0-1` | Scales ka kaam khatam |
-| Friday blank re-solve pass rate | 80%+ | seekha hua hai, samjha hua nahi |
-| Own counter-examples jo bug pakde | coach se zyada | Gate 3 develop ho gaya |
+| Blind hit rate | naapna hai, phir target | not recorded |
+| Time-to-first-idea median | girta hua | not recorded |
+| Hint level — H3/H4 ka share | girta hua | not recorded |
+| Blind band centre | `1600+` | `1400` cold start |
 
-Chaar hit ho gaye toh Q1+Q2 reliable hai, chahe hafta 6 ho ya 12.
+**Hataye gaye indicators:** `syntax errors per session` aur FAST ke time targets. Dono ke columns
+maujood hain (`attempts.syntax_errors`, `attempts.fast_seconds`) par **koi code unme likhta nahi** —
+`[MEASURED]` audit se. Jis indicator ka source nahi hai wo na hone se bura hai.
 
-**Revised timeline** (270 problems ki knowledge base ko count karke):
+Chaar hit ho gaye toh OA-reliable hai, chahe hafta 6 ho ya 16.
 
-| Kab | Kya |
-|---|---|
-| Hafta 1-3 | Scales se syntax settle. Timed days pe fail hona normal |
-| Hafta 4-6 | Q1 consistent. Q2 kabhi-kabhi |
-| Hafta 6-10 | Q1+Q2 reliable. Rating `1650-1750` |
-
-Condition: Saturday contests miss nahi hone chahiye, aur section 5 ka 40-minute rule tootna nahi
-chahiye.
+**Timeline honestly:** pehla hafta sirf measurement hai (15 problems, koi change nahi). Uske baad
+timeline actual rate se compute hogi — purana `6-10 hafte` ka number **repeat nahi karna**, wo 6
+problems/hafta maan ke banaya tha aur uske peeche koi data nahi tha.
 
 ---
 
-## 12. Kya cut kiya, aur kyun
+## 12. Open items
 
-- **Upfront topic batches** → mixed untagged contest problems. Reason: 270 problems ke saath topic
-  coverage bottleneck nahi hai; recognition aur production hai. Batches ab reactive hain.
-- **Progressive timer ka 4-row table** → ek rule: timer aisa jo ~30-40% success de
-- **`pending close-out` cap, `leaked Gate 2` marking, counter-example scoreboard** → bureaucracy;
-  mistake ledger aur leading indicators wahi kaam kar rahe hain
-
-Ye rakha kyunki ye actual CP practice se match karta hai: har contest + upsolve, ~30-40% success
-rate wali difficulty, postmortem notes, blank/spaced recall, aur editorial se pehle genuine attempt.
+| Item | Status |
+|---|---|
+| `migrations/002_intuition.sql` | **done** — 2026-09-22 |
+| `Algo-Path DSA` git + GitHub + Vercel | **done** — `github.com/Vishwam401/Algo-Path`, auto-deploy on push |
+| `migrations/003_stations.sql` chalana | **pending — iske bina app tootegi** |
+| Pehle 15 blind attempts | pending |
+| Cause distribution check (C2+C3 prediction sahi thi?) | 20 attempts baad |
+| Station time check (station 2+3 prediction sahi thi?) | 20 attempts baad |
+| **`stall` breaker** — abhi fire nahi kar sakta | `headlineNumbersFlat` hardcoded `false` hai. Trend ke liye weekly snapshot table chahiye, wo nahi bana. Baaki saat breakers live hain |
