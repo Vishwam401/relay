@@ -69,3 +69,8 @@ large*.json
 docs/career/
 docs/dsa/
 
+# Local scratch and scripts
+scratch/
+scripts/
+
+
