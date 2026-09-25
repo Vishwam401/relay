@@ -2361,8 +2361,9 @@ on evidence rather than on scope. **That run is the honest owner of this entry's
 > **Numbering:** `D-30` was grepped free before being written (`docs/`, `docs/planning/`, `docs/daily/` — the
 > only hits were the *reservations* in `MONTH_02.md`, `WEEK_05.md`, `MAP.md`, and the Din 1 BRIEF/KEY, which is
 > what a reservation looks like). `D-09`–`D-20` still belong to `roadmap/BACKEND_ROADMAP_PART2.md`.
-> **Next free: `D-31`** — reserved for `pool_pre_ping`, re-priced on Week 5 Din 2. **`D-32`** is reserved for the
-> evidence-retention / `docs/` classification decision on Din 3.
+> **`D-31`** was written on Week 5 Din 2 (`2026-09-25`) — `pool_pre_ping`, re-priced. It was grepped free first:
+> the only hits were its own reservations here, in `MONTH_02.md`, `WEEK_05.md`, and the Din 2 BRIEF/KEY.
+> **Next free: `D-32`** — reserved for the evidence-retention / `docs/` classification decision on Din 3.
 
 ---
 
@@ -2526,14 +2527,183 @@ recovery slower, not faster.** Direction `[MEASURED]`; magnitude `[REPORTED, NOT
   reaper `[MEASURED-R]`. That is Week 4 Din 5's `7.9 s` trap reproduced exactly. So the honest reading is:
   **the boundary is a prerequisite for a supervisor, not a substitute for one.**
 
-### Supervisor — `[NOT WRITTEN]`
+### Supervisor — `[NOTES — Week 5 Din 2, still OPEN, closes Din 6]`
 
-Owner: **Week 5 Din 2, Step 3.** Needs `docker-compose.yml` `restart:` on all five processes, a
-restart-to-first-claim measurement, and the run Month 1 never did — worker and reaper killed in the **same**
-outage. Until then README row 9 stays `[NO EVIDENCE]` and promise #4's process half stays open.
+> **This section is notes, not the decision.** `WEEK_05.md` publishes `D-30` on Din 6, and Din 2's own scope
+> guard says today produces notes for this section and nothing more. **Do not read the `Chose` below as
+> published** — it is a measured candidate with two gates unsatisfied.
+
+**The scope defect this section opened on, and it was real.** The plan said *"`restart:` policy, **on all five
+processes**"*. `docker compose ps` lists only `db`; Relay's five processes run on the host, so `restart:` could
+not reach them without first moving them into Compose. Three options, priced:
+
+| Option | Cost |
+|---|---|
+| (a) five processes into Compose + `restart: unless-stopped` | The production answer. Needs an image or source mount, a network rename, and `DATABASE_URL` moving from `localhost:5433` to `db:5432` — **which invalidates every retained Week 5 log as a comparison baseline.** Out of Din 2's budget |
+| (b) a host supervisor script in `scripts/`, relaunching on exit | Measurable today. Windows-specific, and **not a deployable artifact** |
+| (c) `restart:` on `db` only | One line, and restarts **no** Relay process. Does not answer the question |
+
+**Chose (b)** — `scripts/supervisor.py`, supervising worker and reaper. **Rejected (a) on budget and on
+baseline-invalidation, not on merit**, and it remains the production answer; **rejected (c)** because it
+satisfies the plan's wording while measuring nothing, which is the `P-31` shape.
+
+**What Din 2 measured `[MEASURED 2026-09-25]`:**
+
+| Number | Value | Reading |
+|---|---|---|
+| `restarts` | `4` (2 worker, 2 reaper) | **Not evidence of a missing boundary.** Three came from deliberate `SIGKILL`; the first was `exit 1` at `2.04 s` uptime — `os._exit(1)` from the `crash_at` hook on the poison-pill job. **That is `P-36` firing, and the supervisor restarting it is the first direct evidence for the one failure class no boundary can catch** |
+| `restart_to_first_claim` | `2.790 s`, of which `~0.99 s` is interpreter start + `src.database` import and `~1.8 s` is handshake + poll tick | The launch/poll split this entry asked for. **Start clock is console-only — `P-53(c)`** |
+| lease-anchor → reclaim | `35.191 s` = `30 s` lease + `5.19 s` restart and poll latency | **Finite, which is the whole point.** Reported as `fault_to_reclaim` and that label overstates it — `P-53(a)` |
+| crash-loop backoff | observed `2.00 s` then `1.00 s` | Uptime-gated with a **reset**, not a ramp. **`[NOT A BOUND]` — `P-53(d)`** |
+
+**Two gates still unsatisfied, and both block closing this entry:**
+
+1. **The `~30 s` DB-down run was not performed** — the supervisor log spans `12.1 s`. So *"restarts stay bounded
+   against a permanently-down dependency"* is `[NOT SATISFIED BY EVIDENCE]`, and the measured reset behaviour
+   suggests the honest answer is *no*.
+2. **`n = 1`, and never under load.** Promise #4's claim is that all three processes survive *together*. Din 2
+   ran one worker, one reaper, one dispatcher, one outage each.
+
+**Therefore README rows 7 and 9 and promise #4's process half were deliberately not updated on Din 2.** Row 9's
+verdict stays `[NO EVIDENCE]`. Owner: **Din 6.**
+
+**And the prerequisite claim from Din 1 now has its second number.** Recovery through the boundary costs
+`POLL_INTERVAL + failure_cost ≈ 5.27 s` with the job's state intact; recovery through a restart costs the
+in-flight lifecycle write plus `lease_remainder + reaper poll`, measured at `35.191 s`. **Two orders of
+magnitude apart, in the direction Din 1 predicted** — the boundary is the prerequisite, the supervisor is what
+covers `P-36`, and neither substitutes for the other.
 
 **Revisit when:** Din 2 adds the reaper and dispatcher boundaries and the supervisor (which fills the empty
 section above and is what closes this entry on Din 6); when the third backoff arm is run; when the terminal-mark
 and heartbeat paths are guarded (`P-48`, which turns `Cost 7` and `Cost 8` into settled behaviour rather than
 open defects); and when a multi-process outage produces a real connection-storm number, which is the one place
 `Cost 4` stops being an inference.
+
+---
+
+## D-31 — `pool_pre_ping` stays `False`, and this time the premise is true and the benefit was measured at zero
+
+**Status: decided on Week 5 Din 2 (`2026-09-25`). Same verdict as Week 4 Din 5, different reason — and the old
+reason must not be quoted, because when it was written it was false.**
+
+**Why this decision was re-taken rather than inherited.** Week 4 Din 5 rejected `pool_pre_ping=True` on the
+stated ground that the worker and reaper are *"polling loops with built-in exception handling"*. `P-43`
+established that **no such handling existed** — the loops had no `try` at all, and a database restart ended the
+process. So Din 5's reject was a correct conclusion resting on a false premise, which is not a decision, it is a
+coincidence. Week 5 Din 1 built the worker's claim-poll boundary and Din 2 built the heartbeat, mark, reaper and
+dispatcher boundaries. **The premise is now true, so the decision is now answerable**, and it was allowed to
+flip.
+
+**Options:**
+- (a) `pool_pre_ping=True` on the single `create_async_engine` in `src/database.py`
+- (b) `pool_pre_ping=False`, relying on the code-level boundaries plus SQLAlchemy's pool-generation invalidation
+- (c) `True`, but only for the polling processes — a second engine or an env-gated flag
+
+**Chose: (b) — `pool_pre_ping` stays `False`.**
+
+### The benefit, measured against a real outage rather than asserted
+
+The day's own harness printed both arms' `poll_failures` without running the `True` arm (`P-52`). The reviewer
+ran it: one variable, both arms on the same disposable database, `echo=False`, `POLL_INTERVAL = 2.0 s`, outage
+`25 s` injected with `docker compose stop db`:
+
+| | `pre_ping=False` | `pre_ping=True` |
+|---|---|---|
+| `poll_failures` during the outage | `5` | `5` |
+| first error class | `DBAPIError` | `ConnectionError` |
+| failed polls after `docker compose start db` | `1` | `1` |
+| recovery error classes | `ConnectionError` | `CannotConnectNowError` |
+| first success after start | `2.191 s` | `2.156 s` |
+
+`[MEASURED-R 2026-09-25]`
+
+**Mechanism for the identical count.** `pre_ping` issues a lightweight ping at **checkout**; on failure
+SQLAlchemy invalidates that connection and tries to make a new one. **A new connection to a stopped server also
+fails.** The flag cannot manufacture a reachable database, so the count is governed by
+`outage / (POLL_INTERVAL + failure_cost)` — Din 1's term — in both arms.
+
+**The flag is nevertheless *effective*, and that distinction is the reason this table has an error-class row.**
+`P-45`'s `pool_size=2` defect was a setting that was configured and never observed. Here the differential is
+visible: without `pre_ping` the first failure happens on the **stale pooled handle** (`DBAPIError`); with it, the
+handle is discarded during checkout and the first failure happens on the **connect path** (`ConnectionError`).
+**So the flag does what it claims. What it does not do is change any outcome that matters.**
+
+**And its one theoretical benefit did not materialise.** `pre_ping`'s only real win is the narrow case where the
+server is back and the pooled handle is dead: it replaces the handle inside the checkout and saves exactly **one**
+failed poll. Measured, failed polls after recovery were `1` in **both** arms. Din 1 had already retired
+README's *"possibly one failed poll"* for the worker by measuring `17` clean cycles with a successful first poll
+after recovery; this measures that `pre_ping` is paying for a saving that is already `0`.
+
+### The cost, with `echo` isolated because the KEY required it
+
+Per-checkout, checkout-and-return only, no statement. `n = 100` (user's run) and `n = 200` (reviewer's,
+nearest-rank percentiles):
+
+| `echo` | `pre_ping` | mean | p50 | p99 | source |
+|---|---|---|---|---|---|
+| not recorded | `False` | `0.1095 ms` | `0.0958 ms` | `0.2892 ms` (= max, `P-52`) | user, `n = 100` |
+| not recorded | `True` | `3.1355 ms` | `2.7906 ms` | `4.5898 ms` (= max, `P-52`) | user, `n = 100` |
+| `False` | `False` | `0.1085 ms` | `0.0928 ms` | `0.2726 ms` | reviewer, `n = 200` |
+| `False` | `True` | `6.7723 ms` | `4.8446 ms` | **`33.7458 ms`** | reviewer, `n = 200` |
+| `True` | `False` | `0.1624 ms` | `0.1512 ms` | `0.6812 ms` | reviewer, `n = 200` |
+| `True` | `True` | `3.6695 ms` | `3.0064 ms` | `8.3245 ms` | reviewer, `n = 200` |
+
+**The honest cost is a range, not a point: `p50` `+2.70 ms` to `+4.75 ms`, roughly `20×`–`50×` the un-pinged
+checkout, with a `p99` tail measured between `8.3 ms` and `33.7 ms`.** `echo` was isolated as a fourth arm
+because `src/database.py` hardcodes `echo=True` and the day's log did not say which it used — **and `echo` turned
+out not to be the dominant term; run-to-run variance is.** The cost is a real network round trip over the Docker
+Desktop port mapping, and it is the tail rather than the median that decides this.
+
+### `Cost` — and the field has to be written per process, because one flag serves five
+
+`src/database.py` has a single `create_async_engine` and all five processes import it. There is no
+`pool_pre_ping` that applies to the worker only:
+
+| Process | Checkout rate | What `+2.7`–`4.8 ms` per checkout means |
+|---|---|---|
+| worker | `~0.5`/s | Round-off. Irrelevant |
+| reaper | `~0.5`/s | Round-off. Irrelevant |
+| dispatcher | `~0.5`/s idle, higher when draining | Round-off |
+| **API (`src/main.py`)** | **one per request, per dependency** | **Added directly to `p50` request latency**, and the `33.7 ms` tail lands on tail latency — which is the number `D-28`'s metrics report |
+| sink | one per delivery | Adds to the receiver's response time, inside the dispatcher's `timeout=5.0` |
+
+**The decision is single and the cost is not shared evenly. The processes that would benefit pay nothing; the
+process that pays the most benefits least** — an API request against a stopped database is rejected, not
+retried (Month 1 promise #1's scope), so `pre_ping` buys the API no availability at all. **That asymmetry is the
+reason, not the `3 ms`.**
+
+### Killing the strongest alternative
+
+**(c) — `True` for polling processes only** is the genuinely attractive option, because it puts the cost exactly
+where the benefit is. **It fails on two counts.** First, the benefit it would buy is the `1` saved poll that was
+just measured at `0`, so it optimises a quantity that does not exist. Second, it requires either a second engine
+or an env-gated flag in `src/database.py`, which means **the five processes stop sharing one connection
+configuration** — and `application_name` attribution, the `pool_size`/`max_overflow` budget from Week 4 Din 5
+(`5 + 10`, fleet ceiling `75`, headroom `~3–5`), and `D-28`'s metrics all currently read that single engine.
+Forking it to gain zero measured polls is the wrong trade. **Rejected on measurement, not on effort.**
+
+### What this decision does **not** claim
+
+- **It does not claim `pre_ping` is useless in general.** Its real use case is long-idle pools behind a
+  connection killer — a load balancer or firewall with an idle timeout, or `idle_in_transaction_session_timeout`
+  — where the server is **up** and the handle is dead. Relay's measured failure mode is the server being
+  **down**, and those are different. If Relay later sits behind a proxy with an idle cutoff, this decision is
+  invalidated and must be re-taken, not quoted.
+- **It does not claim the boundaries make `pre_ping` unnecessary for the paths that killed the worker.**
+  `pre_ping` runs at **checkout**. Both of Din 1's deaths were mid-transaction — the terminal mark's `UPDATE`
+  and the heartbeat's `UPDATE`, on already-checked-out connections. **`pre_ping` never runs mid-transaction, so
+  it was structurally incapable of preventing either**, and this is worth stating because reading `pre_ping` as
+  the answer to those deaths is an easy mistake. `[INFERRED from SQLAlchemy's checkout-time contract]`
+- **It does not make the pool safe.** `P-45`'s unobserved `pool_size=2` is still unobserved, and pool exhaustion
+  numbers are owed to Din 4.
+
+**Environment co-dependency:** this decision assumes the DBAPI surfaces a broken connection as an exception on
+first use, which asyncpg does. It says nothing about a connection that is alive at the TCP level and
+unresponsive at the protocol level — a hung server rather than a stopped one. **Nothing in Relay currently
+detects that case**, and no `connect_timeout` or `command_timeout` is configured on the engine. `[NOT MEASURED]`
+
+**Revisit when:** Relay runs behind any proxy or firewall with an idle-connection timeout; when `statement_timeout`
+or `command_timeout` gets set (a different mechanism for the same class of problem, and the one that covers the
+hung-server case `pre_ping` does not); when Din 4's pool-exhaustion numbers exist, since checkout latency and
+checkout *availability* interact under saturation; or when the API's `p99` is measured under load, because that
+is the number this decision is actually protecting.

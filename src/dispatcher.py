@@ -35,66 +35,72 @@ async def run_dispatcher() -> None:
         while not SHUTDOWN_REQUESTED:
             dispatched = False
 
-            async with async_session() as session:
-                async with session.begin():
-                    query = (
-                        select(Outbox)
-                        .where(Outbox.dispatched_at.is_(None))
-                        .order_by(Outbox.created_at, Outbox.id)
-                        .limit(1)
-                        .with_for_update(skip_locked=True)
-                    )
-                    result = await session.execute(query)
-                    outbox_row = result.scalars().first()
-
-                    if outbox_row:
-                        dispatched = True
-                        key = outbox_row.effect_key or f"job:{outbox_row.job_id}"
-                        payload_data = {
-                            "idempotency_key": key,
-                            "job_id": outbox_row.job_id,
-                            "body": outbox_row.payload or {},
-                        }
-
-                        print(
-                            f"[{DISPATCHER_ID}] Attempting dispatch: job_id={outbox_row.job_id} outbox_id={outbox_row.id} key={key}..."
+            try:
+                async with async_session() as session:
+                    async with session.begin():
+                        query = (
+                            select(Outbox)
+                            .where(Outbox.dispatched_at.is_(None))
+                            .order_by(Outbox.created_at, Outbox.id)
+                            .limit(1)
+                            .with_for_update(skip_locked=True)
                         )
-                        sys.stdout.flush()
+                        result = await session.execute(query)
+                        outbox_row = result.scalars().first()
 
-                        try:
-                            response = await client.post(SINK_URL, json=payload_data)
-                            if response.status_code == 200:
-                                # Check crash hook
-                                crash_env = os.environ.get("CRASH_AT")
-                                if crash_env == "none":
-                                    crash_at_flag = None
-                                else:
-                                    crash_at_flag = crash_env or (outbox_row.payload or {}).get("crash_at")
-                                if crash_at_flag == "after_http":
-                                    print(
-                                        f"[{DISPATCHER_ID}] [crash_at] Triggering after_http crash for job_id={outbox_row.job_id} outbox_id={outbox_row.id}."
-                                    )
-                                    sys.stdout.flush()
-                                    os._exit(1)
+                        if outbox_row:
+                            dispatched = True
+                            key = outbox_row.effect_key or f"job:{outbox_row.job_id}"
+                            payload_data = {
+                                "idempotency_key": key,
+                                "job_id": outbox_row.job_id,
+                                "body": outbox_row.payload or {},
+                            }
 
-                                outbox_row.dispatched_at = func.now()
-                                outbox_row.attempts = outbox_row.attempts + 1
-                                print(
-                                    f"[{DISPATCHER_ID}] [dispatch] job_id={outbox_row.job_id} outbox_id={outbox_row.id} status=dispatched attempts={outbox_row.attempts}"
-                                )
-                                sys.stdout.flush()
-                            else:
-                                outbox_row.attempts = outbox_row.attempts + 1
-                                print(
-                                    f"[{DISPATCHER_ID}] [dispatch_failed] job_id={outbox_row.job_id} outbox_id={outbox_row.id} status_code={response.status_code} attempts={outbox_row.attempts}"
-                                )
-                                sys.stdout.flush()
-                        except Exception as exc:
-                            outbox_row.attempts = outbox_row.attempts + 1
                             print(
-                                f"[{DISPATCHER_ID}] [dispatch_error] job_id={outbox_row.job_id} outbox_id={outbox_row.id} error={exc} attempts={outbox_row.attempts}"
+                                f"[{DISPATCHER_ID}] Attempting dispatch: job_id={outbox_row.job_id} outbox_id={outbox_row.id} key={key}..."
                             )
                             sys.stdout.flush()
+
+                            try:
+                                response = await client.post(SINK_URL, json=payload_data)
+                                if response.status_code == 200:
+                                    # Check crash hook
+                                    crash_env = os.environ.get("CRASH_AT")
+                                    if crash_env == "none":
+                                        crash_at_flag = None
+                                    else:
+                                        crash_at_flag = crash_env or (outbox_row.payload or {}).get("crash_at")
+                                    if crash_at_flag == "after_http":
+                                        print(
+                                            f"[{DISPATCHER_ID}] [crash_at] Triggering after_http crash for job_id={outbox_row.job_id} outbox_id={outbox_row.id}."
+                                        )
+                                        sys.stdout.flush()
+                                        os._exit(1)
+
+                                    outbox_row.dispatched_at = func.now()
+                                    outbox_row.attempts = outbox_row.attempts + 1
+                                    print(
+                                        f"[{DISPATCHER_ID}] [dispatch] job_id={outbox_row.job_id} outbox_id={outbox_row.id} status=dispatched attempts={outbox_row.attempts}"
+                                    )
+                                    sys.stdout.flush()
+                                else:
+                                    outbox_row.attempts = outbox_row.attempts + 1
+                                    print(
+                                        f"[{DISPATCHER_ID}] [dispatch_failed] job_id={outbox_row.job_id} outbox_id={outbox_row.id} status_code={response.status_code} attempts={outbox_row.attempts}"
+                                    )
+                                    sys.stdout.flush()
+                            except Exception as exc:
+                                outbox_row.attempts = outbox_row.attempts + 1
+                                print(
+                                    f"[{DISPATCHER_ID}] [dispatch_error] job_id={outbox_row.job_id} outbox_id={outbox_row.id} error={exc} attempts={outbox_row.attempts}"
+                                )
+                                sys.stdout.flush()
+            except Exception as exc:
+                print(
+                    f"[{DISPATCHER_ID}] [poll_error] Database operation failed: {type(exc).__name__}: {exc}"
+                )
+                sys.stdout.flush()
 
             if not dispatched:
                 await asyncio.sleep(POLL_INTERVAL_SECONDS)

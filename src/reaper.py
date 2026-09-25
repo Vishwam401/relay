@@ -90,7 +90,12 @@ async def run_reaper() -> None:
         signal.signal(signal.SIGBREAK, request_shutdown)
 
     while not SHUTDOWN_REQUESTED:
-        await reap_stuck_jobs()
+        try:
+            await reap_stuck_jobs()
+        except Exception as exc:
+            print(
+                f"[{REAPER_ID}] [poll_error] Database poll failed: {type(exc).__name__}: {exc}"
+            )
         await asyncio.sleep(POLL_INTERVAL_SECONDS)
 
     print(f"[{REAPER_ID}] Clean shutdown complete. Exiting with code 0.")

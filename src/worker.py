@@ -43,24 +43,29 @@ async def send_heartbeat(
             )
             break
         except asyncio.TimeoutError:
-            async with async_session() as session:
-                async with session.begin():
-                    update_stmt = (
-                        update(Job)
-                        .where(
-                            Job.id == job_id,
-                            Job.status == "running",
-                            Job.claim_generation == generation,
+            try:
+                async with async_session() as session:
+                    async with session.begin():
+                        update_stmt = (
+                            update(Job)
+                            .where(
+                                Job.id == job_id,
+                                Job.status == "running",
+                                Job.claim_generation == generation,
+                            )
+                            .values(claimed_at=func.now())
                         )
-                        .values(claimed_at=func.now())
-                    )
-                    result = await session.execute(update_stmt)
-                    if result.rowcount == 0:
-                        print(
-                            f"[{WORKER_ID}] Heartbeat lost: job_id={job_id} generation {generation} is no longer active"
-                        )
-                        break
-                    print(f"[{WORKER_ID}] Heartbeat sent for job_id={job_id}")
+                        result = await session.execute(update_stmt)
+                        if result.rowcount == 0:
+                            print(
+                                f"[{WORKER_ID}] Heartbeat lost: job_id={job_id} generation {generation} is no longer active"
+                            )
+                            break
+                        print(f"[{WORKER_ID}] Heartbeat sent for job_id={job_id}")
+            except Exception as exc:
+                print(
+                    f"[{WORKER_ID}] [heartbeat_error] Heartbeat update failed for job_id={job_id}: {type(exc).__name__}: {exc}"
+                )
 
 
 async def handle_sleep(payload: dict, job_id: int = 0) -> None:
@@ -284,41 +289,60 @@ async def run_worker() -> None:
                     )
             finally:
                 stop_event.set()
-                await heartbeat_task
-
-        async with async_session() as session:
-            async with session.begin():
-                mark_stmt = (
-                    update(Job)
-                    .where(
-                        Job.id == job_id,
-                        Job.status == "running",
-                        Job.claim_generation == generation,
-                    )
-                    .values(
-                        status=new_status,
-                        next_attempt_at=next_attempt_at,
-                        completed_at=completed_at,
-                        last_error=last_error,
-                    )
-                )
-                mark_result = await session.execute(mark_stmt)
-                if mark_result.rowcount == 0:
-                    check_stmt = select(Job.status, Job.claim_generation).where(Job.id == job_id)
-                    check_res = await session.execute(check_stmt)
-                    check_row = check_res.first()
-                    if check_row and check_row.claim_generation != generation:
-                        print(
-                            f"[{WORKER_ID}] Mark fenced: job_id={job_id} held_generation={generation} current_generation={check_row.claim_generation} rowcount=0"
-                        )
-                    else:
-                        print(
-                            f"[{WORKER_ID}] Conflict on mark: job_id={job_id} status was modified by another transaction (rowcount=0)."
-                        )
-                else:
+                try:
+                    await heartbeat_task
+                except Exception as exc:
                     print(
-                        f"[{WORKER_ID}] [mark] Marked job {job_id} as '{new_status}' (job_id={job_id}, rowcount={mark_result.rowcount})."
+                        f"[{WORKER_ID}] [heartbeat_join_error] Heartbeat task ended with error: {type(exc).__name__}: {exc}"
                     )
+
+        mark_deadline = asyncio.get_event_loop().time() + 10.0
+        while True:
+            try:
+                async with async_session() as session:
+                    async with session.begin():
+                        mark_stmt = (
+                            update(Job)
+                            .where(
+                                Job.id == job_id,
+                                Job.status == "running",
+                                Job.claim_generation == generation,
+                            )
+                            .values(
+                                status=new_status,
+                                next_attempt_at=next_attempt_at,
+                                completed_at=completed_at,
+                                last_error=last_error,
+                            )
+                        )
+                        mark_result = await session.execute(mark_stmt)
+                        if mark_result.rowcount == 0:
+                            check_stmt = select(Job.status, Job.claim_generation).where(Job.id == job_id)
+                            check_res = await session.execute(check_stmt)
+                            check_row = check_res.first()
+                            if check_row and check_row.claim_generation != generation:
+                                print(
+                                    f"[{WORKER_ID}] Mark fenced: job_id={job_id} held_generation={generation} current_generation={check_row.claim_generation} rowcount=0"
+                                )
+                            else:
+                                print(
+                                    f"[{WORKER_ID}] Conflict on mark: job_id={job_id} status was modified by another transaction (rowcount=0)."
+                                )
+                        else:
+                            print(
+                                f"[{WORKER_ID}] [mark] Marked job {job_id} as '{new_status}' (job_id={job_id}, rowcount={mark_result.rowcount})."
+                            )
+                break
+            except Exception as exc:
+                print(
+                    f"[{WORKER_ID}] [mark_error] Database mark failed for job_id={job_id}: {type(exc).__name__}: {exc}"
+                )
+                if asyncio.get_event_loop().time() >= mark_deadline:
+                    print(
+                        f"[{WORKER_ID}] [mark_abandoned] Mark retry deadline reached for job_id={job_id}. Abandoning mark for reaper reclaim."
+                    )
+                    break
+                await asyncio.sleep(1.0)
 
     print(f"[{WORKER_ID}] Clean shutdown complete. Exiting with code 0.")
     sys.exit(0)

@@ -2029,3 +2029,270 @@ that the destroying agent was the measurement script itself.
 
 **Owner:** Week 5 Din 3, and this entry widens that day's Step 3 from *"which log lines get committed"* to
 *"every probe writes a transcript, and no probe truncates a prior one."* `D-32` should carry both.
+
+---
+
+## P-51 — A database fault inside `record_execution` is misclassified as a **job** failure: it burns every attempt and dead-letters a healthy job, with a SQLAlchemy traceback stored as the job's reason
+
+**Status: MEASURED-R on Week 5 Din 2 (`2026-09-25`).** Din 2 put boundaries on three worker DB touchpoints —
+claim poll, heartbeat, terminal mark. **There is a fourth, and it is worse than unguarded: it is guarded by the
+wrong handler.** Din 1's own *"Next thought"* named the path (`record_execution` → handler → heartbeat → mark)
+and Din 2 guarded three of its four segments.
+
+**The mechanism is one indentation level.** In `src/worker.py`'s `run_worker()`:
+
+```
+try:
+    await record_execution(job_id, WORKER_ID, claim_generation=generation)   # <-- DB write
+    await handler(payload, job_id)
+except Exception as exc:
+    last_error = traceback.format_exc()
+    if current_attempts < MAX_ATTEMPTS:  ... new_status = "pending" + backoff
+    else:                                ... new_status = "dead_letter"
+```
+
+`record_execution` opens its own `async_session()` and `INSERT`s into `job_executions`. It sits **inside** the
+`try` whose `except Exception` exists to classify *handler* failures. So any infrastructure fault on that
+statement is routed into the retry/DLQ state machine as though the job's own code had raised.
+
+**Measured, deterministically, single variable.** Disposable database `relay_w5d2r`, one healthy
+`type='sleep'` job (`payload {"seconds": 1.0}`, `attempts = 0`), `job_executions` renamed away so the insert
+fails on every attempt. No outage, no timing race — the fault is permanent and the classification is the only
+thing under test:
+
+| Observation | Value |
+|---|---|
+| Worker's own verdict, three times | `failed attempt 1/3` → `failed attempt 2/3` → `reached max_attempts (3)` |
+| Final row | `dead_letter` · `attempts = 3` · `claim_generation = 3` |
+| `last_error` | `sqlalchemy…ProgrammingError` / `asyncpg…UndefinedTableError: relation "job_executions" does not exist` traceback |
+| `side_effects` · `outbox` | `0` · `0` — **the handler never ran, not once** |
+| Wall time to DLQ | `~10 s` (equal-jitter backoff on `BASE_BACKOFF_SECONDS = 5.0`) |
+
+**Three separate contract consequences, and they are not the same defect.**
+
+1. **A healthy job reaches the DLQ because of an infrastructure fault.** Relay's bounded-retry promise is that
+   `MAX_ATTEMPTS` bounds *job* failures. Here the bound was consumed by the audit-table write. This is
+   `D-26`'s `Cost 6` reached by a second, cheaper route: `Cost 6` needs **two** outages to dead-letter a healthy
+   job, and this path needs **one** fault that outlives `~10 s`.
+2. **`last_error` misrepresents the cause.** `D-28`'s DLQ triage and `P-30`'s *"the only worker that saw the
+   exception leaves no reason"* both assume `last_error` describes the job. Here it describes Postgres. A DLQ
+   row whose stated reason belongs to a different layer is worse than an empty one, because it reads as
+   diagnosed.
+3. **The audit trail is missing for exactly the jobs that need it.** `job_executions` is the table that records
+   attempts, and it is the table whose unavailability caused the DLQ. So the only surviving record that this job
+   was ever touched is `jobs.last_error` plus the worker's stdout — and `logs/` is gitignored (`P-45`, `P-47`).
+
+**Same `try`, same misclassification, one more carrier `[INFERRED — not separately measured]`:**
+`handle_effect` opens its own `async_session()` for the `side_effects` + `outbox` co-commit, and that block is
+inside the same `try`. A fault there is attributed to the job by the identical path. The measured case above
+used `record_execution` because it is unconditional and runs first.
+
+**What today's three boundaries do and do not do here.** They are correctly placed for what they were for: the
+process now survives an outage on poll, heartbeat and mark. **None of them touch this path**, and the reason is
+structural rather than an oversight — this statement already sits inside an `except Exception`, so it never
+crashed the process and never appeared in a death frame. **It was invisible to the method that found the other
+three**, which were all found by reading tracebacks.
+
+**Not fixed today, and the fix is a decision rather than an edit.** Three shapes, each with a real cost, and
+none of them is free:
+
+| Option | Cost |
+|---|---|
+| Move `record_execution` **outside** the handler's `try`, into its own guarded block | Then what? Skipping the audit row and running the handler anyway loses the execution record. Skipping the job means a claimed job with no terminal state — the reaper's problem, and `attempts` is already spent |
+| Keep it inside, but re-raise infrastructure classes so they do not reach the retry arm | Needs a classification predicate, and Din 1 measured that a Postgres outage raises **four** classes across two unrelated trees (`OSError` and `DBAPIError`). `D-30` rejected class-narrow matching on exactly this evidence |
+| Distinguish `attempts` (job failures) from a new infrastructure-fault counter | Schema change, and this week's `alembic heads` gate forbids a migration |
+
+**Owner: Week 5 Din 3 for the decision** (`D-30` is still `OPEN` and this belongs to its boundary-scope
+argument), **not for the code.** What must not happen is this entry being read as *"boundaries lag gayi"* — the
+boundaries narrowed the process-death surface and **did not** close the misattribution surface.
+
+---
+
+## P-52 — Step 5's two outcome numbers were written into the harness log as text rather than measured, and the arm that decided `D-31` was never run against a stopped database
+
+**Status: MEASURED-R on Week 5 Din 2 (`2026-09-25`).** `P-45`'s fifth recurrence, and a new shape: the previous
+four lost numbers that had been observed. **This one printed numbers that were never observed at all**, into a
+file whose other half is a real measurement.
+
+**What `logs/w5d2_step5_preping.log` contains.** The checkout-latency table is a genuine benchmark
+(`n = 100` per arm, two engines, real timings). The section headed
+`=== OUTCOME ANALYSIS (poll_failures on ~25s DB Outage) ===` is not. It is three `print` statements:
+
+| Line in the log | What it actually is |
+|---|---|
+| `pre_ping = False: poll_failures = 5 [MEASURED Day 1: 26.373s outage / (2.0s poll + 3.3s connect_err)]` | **Din 1's number, re-printed.** Correctly attributed to Din 1, and not a Din 2 measurement |
+| `pre_ping = True : poll_failures = 5 (Identical! Pre-ping ping also fails on dead DB -> same connect error)` | **Never run.** No outage was injected in this step. The value and its explanation are the script author's prediction, formatted as output |
+| `Does pre_ping prevent mark/heartbeat crash? NO.` | A correct derivation, also not a measurement |
+
+**Why this is the `P-45` family and not a cosmetic complaint.** The day's `D-31` rests on *"the benefit is zero
+and the cost is `+3 ms`"*. The cost half was measured. **The benefit half — the only half that could have
+reversed Week 4's rejection — was asserted by the script that was supposed to test it.** And the Din 2 KEY had
+named this exact trap in advance: `poll_failures` being equal in both arms *"proves nothing on its own; the
+error **class** is what separates `flag set` from `flag effective`"*, citing `P-45`'s `pool_size=2` case where a
+setting was configured and never observed. The error class was not captured either.
+
+**The reviewer ran the missing arm, so `D-31` is not left standing on a `print`.** Real outage, `echo=False`,
+`POLL_INTERVAL = 2.0 s`, outage `25 s`, both arms on the same disposable database, one variable:
+
+| | `pool_pre_ping=False` | `pool_pre_ping=True` |
+|---|---|---|
+| `poll_failures` during outage | `5` | `5` |
+| **first error class** | `DBAPIError` | `ConnectionError` |
+| failed polls after `docker compose start` | `1` | `1` |
+| recovery error classes | `ConnectionError` | `CannotConnectNowError` |
+| first success after start | `2.191 s` | `2.156 s` |
+
+**The conclusion held and the evidence now exists.** `poll_failures` is genuinely `5` in both arms
+`[MEASURED-R]`, so the assertion was right. **Two things the run added that the assertion could not:** the flag
+*is* effective — it moves the first failure off the stale handle and onto the connect path, which is the
+differential the KEY asked for — and `pre_ping`'s single theoretical benefit, *"one saved poll when the server is
+back and the pooled handle is dead"*, **did not materialise**: failed polls after recovery were `1` in **both**
+arms. Din 1 had already retired that term for the worker; this measures it retired for `pre_ping` too.
+
+**Two smaller instrument defects in the same file, worth fixing because they will recur:**
+
+- **`p99` equals `max` in both arms** (`0.2892`/`0.2892` and `4.5898`/`4.5898`). With `n = 100` the percentile
+  index is returning the last element of the sorted sample, so the reported `p99` **is** the maximum. Any
+  `p99` from this harness should currently be read as `max`.
+- **The `pre_ping` arm is high-variance and one run understates the tail.** Reviewer re-run at `n = 200` with
+  nearest-rank percentiles: `p50 4.8446 ms`, **`p99 33.7458 ms`, `max 42.3867 ms`** with `echo=False`. Across
+  the user's run and the reviewer's, the honest `p50` cost is a **range**, `+2.70 ms` to `+4.75 ms`, not a point.
+
+**And the `echo` question the KEY required to be answered was not answered.** `src/database.py` has
+`echo=True` hardcoded; the log does not state which setting the benchmark used. Reviewer isolated it as a
+fourth arm: the delta was `+3.51 ms` p50 with `echo=True` and `+4.75 ms` with `echo=False`. **`echo` is not the
+dominant confound — run-to-run variance is**, which is the opposite of what the KEY's trap #9 implied and is
+recorded here so trap #9 is not carried forward unchanged.
+
+---
+
+## P-53 — The fault-injection moment was never recorded in any file, so three of Din 2's timelines are mis-dated in the report, and the supervisor's log cannot be joined to its children's logs by PID
+
+**Status: MEASURED-R on Week 5 Din 2 (`2026-09-25`).** Two instrument gaps with one consequence: today's
+numbers are individually sound and their **provenance chain is broken in two places.** This is `P-50`'s rule
+(*"no wall clock may live only in `Write-Host`"*) applied to the one clock `P-50` did not name — the moment the
+fault was injected.
+
+### (a) `docker compose stop db` was never timestamped, and the reported `t = 3 s` is refuted by the logs
+
+Din 2's report describes Step 1 and Step 2B identically: *"25s job, DB stopped at 3s"*. **The logs contradict
+it**, and the contradiction is visible without any new run:
+
+| Step 1 evidence, from the retained `echo=True` timestamps | |
+|---|---|
+| claim / `job_executions` COMMIT | `11:31:36.296` |
+| `side_effects` + `outbox` COMMIT | `11:31:36.313` |
+| **heartbeat 1 — `UPDATE claimed_at`, `Heartbeat sent`, COMMIT** | **`11:31:46.305`–`.312` — succeeded** |
+| heartbeat 2 — `UPDATE` issued, then `InterfaceError: connection is closed` | `11:31:56.332` |
+
+A heartbeat that **commits** at `t ≈ 10 s` proves Postgres was accepting writes at `t ≈ 10 s`. Reviewer measured
+the shutdown to close that gap: `docker compose stop db` **returned in `0.837 s` and `1.115 s`** across two runs,
+and the first connection failure came `0.003 s` / `0.011 s` after it returned `[MEASURED-R]`. So a stop issued at
+`t = 3 s` would have killed heartbeat 1. **The stop actually landed between `t ≈ 10 s` and `t ≈ 20 s`**, and the
+same reasoning applies to Step 2B, whose log also shows one `Heartbeat sent` before the first `[heartbeat_error]`.
+
+**The number this changes is `claimed_at`, and it is the one the day scored itself full marks on.** Measured
+`claimed_at = 2026-09-25 06:01:46.307358+00` — which is heartbeat 1's commit, not the claim. The lease was
+anchored on the **last successful heartbeat**, exactly as the KEY's mechanism section says and opposite to what
+the KEY's own headline answer predicted.
+
+**Consequence for `fault_to_reclaim`.** The BRIEF defines it two different ways — Part A says *"from the job's
+`claimed_at`"*, the terms table says *"from the moment of the fault"* — and they are not the same quantity once
+a heartbeat has moved `claimed_at`. Din 2 used the Part A definition and got `35.191 s`
+(`claimed_at 06:38:05.013400` → reclaim `DB_TIME 06:38:40.204159`), decomposing as `30 s` lease `+ 5.19 s` of
+reaper-restart and poll latency. **The arithmetic is correct and the label overstates it:** the number measures
+*lease-anchor to reclaim*, and *fault to reclaim* is not derivable because the fault has no recorded timestamp.
+**What the C3 gate needed — that the quantity is finite rather than unbounded — is satisfied either way**, and
+that is the real result. `[UNRESOLVED]`: job `141`'s signature in the Step 4 log (`generation=2` with
+`attempt=1`) is consistent with a hand-inserted stale row rather than a job any worker had claimed, which would
+mean no process ever faulted in that run. The disposable database was dropped, so this cannot now be settled.
+
+### (b) The supervisor logs the venv launcher's PID, not the worker's
+
+`logs/w5d2_step4_supervisor.log` records six child PIDs (`12540`, `4368`, `18424`, `4964`, `18560`, `14540`).
+The children's own logs record six (`4280`, `16368`, `15872`, `18648`, `18132`, `1704`). **Zero overlap**, from a
+single `Supervisor starting` line — so this is one run whose two halves cannot be joined
+`[MEASURED-R]`. Start times and counts align pairwise, so the correlation is by **timing only**.
+
+**Cause, isolated:** `.venv\Scripts\python.exe` on Windows is a launcher stub that runs the real interpreter as a
+separate process. `subprocess.Popen(...).pid` is the stub's; `os.getpid()` inside the worker is the
+interpreter's. Reviewer measured `Popen.pid = 9432` against the child's `os.getpid() = 3256` `[MEASURED-R]`.
+
+**What this does *not* break, measured rather than assumed.** The reviewer predicted that `terminate()` on the
+stub would orphan the real interpreter, and **that prediction was wrong**: the child died with the stub, and
+`poll()` returned the child's own exit code `7` after `3.26 s` for a `3.0 s` child. **So the supervisor's
+`uptime`, exit codes and `restarts` are sound** — `restarts = 4` and the `2.04 s` / `4.03 s` / `5.04 s` /
+`6.04 s` uptimes are real. Only the identifier is wrong, and the fix is one line: log the child's first stdout
+line instead of, or alongside, `Popen.pid`.
+
+### (c) `restart_to_first_claim`'s start clock is still console-only, which is `P-50` unfixed
+
+The reported `2.790 s` runs from `12:08:31.188` to a claim at `12:08:33.978`. The supervisor's own first log
+line is `12:08:32.181` (`06:38:32.181597+00`). **`12:08:31.188` is in no file** — it is the pre-`python` launch
+moment, and the BRIEF's C4 specifically required *"supervisor launch ka wall clock, **aur wo kis file me likha
+hai**"*. The `~0.99 s` between the two is exactly the interpreter-start + `src.database`-import term the Din 2
+KEY asked to be separated from the poll term, so the decomposition is worth having — **and it currently rests on
+a number that survived only in the terminal.** `P-50`'s rule was written on Din 1 and Din 2 is its first
+violation.
+
+### (d) The crash-loop run the C3 gate required is not in the artifact
+
+`C3`'s third observation — *"DB ko jaan-boojh ke `30 s` down rakho, dekho `restarts` bounded hai"* — needs a
+`~30 s` window. `logs/w5d2_step4_supervisor.log` spans `06:38:32.181` → `06:38:44.290`, **`12.1 s` total**, and
+ends on a `Started reaper` line. **So the bounded-restart observation is `[NOT SATISFIED BY EVIDENCE]`**, and
+the BRIEF said skipping that run *"makes the gate decorative"*.
+
+**And the backoff is not the shape the report describes.** Reported as *"1s → 2s → 4s → max 5s"*. `scripts/supervisor.py`
+actually computes `if uptime < 5.0: backoff = min(backoff * 2.0, 5.0) else: backoff = 1.0` — **uptime-gated with a
+reset**, not a monotonic ramp. The log shows `2.00 s` then **`1.00 s`**, i.e. it went *down*, which the report
+records correctly as observed values while describing the design incorrectly. **The live consequence:** any
+process that survives `≥ 5 s` and then dies resets the backoff to `1.0 s` permanently, so a slow crash-loop
+settles at roughly one restart per `6 s` **with no escalation at all**. The `os._exit` poison pill is exactly
+such a process — it died at `2.04 s` once and the later kills came after `5 s`. **A backoff that resets on a
+threshold the failing process crosses is not a bound**, and pricing it needs the `30 s` run above.
+
+---
+
+## P-47 — amendment (Week 5 Din 2): `docs/logs/` is ignored too, so **Month 1's weekly logs are in the repository and Month 2's are not** — and the asymmetry is invisible
+
+**Status: MEASURED-R on Week 5 Din 2 (`2026-09-25`).** `P-47` named five ignored `docs/` subtrees — `daily/`,
+`roadmap/`, `planning/`, `ddia_summaries/`, `design/`. **It missed a sixth, and this one holds the day's primary
+deliverable.**
+
+`.gitignore` line `39` is `logs/`, written for the runtime artifacts in the repo root. The pattern has **no
+leading slash**, so it matches a directory named `logs` at *any* depth — including `docs/logs/`:
+
+```
+git check-ignore -v docs/logs/WEEK_05.md
+  .gitignore:39:logs/    docs/logs/WEEK_05.md
+```
+
+**The asymmetry, and it is the part that makes this dangerous:**
+
+| Path | `git ls-files` | Why |
+|---|---|---|
+| `docs/month_01/logs/WEEK_00..04.md` | **`5` files, tracked** | Already tracked before the archive move; **git does not untrack a file when a pattern starts matching it** |
+| `docs/logs/WEEK_05.md` | **`0` files, ignored** | New path, created after the pattern existed |
+
+So `git ls-files docs/` returns **eleven** files, five of which are Month 1 weekly logs — which makes the
+tracking of weekly logs look like the established convention. **Month 2's weekly log is the first one that is
+not in any commit, and nothing surfaces that.** A reader checking *"are the logs committed?"* sees five weekly
+logs and concludes yes.
+
+**Why this is worse than the five subtrees `P-47` already names.** Those are genuinely contested — `docs/daily/`
+holds sealed KEY files that must **not** be published, which is the whole reason `P-47` calls it a
+classification problem rather than a typo. **`docs/logs/WEEK_05.md` is not contested at all.** It is the same
+kind of artifact as the five Month 1 logs that *are* committed, it is the record every day's work is written
+into, and it is excluded by a pattern that was aimed at `*.log` runtime output. **There is no argument for
+ignoring it; it is collateral from an unanchored glob.**
+
+**The cheapest fix, and it is a one-character change plus a force-add:** anchor the runtime pattern to the repo
+root (`/logs/` instead of `logs/`), which stops it reaching `docs/logs/` while still ignoring the root
+directory. `scripts/` (line `74`) has the identical defect and the identical fix — Din 2's measurement
+instrument, `scripts/supervisor.py`, is in no commit for the same reason.
+
+**Owner: Din 3, inside `D-32`.** That decision's scope is now four things rather than two: `logs/` retention,
+harness console transcripts (`P-50`), `scripts/` (Din 2), **and this** — the distinction between *runtime output
+that should be ignored* and *documents that live in a directory that happens to be called `logs`*. **Not fixed
+today:** `.gitignore` decides what becomes public, and that is the user's call, which is the same reason `P-47`
+was left open at Month 1 close.
