@@ -2296,3 +2296,289 @@ harness console transcripts (`P-50`), `scripts/` (Din 2), **and this** — the d
 that should be ignored* and *documents that live in a directory that happens to be called `logs`*. **Not fixed
 today:** `.gitignore` decides what becomes public, and that is the user's call, which is the same reason `P-47`
 was left open at Month 1 close.
+
+---
+
+## P-54 — The classification rule was written against a census covering **four of nine** artifact classes, so twenty files in the five unenumerated classes became publishable by default — and the day's own `C1` check was structurally unable to see them
+
+**Status: MEASURED on Week 5 Din 3 (`2026-09-26`), by the reviewer, on the live repository after the user's
+`.gitignore` was in place.**
+
+Din 3's Step 1 census counted four artifact classes on disk under `docs/`:
+
+```
+BRIEF = 26   KEY = 26   PREDICTIONS_FROZEN = 13   HANDOFF = 6      (total 71)
+disk files under docs/ = 133
+```
+
+**`71` of `133`. The remaining `62` were never classified**, and `D-32`'s policy table has a row for each of the
+four counted classes and no row for anything else. The rule's shape — `**/daily/**/*KEY*.md` ignored, everything
+else under `docs/daily/` tracked — makes *"not enumerated"* mean *"published"*.
+
+**Re-census, all `.md` files under `docs/`, by class `[MEASURED 2026-09-26]`:**
+
+| Class | Count | In `D-32`'s table? | Publishes under the rule as written |
+|---|---|---|---|
+| `KEY` | `26` | yes — `Local` | no ✅ |
+| `BRIEF` | `26` | yes — `Public` | yes ✅ |
+| `PREDICTIONS_FROZEN` | `13` | yes — `Public` | yes ✅ |
+| `HANDOFF` | `6` | yes — `Public` | yes ✅ |
+| **`ANSWERS`** | **`13`** | **no** | **yes** |
+| **`DESIGN`** | **`5`** | **no** | **yes** |
+| **`PROBLEM`** | **`1`** | **no** | **yes** |
+| **`PROPERTY`** | **`1`** | **no** | **yes** |
+| `UNCLASSIFIED` (roadmap, blog, career, dsa, ddia, top-level) | `40` | partly, by directory | mostly no, via directory rules |
+
+**Twenty files in four named classes crossed from local to public without a decision.** The staging list
+confirms every one of them:
+
+```
+git add -A --dry-run   →  69 paths, including
+  docs/month_01/daily/week_03/DIN_01_ANSWERS.md … DIN_06_ANSWERS.md
+  docs/month_01/daily/week_04/DIN_01_ANSWERS.md … DIN_06_ANSWERS.md
+  docs/month_01/daily/week_04/DIN_01_DESIGN.md  … DIN_05_DESIGN.md
+  docs/month_01/daily/week_03/DIN_01_PROBLEM.md
+  docs/month_01/daily/week_03/DIN_05_PROPERTY.md
+```
+
+**Why `C1` could not catch this, and this is the reusable part.** `C1`'s three rows ask: does
+`check-ignore` blame a line for a KEY · does `DIN_03_BRIEF.md` appear in the dry-run · does any `*KEY*` appear.
+**All three pass.** The check was built to separate *"the negation died silently"* from *"everything got
+tracked, KEY included"*, and it does that correctly. It asks nothing about **classes it does not name**, so a
+rule with an incomplete allow-list reads as a clean pass. **`C1` is a differential on two failure modes and a
+blind spot on the third** — the same structural shape as Din 2's `413` gate, one level up: the check is not
+decorative, its *domain* is too small.
+
+**What `ANSWERS` actually contains, because the severity depends on it `[MEASURED 2026-09-26]`.** These are the
+user's own prediction cards, and each question carries three blocks: `### Prediction`, `### Observed + meri
+explanation`, and **`### After KEY`**. By end of day the third block holds the substance of that day's sealed
+KEY in the user's paraphrase. So:
+
+- **This is not a KEY leak.** `git ls-files -- "*_KEY.md"` → `0`; `git ls-tree -r HEAD | Select-String
+  -CaseSensitive "_KEY\.md"` → `0`; positive control `git ls-files -- "*.pyc"` → `1`. **The seal on `KEY` files
+  holds, in the index and in the commit tree.**
+- **It is a seal *derivative* going public undecided.** Thirteen `ANSWERS` files carry Week 2–4 outcomes.
+  Whether that is fine is genuinely the user's call — the defect is that **the call was never made**, and
+  `Q3(b)` already priced why that direction is the expensive one: `git rm --cached` removes a path from `HEAD`
+  and leaves the blob readable in the commit that added it.
+
+**The KEY named this cost in advance and the draft did not answer it.** `DIN_03_KEY.md`, Q2, Arm 3: *"iska matlab
+koi bhi naya file type `docs/daily/` me by default public ho jaayega"*, naming `DIN_05_ANSWERS.md` specifically,
+and *"usko dekhe bina choose karna hi wo galti hai jo Month 1 archive move me hui thi"*. **Arm 3 was chosen and
+its named cost was not addressed** — which is the one failure mode the KEY flagged by name.
+
+**Two pattern holes found by probing the rule rather than reading it `[MEASURED 2026-09-26]`:**
+
+| Probe path | Result | Mechanism |
+|---|---|---|
+| `docs/daily/week_05/DIN_04_KEY.md` | ignored | `**/daily/**/*KEY*.md` |
+| `docs/daily/DIN_04_KEY.md` (no week folder) | ignored | `**/` matches zero directories too |
+| `docs/month_01/daily/week_01/DIN_03_KEY.md` | ignored | depth-independent, as intended |
+| `docs/daily/week_06/KEY_DIN_01.md` | ignored | `*KEY*` is position-independent |
+| **`docs/daily/week_05/DIN_04_KEY.txt`** | **publishes** | pattern is `.md`-bound. A KEY saved as `.txt`, `.markdown`, or with no extension is outside the seal |
+| **`docs/daily/week_05/DIN_04_SEALED.md`** | **publishes** | the seal keys on the literal token `KEY`, not on the artifact's role |
+
+**And one portability caveat that is not a defect today but will be on any Linux clone or CI runner.**
+`docs/daily/week_05/DIN_04_key.md` is reported ignored here, and the reason is `core.ignorecase = true` on this
+Windows checkout, **not the pattern** — `*KEY*` is case-sensitive in `gitignore(5)`. A lowercase-named KEY would
+publish on a case-sensitive filesystem. `[MEASURED 2026-09-26]` for the local result; `[INFERRED]` for the
+Linux behaviour, which has not been run here.
+
+### The same census gap in the other direction: **`47` broken links** in the surface that just became public
+
+The rule decided four classes *in* and said nothing about `docs/planning/` or `docs/roadmap/`, both of which
+stay ignored (`.gitignore:46:**/planning/`, `.gitignore:50:docs/roadmap/`). **So the files that just became
+public link to files that did not.** Every `.md` in the would-be-public set was resolved link by link
+`[MEASURED 2026-09-26]`:
+
+| Class | Count | Verdict |
+|---|---|---|
+| link → `docs/**/planning/*.md` | **`46`**, across **`30`** distinct source files | **unintended** — broken in a clone |
+| link → `docs/roadmap/CURRENT_WEEK.md` | **`1`** | **unintended** |
+| link → `docs/**/*_KEY.md` | `21` | **by design** — a public `BRIEF` pointing at a sealed `KEY` is the seal working |
+| `docs/LEARNING_LOG.md` → `docs/ddia_summaries/DDIA_CH8_LINKS.md` | `1` | **pre-existing**, not from Din 3 — `LEARNING_LOG.md` is already tracked and `**/ddia_summaries/` is already ignored |
+| **total dangling** | **`69`** | `47` unintended, `21` intentional, `1` pre-existing |
+
+**And the sharpest single instance: `P-47`'s own text names `CURRENT_WEEK.md` by filename** as one of the
+artifacts existing on one machine — *"the frozen prediction seals, every BRIEF/KEY, all four handoffs, and
+`CURRENT_WEEK.md`"*. **`D-32` has no row for `docs/roadmap/`, so the one file `P-47` named explicitly is the one
+`D-32` did not restore.** `git ls-files -- docs/roadmap/` → `0`. Every day's plan link
+(`../planning/WEEK_05.md`, in `docs/logs/WEEK_05.md`'s footer and in every BRIEF) resolves on the user's disk
+and 404s for anyone else.
+
+**Why this belongs on this card and not a new one:** identical root cause. A census that covered four classes
+produced a rule that is silent about the rest, and silence resolves to the container's default — *publish* for
+`docs/daily/`'s contents, *ignore* for `planning/` and `roadmap/`. **Two opposite defaults, one missing
+enumeration**, and neither was chosen. `P-47` is the cross-reference for the second half.
+
+**Owner: Din 6, inside `D-32`'s final text.** Five things have to be decided, not five patterns written:
+`ANSWERS` · `DESIGN`/`PROBLEM`/`PROPERTY` · `docs/planning/` and `docs/roadmap/` (publish, or accept `47`
+broken links and say so) · and whether the rule stays an **allow-list of ignores**
+(default publish) or becomes an **allow-list of publishes** (default ignore). The second shape is the one that
+survives a class being invented on Din 7 and nobody remembering to classify it. **Not fixed on Din 3** — the
+day's `C5` gate was `src/`-only and nothing here needs code, but `D-32` is explicitly `DRAFT` until this is
+answered.
+
+---
+
+## P-47 — amendment (Week 5 Din 3): closed in the reported direction for four classes, and the surface it opened is `P-54`; one of the seven ignore-matched tracked files was never a defect and the `.pyc` is untouched
+
+**Status: MEASURED on Week 5 Din 3 (`2026-09-26`), reviewer's independent run.**
+
+**What actually changed, three lines of `.gitignore` `[MEASURED 2026-09-26]`:**
+
+| Line | Before | After | Effect |
+|---|---|---|---|
+| `39` | `logs/` | `/logs/` | anchored. `docs/logs/WEEK_05.md` and `docs/month_01/logs/WEEK_0*.md` stop being pattern-matched. Root `logs/` still ignored, and `*.log` (line `38`) still covers runtime output at any depth |
+| `47` | `**/daily/` | `**/daily/**/*KEY*.md` | directory-level ignore replaced by a file-level one. The negation shape was **not** used, which is why it works — `Q2` |
+| `72` | `scripts/` | *removed* | `scripts/supervisor.py` and `scripts/generate_plan_diff_image.py` become trackable |
+
+**The intersection went `7` → `2`, and the composition of the `7` matters more than the count
+`[MEASURED 2026-09-26]`:**
+
+```
+git ls-files | git check-ignore --no-index --stdin -v
+  .gitignore:10:!.env.example    .env.example
+  .gitignore:19:__pycache__/     labs/__pycache__/day1_async.cpython-313.pyc
+```
+
+- **`.env.example` was never ignored.** Line `10` is a negation, and `check-ignore -v` reports the **deciding**
+  line, not the ignored status. It appeared in the `7` and in the `2` and is correct in both. **The honest count
+  of ignore-matched tracked files was `6` before and is `1` now**, and the Din 3 report's *"`7` files"* carried
+  the tool's noise into the finding.
+- **The five `docs/month_01/logs/WEEK_0*.md` left the set** because the anchor stopped matching them, not
+  because anything about them changed. They were tracked before and are tracked now.
+- **`labs/__pycache__/day1_async.cpython-313.pyc` is unchanged** — still in the index, still matched by lines
+  `19` and `20`, still the one genuine defect in the set, `git ls-files -- "*.pyc"` → `1`. **Five weeks of
+  `.gitignore` editing has not removed it, and Din 3 did not either.** That is correct for Din 3: the BRIEF's
+  Part D put history rewriting out of scope, and `Q3(b)` measured that `rm --cached` leaves the blob in
+  `01f42c6`. **Owner: Din 6** — and the decision is *"remove from `HEAD` and accept the blob stays in history"*
+  versus *"leave it"*, not *"clean it"*.
+
+**What is now publishable and was not, `git add -A --dry-run` → `69` paths `[MEASURED 2026-09-26]`:**
+`docs/logs/WEEK_05.md` · `scripts/supervisor.py` · `scripts/generate_plan_diff_image.py` · `docs/daily/GEMINI_RULES.md` ·
+three Week 5 `BRIEF`s · three Week 5 `PREDICTIONS_FROZEN` · four `HANDOFF`s · nineteen Month 1 `BRIEF`s ·
+four Month 1 `PREDICTIONS_FROZEN` · **and the twenty unclassified-class files in `P-54`.**
+
+**The direction `P-47` asked for is achieved and the reason it was open is not resolved.** `P-47`'s sentence was
+*"this is a classification problem, not a typo"*. The typo half — two unanchored globs — is fixed and measured.
+The classification half is answered for four classes out of nine. **`P-47` moves from `OPEN` to `NARROWED`;
+`P-54` carries the remainder.** It is not closed, and writing it as closed would be the error `D-32` exists to
+prevent.
+
+---
+
+## P-50 — amendment (Week 5 Din 3): the retention rule is written and its verification passed against a **different script** than the one `P-50` blames; the fixed bench's run id is second-granular and collides
+
+**Status: MEASURED on Week 5 Din 3 (`2026-09-26`).**
+
+**What was fixed, and all three verify by reading the files `[MEASURED 2026-09-26]`:**
+
+1. `scratch/step5_preping_bench.py` line `14`: `RUN_ID = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")`,
+   line `15`: `LOG_FILE = f"logs/w5d2_step5_preping_{RUN_ID}.log"`. **Run id is in the filename.**
+2. No `os.remove` / `Remove-Item` call remains in that script — `0` matches. **The mechanism `P-50` blames is
+   gone from this harness.**
+3. `p99` is nearest-rank: lines `52`–`53`, `sorted(...)[max(0, math.ceil(0.99 * n) - 1)]`, with the definition
+   written as a comment on line `51`. **`P-52`'s indexing artifact is fixed, not relabelled.**
+
+**And here is the part the check could not see.** `C3`'s first row was *"run a probe twice, count log files —
+`2` means the mechanism is present, `1` means it is absent"*. It returned `2`:
+
+```
+logs/probe_retention_check_20260926_060240_497333.log
+logs/probe_retention_check_20260926_060241_151904.log
+```
+
+**Those files were written by `scratch/test_probe_retention.py`, a nine-line script created for the check**, and
+its run id is `strftime("%Y%m%d_%H%M%S_%f")` — **microseconds**. The script that carries the fix,
+`step5_preping_bench.py`, uses `"%Y%m%d_%H%M%S"` — **seconds**. Measured directly:
+
+```
+bench_runid_a = 20260926_063806
+bench_runid_b = 20260926_063806
+collide       = True
+```
+
+`[MEASURED 2026-09-26]`. **Two bench runs starting inside the same second produce the same filename and the
+second overwrites the first — which is `P-50`'s exact mechanism, surviving inside the script `P-50` names.** In
+practice the bench takes seconds to run against a database, so a real collision needs two starts in the same
+wall-clock second; the probability is low and **it is not zero, and the pattern is what gets copied into the
+next harness.**
+
+**So `C3` row 1 verified the *rule* and not the *implementation of the rule in the script that matters*.** The
+check was satisfiable by a purpose-built script that already had the property. **A check that can be passed by
+introducing a new file rather than fixing the named one is a check on the wrong subject** — a new member of the
+same family as Din 2's `413` gate and Din 3's `C1` blind spot (`P-54`).
+
+**The fix is one character — `_%f` — and it belongs to whoever next touches a harness. `P-50` stays open,
+narrowed:** the rule now exists in writing (`D-32`'s transcript section) and one of two named scripts implements
+it collision-safely. **Console-only measurement is not eliminated** — `restart_to_first_claim`'s start clock is
+still console-only, which was already this card's section (c).
+
+---
+
+## P-51 — amendment (Week 5 Din 3): the decision is taken and the shape chosen is control-flow, not schema; **no code changed, so every measured number on this card still stands exactly as measured**
+
+**Status: DECIDED on Week 5 Din 3 (`2026-09-26`). NOT IMPLEMENTED.**
+
+**Chosen shape: move `await record_execution(...)` out of the handler's `try` block.** If the instrument write
+fails, the worker abandons the iteration **without incrementing `attempts`** and leaves the row claimed; the
+reaper reclaims it after the lease expires (`30 s`, `D-22`). No schema change, so this week's `alembic heads`
+gate is not touched.
+
+**Rejected: Option C, splitting the counter into `job_attempts` and `infra_attempts`.** Named as the
+mathematically correct shape — it is the only one that makes `MAX_ATTEMPTS` mean *"the job failed three times"* —
+and rejected for this week on cost: a migration (blocked by the `alembic heads` gate), plus the claim predicate,
+the retry scheduler, the reaper's reclaim predicate and `D-28`'s four queries all read `attempts` today.
+
+**Owner: Week 6, Month 2.** *(This is the one field the BRIEF asked to be a named day rather than a month, and
+it is a month. What it waits on: Week 5 is `repair + publish` with a standing no-`src/`-feature rule, so the
+earliest slot is Week 6 Din 1. Recording it as `Week 6` rather than a date is accurate; recording it as
+`Month 3` would not have been.)*
+
+**The cost the chosen shape creates, which is not in this card's original three-option table:** recovery latency
+moves from `attempts`-bounded to **lease-bounded**. Under a database fault the worker no longer burns attempts —
+it also makes no progress, and the row stays `running` with a live `claimed_at` until the lease lapses. **A job
+that today dead-letters in `~10 s` would instead be untouched for up to `30 s` per cycle, repeating while the
+fault lasts.** `attempts` stops being consumed; wall-clock time to completion gets worse. `[INFERRED from
+`D-22`'s lease numbers and `D-29`'s reclaim predicate — not measured, and it must be measured when the change
+lands, not predicted.]`
+
+**And the sentence the BRIEF required, because it is the one that is easy to get wrong:** `D-30`'s boundary
+scope **does not cover `P-51`**, and that is not a failure of those boundaries. Din 1 and Din 2's five
+`except Exception` boundaries **narrowed** the process-death surface — measured, `35.191 s` lease-anchored
+restart recovery replaced by `~5.27 s` in-process recovery with state intact. They **did not touch** the
+misattribution surface, because `record_execution` was *already* inside an `except Exception` and that is
+precisely the defect. **Narrowed, not closed.**
+
+**Unchanged and still true as of `2026-09-26` `[MEASURED-R 2026-09-25, re-confirmed by `src/` hash equality
+2026-09-26]`:** a healthy `sleep` job with `job_executions` unavailable reaches `dead_letter` at
+`attempts = 3` in `~10 s`, `last_error` holds an `UndefinedTableError` traceback, `side_effects = 0`,
+`outbox = 0`, and the handler never runs. `git diff --name-only HEAD -- src/` → `0` files. **The decision is
+written; the behaviour is live.**
+
+---
+
+## P-52 — amendment (Week 5 Din 3): annotated rather than deleted, and the annotation is honest about which line came from where
+
+**Status: FIXED on Week 5 Din 3 (`2026-09-26`) for the artifact; the `p99` defect is fixed in the script.**
+
+`logs/w5d2_step5_preping.log`, lines `23`–`26` `[MEASURED 2026-09-26]`:
+
+```
+=== OUTCOME ANALYSIS (poll_failures on ~25s DB Outage) [NOT MEASURED — see P-52] ===
+- pre_ping = False: poll_failures = 5 [NOT MEASURED in this harness run — see P-52; Din 1 quote]
+- pre_ping = True : poll_failures = 5 [NOT MEASURED in this harness run — script assertion only, see P-52]
+- Does pre_ping prevent mark/heartbeat crash? NO. [Derived architectural inference, not measured in this run]
+```
+
+**Annotate rather than delete was the better of the two acceptable choices**, and the reason is in the second
+and third lines: they carry **different** provenance — one is a Din 1 quote, one is a bare script assertion —
+and deleting both would have erased that distinction. The fourth line is separately labelled as inference.
+**This is the shape provenance labelling is supposed to take**, and it is the first time in this repository that
+a log file has been corrected in place rather than superseded by a note elsewhere.
+
+**Not closed by this:** the harness still prints those lines on every future run. The annotation is on the
+**artifact**, not on the generator. **A re-run produces an unannotated copy under a new `RUN_ID`** — and by
+`P-50`'s amendment that copy could overwrite a sibling if two runs start in the same second. **Owner: whoever
+next runs that bench; the print statements should assert or be deleted, not be labelled after the fact.**

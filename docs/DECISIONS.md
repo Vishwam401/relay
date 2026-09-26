@@ -2707,3 +2707,159 @@ or `command_timeout` gets set (a different mechanism for the same class of probl
 hung-server case `pre_ping` does not); when Din 4's pool-exhaustion numbers exist, since checkout latency and
 checkout *availability* interact under saturation; or when the API's `p99` is measured under load, because that
 is the number this decision is actually protecting.
+
+---
+
+## D-32 — `DRAFT` — the publishing surface is a per-file classification with a directory-level fallback, and the rule as written defaults to **publish**
+
+**Written Week 5 Din 3 (`2026-09-26`). Status `DRAFT` — final text closes on Din 6.** The draft the user wrote
+is `scratch/d32_classification_rule.md`; the `.gitignore` implementing it is committed; **the part that keeps
+this `DRAFT` rather than `OPEN` is `P-54`.**
+
+### The problem this decision is actually about
+
+`P-47`'s sentence: *"this is a classification problem, not a typo."* Two separate questions were being answered
+by one mechanism:
+
+| Question | What decides it |
+|---|---|
+| *"what does someone cloning this repository see?"* | `.gitignore` + `HEAD` |
+| *"is this evidence alive **anywhere**?"* | commit history, which `.gitignore` does not control |
+
+`P-45`, `P-29` and `P-50` are about the second. `P-47` is about the first. **This decision answers the first
+and names the second as out of scope** — and the proof that the second was never answered is that
+`git log --all --name-only -- "logs/"` returns **`0` unique paths across the entire history**
+`[MEASURED 2026-09-26]`. Not one runtime log has ever been committed.
+
+### Chosen: a file-level ignore inside `docs/daily/`, plus root-anchored runtime patterns
+
+Three `.gitignore` changes, measured in place `[MEASURED 2026-09-26]`:
+
+| Line | Was | Is | Why |
+|---|---|---|---|
+| `39` | `logs/` | `/logs/` | unanchored globs match at any depth, which is how `docs/logs/WEEK_05.md` — the file every day's work is written into — ended up in no commit. `*.log` on line `38` still covers runtime output everywhere, so anchoring costs nothing |
+| `47` | `**/daily/` | `**/daily/**/*KEY*.md` | a directory ignore cannot be punched through: **git does not descend into an ignored directory, so a negation inside it never runs.** Not an ordering problem — a traversal one. The only shapes that work are a file-level ignore (this) or re-including the directories first (`!**/daily/**/` before the file negation), and the second is harder to read |
+| `72` | `scripts/` | *removed* | `scripts/supervisor.py` is Din 2's measurement instrument. An instrument outside version control cannot be re-run against its own results |
+
+### Policy table as decided — and the `—` rows are the reason this is `DRAFT`
+
+| Class | Count on disk | State | Reason |
+|---|---|---|---|
+| root `/logs/*.log` | `147` | `Local` | high-volume volatile stdout/stderr and `echo=True` SQL traces. Permanent packfile growth, no structured value |
+| `docs/logs/*.md` | `6` | **`Public`** | curated weekly synthesis. Same artifact class as the five Month 1 logs that were already tracked; the exclusion was collateral from an unanchored glob |
+| `scripts/` | `2` | **`Public`** | reproducible instruments, not throwaway |
+| `scratch/` | `11` | `Local` | disposable one-off harnesses |
+| `docs/daily/**/*KEY*.md` | `26` | `Local` | sealed answers. Publishing defeats the seal for every future reader |
+| `docs/daily/**/*BRIEF*.md` | `26` | **`Public`** | the day's specification, gates, and expected outputs |
+| `docs/daily/**/*PREDICTIONS_FROZEN*.md` | `13` | **`Public`** | the hashed pre-measurement record. **This class is the one that makes the whole process auditable by a third party, and it was the class most completely absent from the repository** |
+| `docs/daily/**/*HANDOFF*.md` | `6` | **`Public`** | cross-week state, referenced from `DECISIONS.md` and `MAP.md` |
+| `docs/blog/`, `docs/career/`, `docs/dsa/` | — | `Local` | reconciles with `f6a85c2`, `2582b37`, `15d82d9` (`2026-09-24`): drafts and personal tracking are outside the engine's surface. **Note the asymmetry honestly — those three commits removed them from `HEAD` and the blobs remain readable in history** |
+| **`*_ANSWERS.md`** | **`13`** | **`—` undecided** | **publishes today by default.** Carries `### After KEY` blocks, i.e. a paraphrase of that day's sealed outcomes — `P-54` |
+| **`*_DESIGN.md` / `*_PROBLEM.md` / `*_PROPERTY.md`** | **`7`** | **`—` undecided** | **publishes today by default** — `P-54` |
+
+### Cost, and the first item is the one that keeps the status at `DRAFT`
+
+1. **The rule is an allow-list of *ignores*, so its default is publish.** Four classes are enumerated; nine
+   exist. **Twenty files in four unenumerated classes became publishable with no decision**, and `C1` could not
+   see it because `C1` asks only about `BRIEF` and `KEY` (`P-54`). Any class invented on a future day publishes
+   unless someone remembers. **The alternative shape — ignore `docs/daily/**` and enumerate the publishes — was
+   considered and is harder to write (it needs `!**/daily/**/` to restore traversal) but fails safe.**
+   **Owner: Din 6.**
+2. **The pattern is extension- and token-bound.** `DIN_04_KEY.txt` and `DIN_04_SEALED.md` both publish
+   `[MEASURED 2026-09-26]`. The seal depends on a naming convention holding, not on the rule.
+3. **Case-sensitivity is supplied by the filesystem, not the pattern.** `DIN_04_key.md` is ignored here only
+   because `core.ignorecase = true` on this Windows checkout. `gitignore(5)` globs are case-sensitive, so a
+   lowercase-named KEY would publish on a Linux clone or CI runner. `[MEASURED 2026-09-26]` locally;
+   `[INFERRED]` for Linux, not run.
+4. **Widening is reversible; publishing is not.** `git rm --cached` + commit removes a path from `HEAD` and
+   leaves the blob readable in the commit that added it — measured. If that commit was pushed, it exists on
+   machines `filter-repo` does not reach. **Every `Public` row above is a one-way door.**
+5. **History is untouched and out of scope.** `docs/blog/`'s nine files, `scratch/`'s harnesses, `docs/career/`,
+   `docs/dsa/` are all readable from history today. `git show 997f5cd:scratch/step6_harness.ps1` returns
+   `3068` bytes `[MEASURED 2026-09-26]` — the harness `P-50` blames is auditable verbatim even though it is not
+   in `HEAD`.
+6. **`.gitignore` narrows accidental publication; it does not close it.** `git add -f`, an editor's "stage all",
+   and any filename outside the pattern all remain. **Narrowed, not eliminated.**
+
+### Transcript and retention rule (the `P-50` half)
+
+Every measurement harness writes stdout and stderr to a file whose name contains a run id; no harness deletes an
+existing log. **`Write-Host` or bare `print` is not a transcript.** Required granularity is **microseconds**
+(`%Y%m%d_%H%M%S_%f`) — second granularity collides on two runs inside the same second, measured, and
+`scratch/step5_preping_bench.py` still has the second-granular form (`P-50` amendment).
+
+**What this rule does *not* say:** how long `logs/`' `147` files are retained, or which are pruned. That half is
+deliberately unwritten — **Din 3 was the day to write the rule, not the day to apply it**, which is the exact
+error `P-50` describes. **Owner: after Din 6.**
+
+**Revisit when:** a new artifact class appears under `docs/daily/` · the repository is cloned onto a
+case-sensitive filesystem or built in CI · `logs/` growth makes retention a real cost · or anything in `HEAD`
+needs to become private, at which point item 4 applies and the answer is *"you cannot, only going forward"*.
+
+---
+
+## D-33 — `requirements.txt` pins direct dependencies with `==`, derived from the declared set, and neither `pip freeze` nor `pip list --not-required` can produce it
+
+**Written Week 5 Din 3 (`2026-09-26`).** Week 4's DoD carried this as `slipped`; the file had eleven lines and
+zero constraints.
+
+### Chosen: eleven `==` pins, the extra preserved, `pip` excluded
+
+```
+fastapi==0.141.1        uvicorn==0.52.1          sqlalchemy==2.0.51
+asyncpg==0.31.0         psycopg[binary]==3.3.4   python-dotenv==1.2.2
+alembic==1.19.0         pytest==9.1.1            pytest-asyncio==1.4.0
+hypothesis==6.165.2     httpx==0.28.1
+```
+
+Verified `[MEASURED 2026-09-26]`: `==` lines `11` · `psycopg\[binary\]==` present `1` · `^pip==` absent `0` ·
+`sqlalchemy` and `pytest` both present · `pip install --dry-run --ignore-installed --report -r requirements.txt`
+exits `0` and resolves **`35`** distinct packages from PyPI.
+
+### Why both shortcuts produce a wrong file, and one of them produces a wrong file with the right line count
+
+| Command | Lines | Defect |
+|---|---|---|
+| `pip freeze` | **`35`** | `24` transitive packages. Pins the resolver's output as if it were the input |
+| `pip list --not-required --format=freeze` | **`11`** | **same count, different set** |
+
+The `11 == 11` collision is a coincidence and the set is wrong in three places `[MEASURED 2026-09-26]`:
+
+```
+alembic==1.19.0 | asyncpg==0.31.0 | fastapi==0.141.1 | httpx==0.28.1 | hypothesis==6.165.2 |
+pip==26.0.1 | psycopg==3.3.4 | psycopg-binary==3.3.4 | pytest-asyncio==1.4.0 |
+python-dotenv==1.2.2 | uvicorn==0.52.1
+```
+
+1. **`pip` itself is included.** Not a Relay dependency.
+2. **`sqlalchemy` and `pytest` are both missing**, and both are direct dependencies —
+   `SQLAlchemy Required-by: alembic`, `pytest Required-by: pytest-asyncio`. **`--not-required` means "no
+   installed package depends on this", not "you did not declare this".** `sqlalchemy` is a core `src/` import
+   and the flag classifies it as transitive because `alembic` happens to need it. **A reverse-dependency graph
+   does not know what you import.**
+3. **`psycopg[binary]` splits into two lines** — `psycopg==3.3.4` and `psycopg-binary==3.3.4` — and the `[binary]`
+   extra declaration is lost. On a fresh machine pip may then try to build from source.
+
+**So the count check alone is not a check.** `C4` verifies count **and** the extra **and** the two omissions
+**and** `pip`'s absence, because a wrong file passes the count.
+
+### Cost
+
+- **`==` requires manual bumps.** No patch-level security fix arrives without an edit. Accepted deliberately:
+  Relay has no CI, so an automatic minor bump would first be observed as a failing run on the user's machine.
+  **`~=` was rejected for the same reason** — it permits an unreviewed patch change between two runs, which is
+  the one thing that makes *"the same commit produced a different result"* possible.
+- **This is a pin file, not a lock file.** It constrains eleven direct dependencies; the other `24` resolve
+  freely. **Reproducibility is narrowed, not achieved** — `pip install -r requirements.txt` on a fresh machine
+  can still pick a different `starlette` or `greenlet`. A hash-pinned lock (`pip-compile`, `uv lock`) is the
+  shape that closes it and is **not** being adopted now.
+- **`pip install --dry-run` without `--ignore-installed` is decorative.** It prints
+  `Requirement already satisfied` for every line and exits `0` without touching the network
+  `[MEASURED 2026-09-26]` — it would pass a pin file that cannot resolve at all. `--ignore-installed` plus
+  `--report` is what makes it a real check.
+- **`psycopg[binary]==3.3.4` pins the extra's version through the base package.** It does not pin the wheel's
+  build. `[INFERRED]`
+
+**Revisit when:** CI exists, at which point the lock-file question re-opens with a real forcing function · or a
+fresh-machine resolve conflicts on these eleven, which is the measurement that would falsify the "pins are
+enough" position.

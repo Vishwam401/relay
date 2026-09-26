@@ -36,17 +36,15 @@ desktop.ini
 
 # Logs & Database files
 *.log
-logs/
+/logs/
 *.sqlite
 *.db
 
 # Weekly execution plans, daily briefs/keys & reading summaries.
 # Depth-independent on purpose: the month_NN/ archive folders must inherit the same
 # exclusions, otherwise archiving a month silently publishes its sealed KEY files.
-# This preserves the pre-archive status quo and does not settle P-47, which is the
-# open question of what SHOULD be public.
 **/planning/
-**/daily/
+**/daily/**/*KEY*.md
 **/ddia_summaries/
 **/design/
 docs/roadmap/
@@ -69,9 +67,8 @@ large*.json
 docs/career/
 docs/dsa/
 
-# Local scratch and scripts
+# Local scratch (disposable experiments)
 scratch/
-scripts/
 
 # Engineering blog drafts
 docs/blog/
