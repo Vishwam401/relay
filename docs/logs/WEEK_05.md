@@ -1057,3 +1057,355 @@ chalte hain, to kaunsa outcome kisi ke faisle se nahi, teen defaults ke overlap 
 *Din 3 BRIEF:* [`../daily/week_05/DIN_03_BRIEF.md`](../daily/week_05/DIN_03_BRIEF.md) ·
 *Din 3 KEY:* [`../daily/week_05/DIN_03_KEY.md`](../daily/week_05/DIN_03_KEY.md) ·
 *Seal:* [`../daily/week_05/DIN_03_PREDICTIONS_FROZEN.md`](../daily/week_05/DIN_03_PREDICTIONS_FROZEN.md)
+
+---
+
+## Din 4 — Premise pehli baar observe hui, do khoye hue number retained artifact ke saath **replace** hue, aur din ke sabse valuable step ka headline number ek lock nahi, ek process-launch clock hai (`2026-09-27`)
+
+**Layer L2, `src/` gate held: `git diff --name-only HEAD -- src/` → `0`, paanchon hashes Step 0 ke barabar.**
+Lagatar doosra din jisme `src/` nahi chhua gaya, aur aaj ka poora kaam configuration aur measurement tha.
+
+**Aaj ka sabse saaf result `C1` hai, aur wo exactly `P-45` ka gate tha.** Teen rows, teeno ek file me: import-time
+print `pool=2+0` (*set hua*) · `pg_stat_activity` peak `api_w5d4|2|{active}` (*honour hua*) · teesra `/slow-hold`
+`500 3.116546` (differential jo doosri row ke instrument pe bharosa nahi karta). **Aur ek chautha witness jo BRIEF
+ne nahi maanga tha aur sabse strong hai:** `sqlalchemy.exc.TimeoutError: QueuePool limit of size 2 overflow 0
+reached, connection timed out, timeout 3.00` — jo component limit enforce karta hai, wahi uski value bol raha hai.
+Week 4 Din 5 se jo premise *"set hui thi"*, aaj *"honour hui"* hai.
+
+**Aur din wahi chuka jahan BRIEF ne kaha tha ki sabse valuable output hoga.** Step 5 ka `7.6771 s` artifact me
+*"Outbox Row Lock Duration: Held for 7.6771 s across the HTTP call"* likha hai — par `disp_t0` `subprocess.Popen`
+se **pehle** set hota hai, to wo number dispatcher ka interpreter start + imports + engine handshake (`~2.6 s`) +
+`5.0 s` httpx timeout hai. **Lock kabhi naapa hi nahi gaya:** probe ka ek-matra lock snapshot dispatcher ki pehli
+SQL line (`13:44:02.420`) se pehle liya gaya, to usme sirf `holder_w5d4` ki rows hain. Aur usi file me ek prewritten
+line *"error=The read operation timed out"* kehti hai, jabki do section upar asli line `error=` hai — **khaali.**
+`P-52` ki shape, teesri baar, aaj ke dono naye generators me.
+
+**Seal lagatar teesre din held:** `DIN_04_PREDICTIONS_FROZEN.md` SHA-256
+`62196E9A6186A030BB59461D090A2544C31914007184FD859A114BB0BCCC909D` reviewer ke independent hash se exact match.
+**Par file abhi kisi commit me nahi hai** (`git ls-files` → `0`). Din 3 ne frozen file ko pehli baar third-party
+auditable banaya tha; **Din 4 ka hash tab tak sirf report aur reviewer ke beech hai jab tak Din 4 commit nahi hota.**
+
+---
+
+### 📊 Measured / Observed
+
+Reviewer ne har user artifact padha aur teen differentials jo nahi chale the, khud chalaye. **Reviewer ke runs
+`[MEASURED-R 2026-09-27]` hain, har ek `logs/w5d4r_*` me, aur har generator ka source uske apne log ke andar
+embedded hai** — script `%TEMP%` me thi aur run ke baad delete hui, to generator artifact ke saath zinda hai (`P-45`
+ka sabak reviewer pe bhi lagta hai).
+
+#### 1. Bench — close pe, reviewer ke teen API runs ke **baad** dobara (`logs/w5d4r_close_bench.txt`)
+
+| Gate | Measured |
+|---|---|
+| `git diff --name-only HEAD -- src/` | **`0`** ✅ |
+| paanch `src` hashes | `a2ec8e9f…` `edcde815…` `dcdb6343…` `d55e3b8a…` `fc5bde22…` — Step 0 ke barabar ✅ |
+| `alembic heads` | `w4d4_sink_unique (head)` ✅ |
+| `except BaseException` in `src/` | `0` ✅ |
+| nau counters, evidence DB `relay` | **`133\|145\|19\|4\|7\|39\|5\|0\|1`** — delta `0` on the nine counters ✅ |
+| jobs `108` · `128` · `136` (status\|attempts\|execs\|effects) | `dead_letter\|4\|1\|0` · `succeeded\|4\|4\|1` · `running\|1\|1\|0` — untouched ✅ |
+| `pg_database LIKE 'relay\_%'` | `0` ✅ |
+| Relay python processes | `0` ✅ — host pe ek non-Relay python hai (KiroCrew), wahi jo Din 2 ke `(Get-Process python).Count` ko `1` bana raha tha |
+| `*_KEY.md` in index · in `HEAD` tree · `*.pyc` control | `0` · `0` · `1` ✅ |
+| `P-54` surface (`ANSWERS\|DESIGN\|PROBLEM\|PROPERTY` untracked) | **`20`** ✅ — kuch stage nahi hua, koi naya unclassified class nahi bana |
+| untracked total | `23` = `20` + `DIN_04_PREDICTIONS_FROZEN.md` + do `labs/w5d4_*.py` |
+| `git ls-files labs/w5d4_*` | **`0`** — `C5` row 3 as written **fail** hai. Files ignored nahi hain (`check-ignore` khaali), bas stage nahi hui |
+| `HEAD` | `cbdea0c` — sirf `DIN_04_BRIEF.md`, koi KEY nahi. BRIEF ka Step 0 `e3121a3` expect karta tha; wo reviewer ki apni BRIEF-commit ke baad stale tha |
+| `logs/` files | `159` (`146` pehle ki + `13` `w5d4_*`). Din 3 ne `147` likha tha — **ek file ka farak, record se identify nahi hota.** Din 6 ke reconcile ka item |
+
+#### 2. `C1` — premise observed, aur ek zero jo structurally retain nahi ho sakta tha
+
+| Observation | Value | File |
+|---|---|---|
+| import-time print | `resolved_db=relay app_name=api_w5d4 pool=2+0` | `w5d4_step1_api.log:1` |
+| idle count | **`0` — report me hai, file me nahi** | `w5d4_step1_idle.txt` **exist nahi karti** |
+| peak count | `api_w5d4\|2\|{active}` | `w5d4_step1_peak.txt` |
+| teesra `/slow-hold` | `500 3.116546` | `w5d4_step1_peak_clients.txt` |
+| engine ka apna bayan | `QueuePool limit of size 2 overflow 0 reached … timeout 3.00`, **paanch baar**, har baar `pool\impl.py:167 _do_get` se | `w5d4_step1_api.log` |
+
+**Idle file ka ghayab hona ek mechanism hai, aur wo mechanism BRIEF ka hai** (`logs/w5d4r_tee_empty_probe.txt`,
+pwsh `7.6.6`):
+
+| Arm | Command | File bani? |
+|---|---|---|
+| A | Step 1 ka exact idle query (`GROUP BY`, `0` matching rows) `\| Tee-Object` | **nahi** |
+| B | wahi filter, `count(*)` **bina** `GROUP BY` `\| Tee-Object` | haan, content `0` |
+| C | `@() \| Tee-Object` | **nahi** |
+| D | `@() \| Out-File` | haan, `0` bytes |
+
+**`Tee-Object` khaali pipeline pe file banata hi nahi, aur `GROUP BY` zero rows pe koi line nahi deta.** To BRIEF ka
+idle command ek zero ko **kabhi** retain nahi kar sakta tha — aur usi BRIEF ne `Tee-Object` ko *"`P-53` ke rule ka
+sabse sasta compliance"* likha tha. Reviewer ne idle dobara naapa, `count(*)` bina `GROUP BY`, teen alag API
+processes pe: **`total=0`** teeno me, aur pehli DB request ke baad `total=1 idle` — lazy allocation, ab file me
+`[MEASURED-R]`.
+
+**Aur engine ka error message ek aur cheez prove karta hai:** ceiling **API process ke andar** enforce hui. Paanchon
+`TimeoutError` `sqlalchemy/pool/impl.py:167` pe raise hue; teen `500` wale `/slow-hold` ka `SELECT pg_sleep` API log
+me kabhi issue hi nahi hua (`pg_sleep` statements `9` = `2+2+2+2+1`, teen `500` requests ka ek bhi nahi), aur
+`/healthz`/`/db-ping` ka `SELECT 1` bhi **`0`** baar. Postgres ne `2` dekha kyunki teesri request uske paas pahunchi
+hi nahi.
+
+#### 3. `C2` — bound ab isolated hai, aur differential reviewer ne chalaya
+
+User ke dono Step 2 runs **ek hi** uvicorn process pe the — `resolved_db=` API log me ek baar, PID `14628` — aur
+dono ka message `timeout 3.00`. **To `C2` row 2 (*"`RELAY_POOL_TIMEOUT` badal ke ek doosra run"*) chala hi nahi,
+jabki report ne *"Bound isolated"* likha.** Reviewer ka teen-arm run, same `src.main:app`, same `echo=True`,
+evidence DB pe sirf read-only endpoints (`logs/w5d4r_c2c3_20260927_091113_681447.log` + teen
+`w5d4r_api_t*_…log`):
+
+| `RELAY_POOL_TIMEOUT` | teesra `/slow-hold` | `/healthz` saturated | `/db-ping` saturated | `/health` saturated | peak | engine ka text |
+|---|---|---|---|---|---|---|
+| `1.5` | `500 1.5878 s` | `500 1.5634 s` | `500 1.5640 s` | `200 0.0290 s` | `2 active` | `timeout 1.50` |
+| `3.0` | `500 3.0956 s` | `500 3.0674 s` | `500 3.0658 s` | `200 0.0312 s` | `2 active` | `timeout 3.00` |
+| `5.0` | `500 5.0755 s` | `500 5.0622 s` | `500 5.0601 s` | `200 0.0299 s` | `2 active` | `timeout 5.00` |
+
+**Teen configs, teen elapsed, aur har ek apne config ko follow karta hai** — overhead `+60`–`+96 ms`, teeno arms me
+lagbhag constant. **Ab ye claim earned hai ki bound `pool_timeout` hai.** Aur `/healthz` bhi follow karta hai, to
+uska latency `SELECT 1` ka nahi — pool queue ka hai.
+
+**Aur `3.0055 s` reproduce NAHI hua. Replace hua.** Aaj `pool_timeout = 3.0` pe aath measurements, teen clients:
+overhead `+32.7` (`/healthz`, curl) · `+37.1` (`/db-ping`, curl) · `+43.0` · `+50.1` (user probe) · `+116.5`
+(curl, Step 1) · `+65.8` · `+67.4` · `+95.6 ms` (reviewer). Week 4 Din 5 ka overhead `+5.5 ms` tha — **aaj ke
+minimum se lagbhag `6×` chhota.** Bound wahi hai, overhead nahi, aur bina artifact ke ye pata nahi ki `+5.5 ms` kis
+cheez ka tha. Probe ki line *"Reproduced at 3.0501 s"* kisi bhi value pe wahi likhti. Plan ne pehle hi likha tha:
+*"replacement, confirmation nahi."*
+
+#### 4. `C3` — control reviewer ne chalaya, aur discriminator abhi aadha hai
+
+**Unsaturated control, teeno arms** `[MEASURED-R]`: `/health` `200` `0.010`–`0.014 s` · `/healthz` `200`
+`0.168`–`0.182 s` (pehli DB request — connect cost, kyunki API ka koi `lifespan` nahi aur pool lazy hai) · `/db-ping`
+`200` `0.015`–`0.016 s`. **`/healthz` saturation ke bina pass karta hai**, to Step 3 ki table ka matlab wahi hai jo
+likha gaya.
+
+User ka Step 3 (`w5d4_step3_discriminator.txt`): `health 200 0.006326` · `healthz 500 3.032650` · `db-ping 500
+3.037055`. Saturating pair API log me `SELECT pg_sleep` `13:10:48.209`/`.234` → `ROLLBACK` `13:10:56.223`/`.248`,
+to teeno requests saturation window ke andar the ✅.
+
+**Par ye discriminator teen causes me se do hi alag karta hai.** `/health 200` *process dead* ko alag karta hai.
+**Pool starvation aur DB down ko alag karne wali observation aaj naapi hi nahi gayi** — DB-down column `[NOT
+TESTED]`, aur Q3(c) ka asli sawaal wahi tha. Aur BRIEF ki `C3` table me DB-down ki `pg_stat_activity` cell `0`
+likhi thi — **galat:** DB down ho to wo query khud fail hoti hai. Observation *"`0`"* nahi, *"unobservable"* hai.
+Reviewer ka defect.
+
+#### 5. `C4` — client disconnect: din ka doosra sabse saaf result, aur usko settle karne wala instrument gate nahi, `echo` tha
+
+| Cheez | Value | Source |
+|---|---|---|
+| snapshot 1 | `active\|SELECT pg_sleep($1)\|00:00:04.280962` + doosri connection `idle\|ROLLBACK;\|00:14:54` (Step 3 wali, `13:10:56.24` se idle) | `w5d4_step4_after_disconnect.txt` |
+| statement start | `13:25:46.336 SELECT pg_sleep($1) (20.0,)` | API log (`echo`) |
+| connection wapas pool me | `13:26:06.361 ROLLBACK` — **hold `20.025 s`** | API log (`echo`) |
+| snapshot 2 | dono `idle\|ROLLBACK;` — **`13:31:28` pe liya gaya**, `seconds + 2 s` (`≈13:26:08`) pe nahi | `w5d4_step4_after_full_duration.txt` |
+| access log me `seconds=20` request | **koi line nahi** — `11` `/slow-hold` lines, `12` requests | API log |
+| disconnect ka moment | **kisi file me nahi** — `curl -m 3` ek `Start-Job` me, job output discard | — |
+
+**Mechanism measured:** client `≤ 3 s` pe gaya, `pg_sleep` poore `20.025 s` chala, connection handler khatam hone
+pe pool me wapas aayi. Cancellation propagate nahi hui. User ka *"connection lifetime is decoupled from HTTP request
+lifetime"* bilkul sahi hai.
+
+**Do cheez jo gate ke design ke baare me hain.** Snapshot 2 release se `5 min 22 s` baad liya gaya, to akela wo
+*"`20 s` pe free hui"* ko *"`5 min` pe free hui"* se alag nahi kar sakta — **API log ka `ROLLBACK` timestamp karta
+hai**, aur wo `echo=True` ki wajah se hai. **Aur access log ke hisaab se wo request hui hi nahi:** uvicorn
+disconnected client ko response line nahi likhta. To orphaned request ka ek-matra nishaan `echo=True` ki do SQL lines
+hain — aur `echo` band karna Week 6 ka candidate hai. `P-44` amendment.
+
+#### 6. Step 5 — chain ek link tak compose hui; lock aur sink ki wait kabhi observe nahi hui
+
+**Artifact me jo measured hai** (`logs/w5d4_step5_20260927_081356_093927.log`):
+
+- holder ki uncommitted `INSERT` — snapshot me `holder_w5d4|idle in transaction`, `RowExclusiveLock` +
+  `transactionid ExclusiveLock` granted
+- dispatcher ka `SELECT … FOR UPDATE SKIP LOCKED` `13:44:02.464` pe (`echo`); dispatcher pool `5+10` (default)
+- `[dispatch_error] job_id=42 outbox_id=1 error= attempts=1` — `error=` ke baad kuch nahi
+- final: outbox `1` `attempts=1 dispatched_at=None` · outbox `2` `attempts=0` — **sirf ek dispatch attempt hua**
+
+**Jo artifact nahi kehta, aur report ne kaha:**
+
+| Report | Artifact |
+|---|---|
+| *"lock held … for 7.6771 s"* | `disp_elapsed = perf_counter() - disp_t0`, aur `disp_t0` `subprocess.Popen` se pehle set hota hai. Pehli engine line `13:44:02.420` — **`~2.6 s` sirf process start.** Lock duration nahi |
+| *"holder … stalled Sink's `ON CONFLICT DO NOTHING`"* | ek-matra snapshot `t ≈ 2.0 s` (Popen se) pe, dispatcher ki pehli SQL se pehle → sirf holder rows. Sink ki wait **kabhi dekhi nahi gayi** `[INFERRED — 5.0 s ReadTimeout ke consistent]` |
+| sink pool `2+0` | sink ka stdout ek `PIPE` me gaya jo kabhi padha nahi gaya, to uska `resolved_db … pool=2+0` kabhi observe nahi hua. **Jo premise-trap Step 1 ne todi, Step 5 ne usi din sink pe dobara bana di** |
+| chain composed | holder ek attempt ke baad rollback ho gaya, to sink pe kabhi ek se zyada request nahi thi. KEY `Q5(b)` ka sink-pool arm `[NOT TESTED]` |
+
+**Reviewer ne class naapi** (`logs/w5d4r_httpx_timeout_class_20260927_090729_963651.log`) — dispatcher ki exact
+shape, `httpx.AsyncClient(timeout=5.0).post`, ek silent TCP server pe, httpx `0.28.1` / httpcore `1.0.9`:
+
+```text
+class=httpx.ReadTimeout      str_len=0      repr=ReadTimeout('')
+__cause__=httpcore.ReadTimeout(TimeoutError())      isinstance(builtin TimeoutError)=False
+timeout=5.0 → elapsed_s=5.0268      dispatcher_line_would_be='error='
+```
+
+**User ka claim *"`str(httpx.ReadTimeout)` is `""`"* sahi hai** — aur ab uska class naam se hai. Source se aur:
+`src/` ki nau exception-print lines me se chhe `type(exc).__name__` likhti hain; dispatcher ki `[dispatch_error]`
+**akeli** aisi hai jahan class na line me hai na kisi column me (`outbox` me error column hi nahi hai). **`P-55`.**
+*(Reviewer ka probe dono arms log karne ke baad `async with server:` ke exit pe latak gaya — Python 3.12+ ka
+`Server.wait_closed()` khuli connections ka intezaar karta hai — to dono `python.exe` haath se band kiye, source haath
+se log me joda. Measurement lines us se pehle likhi ja chuki thi.)*
+
+**Lock ka release mechanism, source se — aur Din 4 KEY yahan galat thi.** `except Exception` `async with
+session.begin()` ke **andar** hai, to exception block se bahar nahi jaati; block normally exit hota hai → **`COMMIT`**
+→ lock release, aur `attempts + 1` isi commit se persist hota hai. Final state `attempts=1` isse consistent hai. KEY
+ne dono outcomes **rollback** ke likhe the. **Kitni der hold hua — `[NOT MEASURED]`. Din 5.**
+
+#### 7. Step 6 aur Step 7 — faisla liya gaya, par repository me nahi likha gaya
+
+- **Step 6 ka faisla sirf report me tha** — `ENABLE_TEST_ROUTES` repo me kahin nahi (grep, ignored files samet:
+  `0`). Reviewer ne usko user ke shabdon ke saath `P-44` amendment me record kiya, aur `D-28` ka reconciliation
+  `D-28` amendment me.
+- **Faisla 3 ki record correction likhi gayi** (`docs/month_01/daily/week_04/DIN_05_DESIGN.md:32`) ✅ — pehla half
+  sahi hai (`[NOT RETAINED]`, `P-45`). **Doosra half ek category error hai:** `labs/w5d4_pool_probe.py` teen `GET
+  /slow-hold` bhejta hai; Faisla 3 ka `step4_load_probe.py` ek **load generator** tha (`400` jobs, `19.8 /s`
+  arrival). Pool probe wo number dobara nahi naap sakta. BRIEF ne *"load/pool probe"* likh ke ye mix khud invite
+  kiya tha. **Faisla 3 ka `Chosen` implementation `[NOT RETAINED]` hi rehta hai** — reviewer note file me joda gaya.
+- Aur `DIN_05_DESIGN.md` khud `P-54` ki bees untracked files me se ek hai, to ye correction bhi **kisi commit me
+  nahi** hai jab tak Din 6 `DESIGN` class decide nahi karta.
+
+---
+
+### 🧠 Prediction review — `0.00 / 5.0`, calibration `5/5`, aur teen me se teen derivable halves `idk`
+
+Frozen text `docs/daily/week_05/DIN_04_PREDICTIONS_FROZEN.md` se **quote**, hash verify hua.
+
+| Q | Frozen text (verbatim) | Measured | Score |
+|---|---|---|---|
+| **Q1** | *"idk"* | **NOT ANSWERED** | **`0.00 / 1.0`** |
+| **Q2** | *"idk"* | **NOT ANSWERED** | **`0.00 / 1.0`** |
+| **Q3** | *"idk"* | **NOT ANSWERED** | **`0.00 / 1.0`** |
+| **Q4** | *"idk"* | **NOT ANSWERED** | **`0.00 / 1.0`** |
+| **Q5** | *"idk"* | **NOT ANSWERED** | **`0.00 / 1.0`** |
+
+**Total: `0.00 / 5.0`.** Self-score bhi `idk × 5` — **inflation zero, lagatar teesra din.** Week 5 frozen total:
+**`1.45 / 20.0`**.
+
+**Provenance, jo score se zyada batata hai.** Chaar mechanisms run se derive hue: `Q1` lazy pool + ceiling · `Q2`
+bound + class · `Q3` `/health` vs `/healthz` · `Q4` cancellation absent — aur `Q4` wala din ka sabse saaf derived
+mechanism hai. `Q5` aadha: `error=` khaali hona khud notice kiya, jo genuinely achha observation tha; lock ka number
+galat instrument se aaya.
+
+**Aur ek farak jo `0/5` ke andar chhupa hai.** KEY ke scoring note ne naam se likha tha ki `Q1(d)`, `Q3(c)` aur
+`Q5(d)` **run se pehle derivable** hain. `Q3(c)` ka aadha jawab `src/main.py:16` me hai (`/health` pe koi
+`Depends(get_db)` nahi); `Q1(d)` ka ek scenario `uvicorn --workers N` hai; `Q5(d)` `P-41` ke apne text me likha hai
+(*"the symptom surfaces … while the actual cause is a lock inside the receiver's database"*). **Teeno `idk` aaye.**
+Wo Situation 2 nahi the — source-reading ke the. Week 4 Din 6 ka reading gap, chhoti shakal me. `idk` likhna
+galat nahi tha; question me naam liya hua code path pehle padhna chhoot gaya.
+
+**Ek conceptual correction jo score se bahar hai aur zyada load-bearing hai:** report kehti hai *"PostgreSQL
+strictly enforced the ceiling of 2 connections"*. **Nahi — `QueuePool` ne API process ke andar enforce kiya.**
+Postgres ki apni ek hi limit hai (`max_connections = 100`), aur usne `2` isliye dekha kyunki teesri request uske
+paas pahunchi hi nahi (upar section 2). `D-28` ki evidence line yahi kehti hai: *"pool exhaustion is client-side and
+says so in the error."*
+
+---
+
+### 🤖 Reviewer ki apni galat predictions — record ke liye
+
+1. **KEY `Q5(c)`: lock release ke dono outcomes rollback ke likhe.** Source me `except` `session.begin()` ke andar hai,
+   to release **`COMMIT`** pe hota hai, aur wahi commit `attempts + 1` persist karta hai. `[MEASURED from source;
+   final state consistent]`
+2. **BRIEF Step 1 ka idle command ek zero retain nahi kar sakta tha** — `GROUP BY` + `Tee-Object`, dono zero pe
+   chup. Aur BRIEF ne `Tee-Object` ko `P-53` ka compliance mechanism bataya tha. `[MEASURED-R, four arms]`
+3. **BRIEF `C3` table ki DB-down `pg_stat_activity` cell `0` likhi thi** — DB down ho to query hi fail hoti hai.
+4. **BRIEF Step 0 `git log -1` → `e3121a3` expect karta tha**; `HEAD` `cbdea0c` tha — reviewer ki apni BRIEF-commit,
+   jo ye line likhne ke baad hui.
+5. **BRIEF Step 7 ne *"load/pool probe"* likha**, jisse Faisla 3 amendment ka category error invite hua.
+6. **BRIEF ke Part C ne Part B ke outcomes leak kiye:** `C1` (*"peak `≤ 2`"*, *"teesra `/slow-hold` fail karta hai"*),
+   `C2` (*"elapsed `pool_timeout` ke paas"*), `C3` (*"DB na chhune wala endpoint `200`"*), `C4` (*"`1` row
+   `active`"*). Paanchon jawab `idk` the to score contaminate nahi hua — **par BRIEF ne ye possible banaya.** Din 5 ka
+   Part C sirf instrument check karta hai, outcome nahi.
+7. **KEY `Q3(d)` ne ek hi jawab me do ulti baatein likhi:** *"`D-28` ka label survive karta hai"* aur *"wo liveness ke
+   naam pe readiness naap raha hai"*. Measurement ne doosri ko sahi saabit kiya.
+8. **KEY `Q5(b)` ne sink ke pool pressure ko sirf *concurrent clients* ke terms me socha.** Ye assumption Din 5 test
+   karta hai, aur isliye yahan uska mechanism nahi likha.
+
+**KEY ne jo theek kaha, aur aaj live confirm hua:** idle `0` (lazy pool) · peak `2`, teesri request Postgres tak
+nahi pahunchi · `500`, `503` nahi · `sqlalchemy.exc.TimeoutError`, builtin nahi · elapsed floor ke **upar**
+(`3.0055` nahi) · `/health` `200` jab `/healthz` `500` · `500` wale request ka `pg_sleep` kabhi issue nahi hua
+(`Depends` me mara — `pg_sleep` count `9`) · `Q4` ko *"naapo, predict mat karo"* likha, aur jawab `20.025 s` nikla ·
+`httpx` timeout default nahi, explicit hai — ab `5.0268 s` measured.
+
+---
+
+### 💡 What the session established — **user ko ye apne shabdon me dobara likhna hai**
+
+> Ye section reviewer ne likha hai. Protocol ke hisaab se isko user ke apne shabdon me replace hona hai, aur ye
+> Week 2 se chal raha `💡` debt hai.
+
+1. **"Set hua" aur "honour hua" do claims hain, aur unke teen alag instruments hain:** print config ka hai,
+   `pg_stat_activity` behaviour ka, aur error message us component ka jo limit enforce karta hai. Teesra sabse strong
+   hai kyunki wo khud limit hai jo bol rahi hai.
+2. **Ek zero sabse mushkil number hai retain karna.** `Tee-Object` khaali input pe file nahi banata, `GROUP BY` zero
+   rows pe line nahi deta. Jo instrument sirf *"kuch hua"* record kar sakta hai, wo *"kuch nahi hua"* ko *"record nahi
+   hua"* se alag nahi kar sakta.
+3. **Ek duration ke do endpoints hote hain, aur number ka naam uska measurement nahi hai.** `7.6771 s` ko lock duration
+   kaha gaya; uska start `Popen` tha. Har duration ke saath dono endpoints naam se likhne hain.
+4. **Client ka jaana server ka kaam nahi rokta.** `curl` `3 s` pe gaya, `pg_sleep` `20.025 s` chala, connection handler
+   ke saath wapas aayi. Aur access log ne us request ko record hi nahi kiya.
+5. **Ek run ek number deta hai; teen configs pe teen runs batate hain ki number kis cheez ka hai.** `1.588` · `3.096` ·
+   `5.076` — elapsed `pool_timeout` ke peeche chalta hai.
+6. **Prewritten verdict text measurement jaisa dikhta hai aur measurement ke khilaaf ja sakta hai** — usi file me
+   `error=` aur *"error=The read operation timed out"*.
+
+---
+
+### ⚠️ Closeout corrections
+
+| # | Jaise report hua | Jo measured hai | Provenance |
+|---|---|---|---|
+| 1 | *"All gates (C1–C8) are strictly PASSED"* | **Teen gate nahi chale ya fail hain:** `C2` row 2 (dono Step 2 runs ek process, `timeout 3.00`); `C3` control (API log me koi unsaturated `/healthz` nahi); `C5` row 3 (`git ls-files labs/w5d4_*` → `0`). `C7` ka Step 0 frozen hash kisi file me nahi hai. **Reviewer ne `C2` row 2 aur `C3` control chalaye, aur dono user ke nateeje ke haq me nikle** | `[MEASURED-R 2026-09-27]` |
+| 2 | *"Idle count … 0 rows … (`logs/w5d4_step1_idle.txt`)"* | **Wo file exist nahi karti.** `Tee-Object` khaali input pe file nahi banata, aur `GROUP BY` zero rows pe line nahi deta. Reviewer ka re-take: `0`, file me | `[MEASURED-R]` four-arm probe |
+| 3 | *"Clients: 200 (8.06s), 200 (8.04s), 500 (3.05s) (`logs/w5d4_step1_peak_clients.txt`)"* | **Us file me `500 3.116546` · `200 8.514253` · `200 8.515723` hai.** Quote kiye gaye numbers Step 2 run 1 ke hain (`w5d4_step2_20260927_073239_386109.log`). Week 4 Din 5 ka frozen-text paraphrase defect, is baar artifact ke saath | `[MEASURED]` file read |
+| 4 | *"PostgreSQL strictly enforced the ceiling of 2 connections"* | **`QueuePool` ne API process ke andar enforce kiya** — paanchon `TimeoutError` `pool\impl.py:167` se, aur `500` wale requests ka koi statement Postgres tak nahi gaya. Postgres ne **observe** kiya, enforce nahi | `[MEASURED]` API log |
+| 5 | *"Bound isolated: Anchored strictly on pool_timeout = 3.0s"* | **Ab sach hai, par aaj ke user runs se earned nahi tha** — ek config pe do runs *"`seconds` nahi"* prove karte hain, *"`pool_timeout` hai"* nahi. Reviewer ka teen-arm run: `1.5878` / `3.0956` / `5.0755 s` | `[MEASURED-R]` |
+| 6 | *"Comparison with Week 4 Din 5 (3.0055 s): Reproduced"* | **Bound reproduce hua, overhead nahi.** `+5.5 ms` tab vs `+32.7`–`+116.5 ms` aaj, aath measurements. **Replacement, confirmation nahi** | `[MEASURED]` + `[MEASURED-R]` |
+| 7 | *"Using `/healthz` as liveness under Kubernetes triggers cascading container restart loops"* | **Direction sahi.** Measured half: `/healthz` `500` jabki `/health` `200` — process zinda hai. **Restart, cascade aur "loops" `[INFERRED]`** — iss repo me koi orchestrator nahi hai | `[MEASURED]` / `[INFERRED]` |
+| 8 | *"Client Disconnect Connection Leak"* | **Leak nahi hai** — connection `20.025 s` pe wapas aayi (API log `ROLLBACK`). Jo missing hai wo cancellation hai. *"Snapshot 2: `api_w5d4\|idle\|ROLLBACK;`"* — file me **do** rows hain, aur snapshot release ke `5 min 22 s` baad liya gaya | `[MEASURED]` |
+| 9 | *"Dispatcher held FOR UPDATE lock … for 7.6771 s"* | **`Popen` → stdout-line clock.** Lock kabhi observe nahi hua. Release mechanism source se: `COMMIT` | `[MEASURED]` probe source + log |
+| 10 | *"Uncommitted holder transaction on sink_deliveries stalled Sink's `ON CONFLICT DO NOTHING`"* | **Observe nahi hua** — snapshot dispatcher ki pehli SQL se pehle, sink ka stdout kabhi padha nahi gaya. `5.0 s` ReadTimeout ke consistent hai | `[INFERRED]` |
+| 11 | *"`str(httpx.ReadTimeout)` is `""`"* | **Sahi**, aur class ab measured: `httpx.ReadTimeout`, `repr ReadTimeout('')`, `5.0268 s` | `[MEASURED-R]` |
+| 12 | Probe ki line *"Relay Log Symptom: … error=The read operation timed out"* | **Prewritten, aur usi file ki measured line (`error=`) ke khilaaf.** `P-52` ki teesri recurrence | `[MEASURED]` |
+| 13 | Step 6 ka faisla (Option B, `ENABLE_TEST_ROUTES=1`, owner Week 6) | **Faisla theek shape me hai — cost naam se, owner ek din. Par repo me kahin likha nahi tha.** Reviewer ne `P-44` amendment me user ke shabdon ke saath record kiya | `[MEASURED]` grep `0` |
+| 14 | Faisla 3 amendment: *"re-taken and retained under `labs/w5d4_pool_probe.py`"* | **Pool probe load harness nahi hai** — wo `19.8 /s` enqueue rate dobara nahi naap sakta. Faisla 3 ka `Chosen` `[NOT RETAINED]` hi rehta hai | `[MEASURED]` source |
+| 15 | *"Evidence Database (`relay`): Delta strictly `0`"* | **Sach, nau counters pe** — `P-31` ka wording sabak: *"delta `0` on the nine counters"*, *"strictly"* nahi | `[MEASURED-R]` |
+
+---
+
+### 🚧 Unresolved / carried
+
+1. **Step 5 ke teen missing measurements — Din 5:** outbox lock ka hold (dono endpoints ke saath), sink ki wait
+   (`pg_stat_activity` se, log se nahi), aur chain ka pool half.
+2. **Discriminator ka DB-down column — Din 5.** Starvation aur DB-down ko alag karne wali ek observation abhi
+   naapi nahi gayi.
+3. **`P-45` ka teesra number** (`2.8133 s` vs `0.4703 s`, receiver contention) **re-take nahi hua — Din 5.** Aaj ke
+   `3` me se `2` replace hue.
+4. **`D-30` ke do gates** (`~30 s` DB-down run, `n = 1` / never under load) **— Din 5**, taaki Din 6 close kar sake.
+5. **Din 4 commit nahi hua.** `DIN_04_PREDICTIONS_FROZEN.md`, `labs/w5d4_pool_probe.py`, `labs/w5d4_composed_failure.py`
+   aur aaj ke docs — **named `git add`, `-A` nahi**, kyunki `P-54` ki bees files abhi bhi gate hain.
+6. **`P-55` fix — Week 6**, `src/` edit, `P-44` aur `P-51` ke saath.
+7. **`P-44` ka code (Option B) — Week 6.** Tab tak `/slow-hold?seconds=<anything>` unauthenticated aur unbounded hai.
+8. **`echo=True` ek observability dependency ban gaya hai.** Orphaned request ka ek-matra nishaan wahi hai. Jo bhi
+   faisla `echo` band karta hai, usko ye cost naam se likhna hai.
+9. **Din 4 ke do generators aur teen artifacts me prewritten text — Din 5 Step 1**, annotate karna hai, delete nahi.
+10. **`logs/` ka `147` vs `146`** — Din 6 ka reconcile.
+11. **`P-51`, `P-54`, `P-36`, supervisor backoff, `D-30` `OPEN`, README rows 7/9** — Din 3 se unchanged. Aaj ka koi
+    change inko **chhuta nahi**.
+
+---
+
+### ❓ Next thought
+
+Din 3 ka sawaal tha: kaunsa outcome kisi ke faisle se nahi, defaults ke overlap se aata hai? **Aaj ek mila aur
+measured hai:** `/slow-hold` ki connection client ke jaane ke baad `17 s` aur bandhi rahi. Ye kisi ne decide nahi
+kiya — server ka default (disconnect pe handler cancel nahi hota) aur pool ka default (checkout request handler ke
+saath jeeta hai) mil ke ye banate hain, aur access log dono ke beech kuch nahi dekhta.
+
+Step 5 me dispatcher `5.0 s` pe haar maan ke chala gaya. **Sink ke nazariye se wo kaunsa event hai?** Aur jab
+dispatcher chala jaata hai, us waqt sink ka `INSERT` kya kar raha hota hai — aur uske baad kya karta hai? Din 5 ka
+pehla aadha isi sawaal ka hai, aur uska jawab kisi log me nahi, `pg_stat_activity` me milega.
+
+---
+
+*Plan:* [`../planning/WEEK_05.md`](../planning/WEEK_05.md) ·
+*Din 4 BRIEF:* [`../daily/week_05/DIN_04_BRIEF.md`](../daily/week_05/DIN_04_BRIEF.md) ·
+*Din 4 KEY:* [`../daily/week_05/DIN_04_KEY.md`](../daily/week_05/DIN_04_KEY.md) ·
+*Seal:* [`../daily/week_05/DIN_04_PREDICTIONS_FROZEN.md`](../daily/week_05/DIN_04_PREDICTIONS_FROZEN.md)

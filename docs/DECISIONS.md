@@ -2268,6 +2268,60 @@ is running and can reach the database"* — and explicitly not readiness and exp
 re-priced, and `/healthz`'s meaning changes because a dead process is no longer the likely failure); a
 dedicated health pool or timeout is added (Cost 1); or `/slow-hold` and `/db-ping` are resolved (Cost 6).
 
+### Week 5 Din 4 amendment — D-28 (`2026-09-27`)
+
+**Status: MEASURED — user's runs plus the reviewer's three-arm differential, all retained. The two `[REPORTED, NOT
+VERIFIABLE]` numbers in this entry are replaced, not confirmed, and the *liveness* label does not survive as a
+description of what `/healthz` does.**
+
+**1. `/healthz` fails under pool saturation while the process is demonstrably alive.** Same process, same window:
+`/health 200 0.006 s`, `/healthz 500 3.033 s`, `/db-ping 500 3.037 s` (`logs/w5d4_step3_discriminator.txt`). The
+reviewer ran it at three `pool_timeout` values (`logs/w5d4r_c2c3_20260927_091113_681447.log`): `/healthz` returned
+`500` at `1.5634` / `3.0674` / `5.0622 s` under `1.5` / `3.0` / `5.0`, and `200` in `0.17 s` unsaturated (the first DB
+request of a lazy pool, so connect cost), then in milliseconds. **Its latency is the pool queue, not `SELECT 1`** —
+the API log records `0` executions of `SELECT 1` across both failing probes, because the checkout itself raised. So
+`/healthz` answers *"can this process obtain a pooled connection within `pool_timeout`"*, which is a readiness
+question. The `Chosen` text says it is *"documented explicitly as a liveness indicator"*; the measurement shows that
+sentence describes an intention, not a behaviour. **Cost 1's number is now `[MEASURED]`; its cascade — an
+orchestrator restarting a healthy, busy process — stays `[INFERRED]`**, because no orchestrator exists in this
+repository and none was run.
+
+**2. The two numbers in Cost 5, replaced.** `3.1618 s` → `3.0327 s` (user, `n = 1`) and the three-arm above.
+`3.0055 s` → `3.0501` / `3.0430 s` (user, `n = 2`) and `1.5878` / `3.0956` / `5.0755 s` (reviewer). All `echo=True`.
+Across the day's eight measurements at `pool_timeout = 3.0`, from three clients, the overhead above the bound is
+`+32.7` to `+116.5 ms`; the `2026-09-10` figures imply `+5.5 ms` and `+161.8 ms` — *if* that day's `pool_timeout` was
+`3.0`, which is itself `[INFERRED]`, because no retained file records it. The **bound** reproduces and the overheads
+do not, and with no artifact behind the old numbers they are retired, not reconciled (`P-45` amendment).
+
+**3. "Pool exhaustion is client-side" — now shown from the artifact, not only asserted.** All five `TimeoutError`s in
+the user's API log are raised at `sqlalchemy/pool/impl.py:167` (`QueuePool._do_get`), and none of the five failing
+requests issued a statement: `9` `pg_sleep` executions for `12` `/slow-hold` requests, `0` `SELECT 1` for the failing
+`/healthz` and `/db-ping`. Postgres **observed** the ceiling (`pg_stat_activity` peak `2 active`, all four runs) and
+did not enforce it.
+
+**4. Endpoint inventory — Cost 6's open line, decided by the user at Din 4 Step 6** (recorded here and in the `P-44`
+amendment, because the decision existed only in the day's report):
+
+| Endpoint | Decided standing | Measured basis |
+|---|---|---|
+| `/health` | **liveness** | the only endpoint the pool cannot starve — `200` in `6`–`31 ms` under saturation in every run |
+| `/healthz` | **readiness** | fails exactly at `pool_timeout` under saturation, passes without it |
+| `/db-ping` | **dropped** | a duplicate of `/healthz` — within `5 ms` of it in all four saturated runs (`3.0658` vs `3.0674 s` at `3.0`) |
+| `/slow-hold` | behind `ENABLE_TEST_ROUTES=1` | `P-44` |
+
+Implementation owner: Week 6; `src/` unchanged today. **One cost of the relabel, reviewer's note:** Relay runs one API
+process. A readiness failure removes that one instance from rotation, so under saturation the API is unreachable for
+at least `pool_timeout` instead of being restarted. That is a narrower blast radius than a liveness restart —
+in-flight work survives — and it is not zero `[INFERRED]`.
+
+**5. The discriminator is half-built, and that is the part this entry most needs.** `/health` `200` separates *process
+dead* from the other two causes. **Pool starvation versus database down was not measured on Din 4** — the DB-down arm
+did not run — and the latency-based separator in the Din 4 KEY is `[INFERRED]`. Owner: Week 5 Din 5.
+
+**Revisit when:** Week 6 implements the relabel and the router (re-run the three-arm with `ENABLE_TEST_ROUTES=1` to
+confirm the measurement survives the fix); Din 5 measures the DB-down arm; or a second API instance exists, which is
+the point at which readiness-removal stops meaning *"no API"*.
+
 ---
 
 ## D-29: no leader election — one reaper, and the reclaim `UPDATE`'s own predicate is what makes a second one safe

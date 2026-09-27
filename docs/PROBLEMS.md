@@ -2582,3 +2582,235 @@ a log file has been corrected in place rather than superseded by a note elsewher
 **artifact**, not on the generator. **A re-run produces an unannotated copy under a new `RUN_ID`** — and by
 `P-50`'s amendment that copy could overwrite a sibling if two runs start in the same second. **Owner: whoever
 next runs that bench; the print statements should assert or be deleted, not be labelled after the fact.**
+
+---
+
+## P-55 — Relay's delivery-failure line prints `error=` followed by nothing: the dispatcher's inner boundary drops the exception class, `httpx.ReadTimeout` stringifies to an empty string, and `outbox` has no column to catch what the line lost
+
+**Status: MEASURED on Week 5 Din 4 (`2026-09-27`) — the line from the user's run, the class by the reviewer.** Din 4's
+composed-failure run (`logs/w5d4_step5_20260927_081356_093927.log`) recorded the one line Relay writes about a
+stalled delivery:
+
+```text
+[dispatcher-27928] [dispatch_error] job_id=42 outbox_id=1 error= attempts=1
+```
+
+**The class, measured separately** (`logs/w5d4r_httpx_timeout_class_20260927_090729_963651.log`): the exact shape of
+`src/dispatcher.py` — `httpx.AsyncClient(timeout=5.0).post(...)` — against a local server that accepts the connection
+and never answers, httpx `0.28.1` / httpcore `1.0.9`:
+
+```text
+class=httpx.ReadTimeout   str_len=0   repr=ReadTimeout('')   elapsed_s=5.0268
+__cause__=httpcore.ReadTimeout(TimeoutError())   isinstance(builtin TimeoutError)=False
+```
+
+The empty message is inherited: httpcore wraps a bare `TimeoutError()` and httpx re-raises with that message, so
+`f"error={exc}"` prints exactly `error=` `[MEASURED-R]`.
+
+**Why it is this line and no other — source read, `src/dispatcher.py` at `dcdb6343…`.** `src/` has nine
+exception-print lines. Six print `{type(exc).__name__}: {exc}`: the worker's `[poll_error]`, `[heartbeat_error]`,
+`[heartbeat_join_error]` and `[mark_error]`, the reaper's `[poll_error]`, and the dispatcher's own **outer**
+`[poll_error]`. Three print `{exc}` alone: the worker's two handler-failure lines — whose class survives anyway,
+because the same branch stores `traceback.format_exc()` in `jobs.last_error` — and the dispatcher's
+`[dispatch_error]`, where nothing survives: `outbox` has `id, job_id, effect_key, payload, dispatched_at, attempts,
+created_at` and **no error column**. So the delivery path is the only failure path in Relay whose cause is recorded
+nowhere, and the exception it most commonly sees has an empty `str`. The outer boundary in the same file names
+classes; the inner one, which fires on the more common path, does not.
+
+**How this relates to `P-41`, because it sits one level below it.** `P-41`'s point is that the symptom (a timeout
+at the dispatcher) does not reach the cause (an uncommitted row in the receiver's database). This line does not
+reach the symptom: `error=` cannot distinguish a read timeout from a connect timeout, from a pool timeout inside
+httpx, or from any other exception whose message is empty. An operator reading Relay's log today cannot tell that a
+timeout happened, let alone where.
+
+**The same silence one layer over, measured the same day.** The API's access log has **no line** for a request whose
+client disconnected before the response: Din 4 Step 4 issued twelve `/slow-hold` requests and the log holds eleven
+lines; the missing one is the `seconds=20` request that pinned a pooled connection for `20.025 s` (`P-44`
+amendment). Its only trace is `echo=True`'s two SQL lines. On both of the day's paths, the component that did the
+waiting recorded nothing about it, and the component that gave up recorded as little as its format allows.
+
+**What a fix narrows and what it does not.** Printing the class — the approach the outer boundary already uses —
+makes Relay's own symptom self-describing. It does not name the receiver's lock, which is `P-41`'s half and lives
+in the receiver: `narrows`, not `closes`. A durable record (an error column, or a per-attempt table in the shape
+`P-35`'s second half already recommends) is a schema decision with a hot-path cost, not a log edit.
+
+**Owner:** Week 6, with `P-44`'s and `P-51`'s `src/` edits. Not Din 5: Week 5 changes no `src/`, and Din 5's runs
+read this exact line as it is.
+
+---
+
+## P-41 — amendment (Week 5 Din 4): the chain was run for the first time and composed one link, at the Relay end; the lock was never measured, the receiver's wait was never observed, and the pool half was never exercised
+
+**Status: MEASURED on Week 5 Din 4 (`2026-09-27`) on the disposable database `relay_w5d4` (dropped at close),
+reviewed against `logs/w5d4_step5_20260927_081356_093927.log`, `labs/w5d4_composed_failure.py` and
+`src/dispatcher.py`.**
+
+**What the run observed.** A holder transaction inserted `job:42` into `sink_deliveries` and stayed open (snapshot:
+`holder_w5d4 | idle in transaction`, `RowExclusiveLock` and its `transactionid` `ExclusiveLock` granted). Two outbox
+rows carried the same key. The dispatcher (`pool=5+10`, the default) issued its `FOR UPDATE SKIP LOCKED` at
+`13:44:02.464` and logged `[dispatch_error] job_id=42 outbox_id=1 error= attempts=1`. Final state: row `1`
+`attempts=1`, `dispatched_at NULL`; row `2` `attempts=0`. The error's class is `httpx.ReadTimeout`, raised at
+`5.0268 s` against `timeout=5.0` (reviewer; `P-55`).
+
+**One correction to this entry's own text.** It says the dispatcher's client timeout is *"`httpx` default `5.0 s`,
+itself still `[INFERRED]`"*. It is not a default: `src/dispatcher.py:34` passes `timeout=5.0` explicitly, and it fires
+at `5.0268 s` `[MEASURED-R]`.
+
+**What the run did not observe, although the day's report states all three.**
+- **The lock's hold time.** The reported `7.6771 s` is `perf_counter()` from a `disp_t0` taken *before*
+  `subprocess.Popen` to the moment the `[dispatch_error]` line was read; the dispatcher's first engine line is at
+  `13:44:02.420`, so about `2.6 s` of it is process start. No instrument read `pg_locks` for `outbox` after the
+  dispatcher connected.
+- **The receiver's wait on the holder.** The only lock snapshot was taken at `t ≈ 2.0 s` after `Popen`, before the
+  dispatcher's first SQL statement, so it holds only the holder's rows; the sink's stdout went to a pipe that was
+  never read. The wait is consistent with a `5.0 s` read timeout and stays `[INFERRED]`.
+- **The pool half.** The holder was rolled back right after the first `[dispatch_error]`, so the sink never had
+  more than one request in flight. Whether *"the pool"* in this entry's chain can be exhausted at all with Relay's
+  dispatcher as written, and whose pool it would be, is still `[INFERRED]`.
+
+**When the outbox lock is released, from source.** The delivery `except` sits inside `async with session.begin()`,
+so the exception never leaves the block; the block exits normally and **commits**. That commit releases the
+`FOR UPDATE` lock and persists `attempts + 1`, which is why the failed attempt is counted (row `1` at `attempts=1`).
+The Din 4 KEY described both candidate outcomes as rollbacks, and that was wrong. The *duration* is not measured.
+
+**Owner:** Din 5 (`2026-09-28`) — the three unobserved items above, with a timestamp on every event and the
+receiver's session read from `pg_stat_activity` rather than from its log.
+
+---
+
+## P-44 — amendment (Week 5 Din 4): all three effects are measured with retained artifacts, and the shape is decided — an environment-gated router, owner Week 6
+
+**Status: MEASURED on Week 5 Din 4 (`2026-09-27`), user's runs plus the reviewer's three-arm differential. Decided by
+the user at Step 6; not implemented; `git diff --name-only HEAD -- src/` → `0`.**
+
+**The three effects, each with its artifact.**
+1. **Saturation.** Two concurrent `/slow-hold?seconds=8` hold both connections of a `2+0` pool; a third request fails
+   with `500` and `sqlalchemy.exc.TimeoutError: QueuePool limit of size 2 overflow 0 reached` after `pool_timeout` —
+   `3.0501 s` and `3.0430 s` at `3.0` (`logs/w5d4_step2_*.log`), and `1.5878` / `3.0956` / `5.0755 s` at `1.5` /
+   `3.0` / `5.0` (`logs/w5d4r_c2c3_20260927_091113_681447.log`). Its `pg_sleep` is never issued — the API log holds
+   nine `pg_sleep` statements for twelve requests, and the three missing are the three `500`s. The failure is inside
+   `Depends(get_db)`.
+2. **The probe starves with it.** `/healthz` and `/db-ping` fail the same way at the same bound while `/health`
+   returns `200` (`D-28` amendment).
+3. **The caller does not have to stay.** `curl -m 3` on `/slow-hold?seconds=20`: the statement ran from
+   `13:25:46.336` to `ROLLBACK` at `13:26:06.361` — **`20.025 s`** — and `pg_stat_activity` showed it `active` at
+   `4.28 s`, after the client had gone (`logs/w5d4_step1_api.log`, `logs/w5d4_step4_after_disconnect.txt`). The
+   connection returned to the pool when the handler finished; it did not leak. **What is missing is cancellation.**
+   And the access log has **no line** for that request (eleven lines, twelve requests), so the request that held a
+   connection for twenty seconds is visible only through `echo=True` (`P-55`).
+   By extrapolation, not run and deliberately never to be run: `?seconds=100000` pins one connection for `~27.8 h`
+   per request at the caller's cost of a three-second `curl`; two such requests take a `2+0` pool, fifteen take the
+   default `5+10` `[INFERRED]`.
+
+**The decision, recorded from the day's report because it was written nowhere in the repository** (grep for
+`ENABLE_TEST_ROUTES`, ignored files included: `0`):
+- **Shape:** option (b), an environment-gated router — test routes register only when `ENABLE_TEST_ROUTES=1`.
+- **Cost accepted:** misconfiguration risk in production, and environment-branching code.
+- **Owner:** Week 6.
+- **Artifacts retained for the measurements the fix affects:** `logs/w5d4_step2_*.log` (saturation) and
+  `logs/w5d4_step4_*.txt` (disconnect).
+- **Endpoints:** keep `/health` (liveness) and `/healthz` (readiness); drop `/db-ping`.
+
+**Reviewer notes, four, none of which changes the pick.**
+- **(a)** Under (b) no measurement is lost: every one of the day's numbers can be re-taken with the flag on. So the
+  Step 6 question *"which measurement can no longer be taken"* has the answer *"none in a flagged run, all in an
+  unflagged one"* — the accepted cost, restated. The protection lasts exactly as long as the flag is off in
+  production, and nothing enforces that. The flag's value is a premise of the same kind as `pool=2+0`: it should be
+  observable at start-up, not only configured.
+- **(b)** (b) alone leaves `seconds` unbounded for anyone who can set the flag. The original three options were priced
+  separately; a cap is compatible with (b) and was neither chosen nor rejected.
+- **(c)** The Step 4 number was settled by the API log's `echo` lines, not by the two `pg_stat_activity` snapshots — the
+  second was taken `5 min 22 s` after release. **With `echo=False` an orphaned request leaves no line anywhere in the
+  API's log.** Whichever decision turns `echo` off owes that sentence.
+- **(d)** *"Connection leak"*, as the day's report called it, is the wrong noun. The resource came back; how long it was
+  held was set by the handler, not by the client.
+
+**Owner:** Week 6 for the code; the `D-28` amendment carries the endpoint relabel.
+
+---
+
+## P-45 — amendment (Week 5 Din 4): the premise is observed, two of the three numbers are replaced with retained artifacts, and the third was not re-taken
+
+**Status: MEASURED on Week 5 Din 4 (`2026-09-27`).**
+
+**The unverifiable gate is satisfied.** This entry said the `pool_size=2` premise *"rests on the configuration having
+been set rather than on it having been observed."* Din 4 observed it three ways, each in a file: the import-time print
+`pool=2+0` (`logs/w5d4_step1_api.log:1`), `pg_stat_activity` at peak `api_w5d4|2|{active}`
+(`logs/w5d4_step1_peak.txt`), and the third request failing (`logs/w5d4_step1_peak_clients.txt`). A fourth witness is
+stronger than all three: the engine's own text, `QueuePool limit of size 2 overflow 0 reached … timeout 3.00`, raised
+from `sqlalchemy/pool/impl.py:167` five times — the component that enforces the limit stating it.
+
+**Two numbers replaced — replaced, not confirmed.**
+
+| Number (Week 4 Din 5) | Din 4 replacement, retained | Note |
+|---|---|---|
+| pool timeout `3.0055 s` | `3.0501` / `3.0430 s` (user, `n = 2`); `1.5878` / `3.0956` / `5.0755 s` at `1.5` / `3.0` / `5.0` (reviewer) | the bound reproduces; the overhead does not |
+| `/healthz` timeout `3.1618 s` | `3.0327 s` (user, `n = 1`, sequential); `1.5634` / `3.0674` / `5.0622 s` (reviewer, concurrent) | follows `pool_timeout`, not `SELECT 1` |
+| receiver wait `2.8133 s` vs `0.4703 s` | **not re-taken** | owner Din 5 |
+
+All with `echo=True`. Across the day's eight measurements at `pool_timeout = 3.0`, from three clients, the overhead
+above the bound is `+32.7` to `+116.5 ms`; Week 4 Din 5's was `+5.5 ms`, about six times below the smallest. Without
+its artifact there is no way to know what the old figure included, so it is retired rather than reconciled.
+
+**Faisla 3 — marked, and its replacement names the wrong kind of tool.** `DIN_05_DESIGN.md` Faisla 3 now carries an
+amendment marking `step4_load_probe.py` `[NOT RETAINED]`, which is correct. Its second sentence names
+`labs/w5d4_pool_probe.py` as the retained re-take; that probe sends three `GET /slow-hold` requests and cannot
+reproduce the `19.8 jobs/s` enqueue rate Faisla 3's harness produced. **The load harness still has no retained
+implementation**, and a reviewer note under the amendment says so. The Din 4 BRIEF's wording (*"load/pool probe"*)
+invited the conflation.
+
+**A new instance of this entry's shape, on the step that retired its gate.** The idle count — the step's first
+observation — was not retained: `Tee-Object` writes no file for an empty pipeline and a `GROUP BY` query returns no
+row for zero (`P-53` amendment). The reviewer's re-take is `total=0`, in `logs/w5d4r_c2c3_20260927_091113_681447.log`.
+
+**Owner:** Din 5 for the third number; Din 6's DoD audit for Faisla 3's status line.
+
+---
+
+## P-52 — amendment (Week 5 Din 4): the shape recurred in both of the day's new generators, and in one file the prewritten line contradicts the measured line above it
+
+**Status: MEASURED on Week 5 Din 4 (`2026-09-27`), source read of `labs/w5d4_pool_probe.py` and
+`labs/w5d4_composed_failure.py` against their logs.** Third consecutive day with the same shape: Din 2's harness
+printed `poll_failures` for an arm it never ran; Din 3 annotated that artifact and left the generator printing; Din 4
+wrote two new generators that each print conclusions no measurement produced.
+
+| Generator | Line it prints | What it is |
+|---|---|---|
+| `w5d4_pool_probe.py` | *"Environment / Active Config: pool_size=2, max_overflow=0, pool_timeout=3.0s"* | a string literal. The live config is the `TimeoutError` text the same probe extracts two sections later |
+| `w5d4_pool_probe.py` | *"Bound analysis: Timeout is anchored on pool_timeout = 3.0s, NOT on handler duration (seconds=8)."* | printed for any elapsed value; no second configuration was run |
+| `w5d4_pool_probe.py` | *"Comparison with Week 4 Din 5 (3.0055 s): Reproduced at {x} s."* | printed for any `x` |
+| `w5d4_composed_failure.py` | *"Relay Log Symptom: Dispatcher recorded '[dispatch_error] ... error=The read operation timed out'"* | **contradicts** the measured line in the same file, `error=` |
+| `w5d4_composed_failure.py` | *"3. Outbox Row Lock Duration : Held for {disp_elapsed} s across the HTTP call"* | `disp_elapsed` starts before `subprocess.Popen`; no lock was read |
+| `w5d4_composed_failure.py` | *"Can operator deduce root cause from Relay log alone? NO."* | a verdict, prewritten |
+
+**The rule that would catch this, stated once:** a harness log line is either a value read from the system under
+test or a label for one. A sentence that states a conclusion is written by a person after the run, in the day's log,
+with its provenance — not by the harness before the run. By that rule the numbers in both files are sound and six
+lines are not.
+
+**Owner:** Din 5 Step 1 — annotate the three Din 4 artifacts in place (Din 3's method, which kept provenance) and
+remove the prose from both generators, so a re-run cannot print it again.
+
+---
+
+## P-53 — amendment (Week 5 Din 4): the rule's cheapest compliance mechanism cannot retain a zero, and two fault injections were again untimestamped
+
+**Status: MEASURED on Week 5 Din 4 (`2026-09-27`).**
+
+**(e) `Tee-Object` writes no file when its input is empty** (`logs/w5d4r_tee_empty_probe.txt`, PowerShell `7.6.6`,
+four arms). The Din 4 BRIEF's idle query — `… GROUP BY 1` with no matching rows — piped to `Tee-Object` produced
+**no file**; the same filter as `count(*)` without `GROUP BY` produced a file containing `0`; `@() | Tee-Object`
+produced no file; `@() | Out-File` produced a `0`-byte file. So `logs/w5d4_step1_idle.txt` never existed, and the zero
+was unretainable with the command as written. **The BRIEF that prescribed it was reviewer-written, and it called
+`Tee-Object` this rule's cheapest compliance.** A zero has to come back as a row — `count(*)` with no grouping — or
+the file cannot tell *"nothing happened"* from *"nothing was recorded"*. `Out-File`'s empty file does not fix that
+on its own: `0` bytes is also what a failed command leaves.
+
+**(f) Two fault injections, again in no file.** Step 4's client disconnect ran as `curl -m 3` inside a `Start-Job`
+whose output was discarded, so the disconnect instant is inferred from the flag, not recorded. Step 5's holder start
+and rollback are printed without timestamps; no line of that probe's own output carries one. Step 4 was settled
+anyway, from the API's `echo=True` timestamps — the rule held by accident rather than by design.
+
+**(g) The close bench's counts are console-only again.** `alembic heads` and the nine counters went to files; the
+`git` counts, the `pg_database` count and the process count did not, as on Din 3. The reviewer's re-run of the whole
+bench is in `logs/w5d4r_close_bench.txt`.
