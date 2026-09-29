@@ -66,7 +66,6 @@ async def main():
     log("================================================================================")
     log(f"Run ID: {run_id}")
     log(f"Target: {API_URL}")
-    log("Environment / Active Config: pool_size=2, max_overflow=0, pool_timeout=3.0s")
     log("Database Setting: echo=True (hardcoded in src/database.py, all latencies carry echo=True)\n")
 
     log("Firing 3 concurrent requests to /slow-hold?seconds=8...")
@@ -90,10 +89,8 @@ async def main():
     failed_reqs = [r for r in results if r["status"] != 200]
     if failed_reqs:
         failed_elapsed = failed_reqs[0]["elapsed_s"]
-        log("\n=== SATURATION TIMEOUT VERDICT ===")
+        log("\n=== SATURATION TIMEOUT SUMMARY ===")
         log(f"Observed timeout latency: {failed_elapsed:.4f} s (echo=True)")
-        log("Bound analysis: Timeout is anchored on pool_timeout = 3.0s, NOT on handler duration (seconds=8).")
-        log(f"Comparison with Week 4 Din 5 (3.0055 s): Reproduced at {failed_elapsed:.4f} s.")
 
 
 if __name__ == "__main__":

@@ -2814,3 +2814,184 @@ anyway, from the API's `echo=True` timestamps — the rule held by accident rath
 **(g) The close bench's counts are console-only again.** `alembic heads` and the nine counters went to files; the
 `git` counts, the `pg_database` count and the process count did not, as on Din 3. The reviewer's re-run of the whole
 bench is in `logs/w5d4r_close_bench.txt`.
+
+---
+
+## P-56 — Every Relay lifecycle log line is printed inside its transaction, before `COMMIT` — and Din 5's outage landed in that gap: the worker logged `Marked job 8 as 'succeeded'` for a mark that never committed
+
+**Status: MEASURED on Week 5 Din 5 (`2026-09-28`), disposable database `relay_w5d5` (dropped at close);
+`logs/w5d5_step6_worker.stdout.log`, `logs/w5d5_step6_reaper.stdout.log`, `logs/w5d5_B_20260928_082503_817815_dispatcher.log`;
+source read `src/worker.py` at `a2ec8e9f…`. Found by the reviewer; the day's report described this job as
+*"sleep finished, 4 mark retries failed"*.**
+
+**The instance** (worker log lines `326`–`336`, job `8`, the one in the handler when Postgres stopped):
+
+```text
+2026-09-28 16:03:56,746 UPDATE jobs SET status=... ('succeeded', None, None, 8, 'running', 1)
+[worker-5504] [mark] Marked job 8 as 'succeeded' (job_id=8, rowcount=1).
+2026-09-28 16:03:56,751 COMMIT
+[worker-5504] [mark_error] Database mark failed for job_id=8: DBAPIError: ... ConnectionDoesNotExistError: connection was closed in the middle of operation
+[worker-5504] [mark_error] ... ConnectionError: unexpected connection_lost() call
+[worker-5504] [mark_error] ... ConnectionRefusedError: [WinError 1225] ...   (×2)
+[worker-5504] [mark_abandoned] Mark retry deadline reached for job_id=8. Abandoning mark for reaper reclaim.
+```
+
+`docker compose stop db` was in progress (`stop_begin 16:03:55.974`, `stop_returned 16:03:57.355`,
+`logs/w5d5_step6_fault.txt`). The `UPDATE` executed and returned `rowcount=1`, the success line printed, and the
+`COMMIT` was the statement that died. **The witness that it did not commit is another process:** the reaper's first
+pass after recovery, `[DB_TIME: 2026-09-28T10:34:35.924752+00:00] [reclaim] job_id=8 pre_status=running matched=1`.
+The job was claimed again at generation `2`, attempt `2`, ran its handler a second time, and the second
+`Marked job 8 as 'succeeded'` (`16:04:37.142`, `COMMIT 16:04:37.146`) is the one that is true. Final
+`succeeded|2|1` (`logs/w5d5_step6_final_jobs.txt`).
+
+**So the worker's log holds two success lines for job `8`, `41 s` apart, and the first describes a state that never
+existed.** The day's tag census reads `worker tag[mark]=31` for `30` jobs (`logs/w5d5_step6_summary.txt`) — a count
+of prints, not of commits.
+
+**It is not one line; it is the shape of all four lifecycle writers** `[MEASURED from echo ordering in today's logs]`:
+
+| Line | Printed at | Its `COMMIT` | Evidence |
+|---|---|---|---|
+| worker `[claim] Claimed job …` | `src/worker.py:223`, inside `async with session.begin()` | block exit | worker log `318` before `COMMIT` `319` |
+| worker `[mark] Marked job …` | `src/worker.py:333`, inside `async with session.begin()` | block exit | `329` before `330` — the live instance above |
+| reaper `[reclaim] … matched=1 post_status=pending` | inside the reclaim transaction | after the print | reaper log `222` before `COMMIT` `223` |
+| dispatcher `[dispatch] … status=dispatched` | before its `UPDATE outbox SET dispatched_at` | after the print | arm B: print, then `UPDATE 13:55:16.031`, `COMMIT 13:55:16.089` |
+
+**Why it was invisible until today.** The window is `UPDATE` → `COMMIT`, about `5 ms` here (`56.746` → `56.751`). A
+connection has to die inside that window, and Din 5's outage happened to land there. `n = 1`, by phase, not by design.
+
+**What it costs.**
+1. **A log-built incident timeline is wrong in the direction that hides the incident:** job `8` "succeeded" at
+   `16:03:56`; the database's success is `16:04:37` `[the second time is MEASURED from echo; completed_at itself is
+   INFERRED from the UPDATE statement — the DB was dropped]`.
+2. **Any log-derived count over-counts** exactly the transitions that failed. This is a measured reason for
+   `D-28`'s choice of SQL queries over log parsing, which `D-28` did not have.
+3. **It is `P-52`'s shape inside `src/`:** a line asserting an outcome it did not observe. `P-52` was a harness
+   printing verdicts before a run; this is a process printing a state before its commit.
+
+**Fix directions — Week 6, and each one narrows:**
+- **Print after the `session.begin()` block exits.** The failure flips direction: a crash between `COMMIT` and the
+  print leaves committed state with no log line. **That direction is recoverable** — the database is the source of
+  truth and can be queried — where the current one is a false claim. `rowcount` is still available after the block
+  if it is kept in a variable.
+- **Two lines** (`attempting` inside, `committed` after). Honest in both directions; doubles lifecycle log volume.
+- **Neither removes the need to read state.** A log line is evidence that code *ran*, not that a row *changed*.
+
+**Missed twice before today, and recorded as such.** Din 2 reviewed the mark's bounded retry in detail and did not
+flag the print's position; `DIN_05_KEY.md` `Q4(b)` wrote the in-flight path as *"mark `UPDATE` → DB down →
+`[mark_error]`"*, i.e. assumed the `UPDATE` itself would fail.
+
+**Owner:** Week 6, with `P-55` — both are edits to log lines in `src/`. **The census goes with the fix** (every
+`print` in `src/` that sits inside a transaction and states an outcome): it scopes the edit, and Din 6's budget is
+spent on the week's verdicts.
+
+---
+
+## P-41 — amendment (Week 5 Din 5): the chain is measured end to end — one sequential dispatcher fills the receiver's pool, the effect is applied by the request Relay logged as an error, and Relay credits a `duplicate`
+
+**Status: MEASURED on Week 5 Din 5 (`2026-09-28`) on `relay_w5d5` (dropped at close). Probe
+`labs/w5d5_chain_probe.py` (mtime `13:53:29`, before all three arms); artifacts
+`logs/w5d5_{A,B,C}_*_{probe,sink,dispatcher,poll}.log`. `n = 1` per arm.**
+
+**Every link Din 4 could not see, now observed.**
+
+| Link | Arm B (`--hold 6`) | Arm C (`--hold 20`) |
+|---|---|---|
+| receiver wait, from Postgres | `sink_w5d5 active / Lock / transactionid`, blocker = holder pid `68` (`22` + `3` polls) | two sink sessions, both `Lock / transactionid`, blocker = holder pid `76`; **max `2` sink sessions in any of `111` polls** |
+| outbox lock hold, attempt 1 | `SELECT … FOR UPDATE` `13:55:09.791` → `COMMIT` `13:55:14.839` = **`5.048 s`**, ended by `COMMIT` (with `UPDATE outbox SET attempts`) | `5.06 s`, same shape |
+| retry spacing | attempt 2 `SELECT` `13:55:14.846` — `7 ms` after the commit, no sleep (`P-35`) | attempts at `+0`, `+5.06`, `+10.10`, `+13.15`, `+16.18`, `+19.21 s` (echo) |
+| orphaned handler | H1's `BEGIN 13:55:09.830` → `COMMIT 13:55:15.878` = `6.05 s`; its client left at `≈14.83` | H1 and H2 held both pooled connections for the whole hold |
+| receiver pool exhausted | — | attempts 3, 4, 5 → `sqlalchemy.exc.TimeoutError: QueuePool limit of size 2 overflow 0 reached … timeout 3.00` **in the sink's log**; Relay logs `[dispatch_failed] … status_code=500`. First at `+13.1 s` (dispatcher echo — the sink's error lines carry no timestamp) |
+| access log | `3` lines (health + H2 + row 2) | `6` lines = `8` requests − `2` orphans |
+
+**Rewritten from today's files only:** *each timed-out dispatch leaves a handler running in the receiver, holding one
+of the receiver's pooled connections while it waits on the conflicting writer. One sequential dispatcher fills the
+receiver's `2+0` pool after two timeouts. From then on the symptom is `pool_timeout` in the receiver's log and
+`status_code=500` in Relay's; Relay's own pool never sees pressure.* The original sentence's *"two dispatch
+attempts"* was right on count and wrong on concurrency; *"in Relay"* was wrong on process.
+
+**Attribution — the finding that was not in the question.** The one `sink_deliveries` row's `received_at` is the
+**start** of the transaction that wrote it (`now()`), and in both arms it matches H1 — attempt 1's request:
+
+| Arm | `received_at` | H1 `BEGIN` | Relay's line for attempt 1 | Relay's success line | Sink's answer to that request |
+|---|---|---|---|---|---|
+| B | `08:25:09.831029+00` = `13:55:09.831` | `13:55:09.830` | `[dispatch_error] … error= attempts=1` | attempt 2, `status=dispatched attempts=2` | `duplicate` |
+| C | `08:25:52.973202+00` = `13:55:52.973` | `13:55:52.971` | `[dispatch_error] … error= attempts=1` | attempt 6, `status=dispatched attempts=6` | `duplicate` |
+
+**The request that applied the effect was logged by Relay as a failure, and the request Relay credited was a no-op.**
+Relay cannot tell them apart: its success condition is `status_code == 200`, and `applied` and `duplicate` are both
+`200` (`P-42`). Winner `H1` in both arms is `n = 2` of a scheduling race — the arm B poll caught the wake-up
+directly (`13:55:15.868`: H2 blocked by **H1**'s pid `67`, no longer by the holder) — and is reported as data, not
+as a law. **Row `1` closed at `attempts = 6` for one effect** — `attempts` counts committed marks (`P-35`).
+
+**A third `now()` reading, one table over.** `outbox.dispatched_at` is also `now()`, so it is the **start** of the
+successful attempt's transaction, not the moment delivery was confirmed: arm B `13:55:14.847` vs the effect's
+`COMMIT` `13:55:15.878` (`1.03 s` earlier); arm C `13:56:12.144` vs `13:56:13.027` (`0.88 s` earlier). Any
+`dispatched_at − created_at` latency is measured to when the attempt **began**.
+
+**Fix options, all Week 6, all `narrow`:** `lock_timeout` on the receiver's insert (the stall becomes a named error;
+the lock still exists) · cancellation on disconnect (no orphans; the receiver still waits) · dispatcher backoff
+(`P-35`; fewer orphans per incident, not none).
+
+---
+
+## P-45 — amendment (Week 5 Din 5): the third number is replaced, and all three of Week 4 Din 5's lost numbers now have retained replacements
+
+**Status: MEASURED on Week 5 Din 5 (`2026-09-28`), `logs/w5d5_A_20260928_082424_934619_{probe,sink,poll}.log`,
+sink `pool=2+0` observed in its own log, `echo=True`; client-side construction cost measured by the reviewer.**
+
+| Number (Week 4 Din 5) | Din 5 replacement | Endpoints |
+|---|---|---|
+| uncontended `0.4703 s` | first **`0.0305 s`**, median of the other nine **`0.0185 s`**, max `0.0305 s` (`n = 10`) | client `perf_counter` around `client.post`, one reused `httpx.AsyncClient` |
+| contended `2.8133 s` | client **`3.0565 s`** at a `3.0 s` holder, status `200 applied` | client `t0` taken **before** `httpx.AsyncClient()` is constructed → response |
+| — | server-side lock wait **`2.461 s`** | sink echo `BEGIN 13:54:30.524` → `COMMIT 13:54:32.986` |
+
+**The two contended numbers differ by `0.54 s` and the gap is before the `INSERT`:** `holder_start 13:54:29.982` →
+sink `BEGIN 13:54:30.524`. The probe builds its `httpx.AsyncClient()` inside the timed task, and constructing one
+costs **`0.366`–`0.700 s`** on this machine (`n = 4`, `[MEASURED-R]`) — synchronously, on the event loop. Attributing
+the gap to that is `[INFERRED]`; the construction cost is measured. The first poll landed at `13:54:30.612`, `0.63 s`
+after `holder_start`, consistent with the same blocked loop.
+
+**What the pair says about `2.8133 s`:** client-observed contended latency tracks *holder end − request send*, and the
+server's wait tracks *holder end − `INSERT` start*; today those are `0.54 s` apart for a reason unrelated to the lock.
+Without Week 4 Din 5's probe there is no way to know which one `2.8133 s` was. **Retired, not reconciled** — the
+same verdict as `3.0055 s` and `3.1618 s`.
+
+**Status of this entry:** the three numbers are replaced with retained artifacts. **Faisla 3's load harness is still
+`[NOT RETAINED]`** — that half of `P-45` is untouched. Owner for its status line: Din 6's DoD audit.
+
+---
+
+## P-57 — The seal's SHA-256 is taken over working-copy bytes, and a fresh clone on this machine checks the frozen files out with different bytes: the recorded hashes do not reproduce for a third party on Windows
+
+**Status: MEASURED-R on Week 5 Din 5 review (`2026-09-28`), a local `git clone --no-hardlinks` into `%TEMP%`
+(removed after, `clone_removed=True`).** Found while designing Din 6's commit step, not during the day's run.
+
+`core.autocrlf = true` on this checkout and there is **no `.gitattributes`**. The frozen files are written with LF
+only (`DIN_02`…`DIN_05`: `crlf=0`), so today the working copy and the committed blob are byte-identical and the
+recorded hashes match both. A fresh clone with the same setting converts LF → CRLF on checkout:
+
+| File | Recorded seal (working copy, LF) | Fresh clone, same machine (CRLF) |
+|---|---|---|
+| `DIN_03_PREDICTIONS_FROZEN.md` | `B2A10C31…` | `3B894833…` (`55` CRLF) |
+| `DIN_04_PREDICTIONS_FROZEN.md` | `62196E9A…` | `42D0F894…` (`70` CRLF) |
+
+**So *"the hash is now auditable by a third party"* — `P-47`'s actual point, and the reason the frozen files were
+put in a commit — is true only for a third party whose checkout keeps LF.** A reviewer who clones on Windows with
+default Git for Windows settings and runs `Get-FileHash` gets a mismatch and would reasonably conclude the file was
+edited after the seal. On Linux or macOS without `autocrlf` the bytes should be LF and match `[INFERRED — not run]`.
+
+**What is invariant:** the committed **blob**. `git cat-file blob HEAD:<path>` returns the same bytes on every clone,
+so hashing that (or recording `git hash-object`, which is over the blob) survives checkout conversion. The seal's
+*content* has not changed; the *instrument* depends on a setting it does not record.
+
+**Options, all a Din 6 decision inside `D-32` (publishing surface), none an edit to `src/`:**
+- **`.gitattributes`: `*_PREDICTIONS_FROZEN.md -text`** (or `eol=lf`) — checkout stops converting these files. Narrows
+  to *"any clone of a commit that has the attribute"*; clones of older commits still convert.
+- **Record the blob hash as well as the working-copy SHA-256** — `git hash-object <file>` at seal time, compared against
+  `git rev-parse HEAD:<file>` later. Works for every historical commit; it is SHA-1 and a different number from every
+  hash recorded so far.
+- **Both.** The attribute protects future seals' working-copy hash; the blob hash gives an audit path for the old ones.
+
+**Owner:** Din 6, alongside `P-54`'s three decisions. `narrows`, not `closes`: a seal is evidence that a file existed
+before a measurement only if the timestamp is also trusted, and nothing here changes that.

@@ -171,19 +171,12 @@ async def main():
         for r in outbox_rows:
             log(f"outbox_id={r['id']} job_id={r['job_id']} attempts={r['attempts']} dispatched_at={r['dispatched_at']}")
 
-        # 9. Record 4 Structured Observations
+        # 9. Record Structured Output
         log("\n================================================================================")
-        log("=== EMPIRICAL MEASUREMENT & OBSERVATIONS (P-41 COMPOSED CHAIN) ===")
+        log("=== EMPIRICAL MEASUREMENT & LABELS (P-41 COMPOSED CHAIN) ===")
         log("================================================================================")
-        log(f"1. Dispatcher Observed Behaviour : Timeout occurred at {disp_elapsed:.4f} s (echo=True)")
-        log(f"2. Error Class in Process Log    : {error_line}")
-        log(f"3. Outbox Row Lock Duration      : Held for {disp_elapsed:.4f} s across the HTTP call")
-        log("4. Observability Gap Analysis    :")
-        log("   - Relay Log Symptom: Dispatcher recorded '[dispatch_error] ... error=The read operation timed out'")
-        log("   - Actual Root Cause: Uncommitted row lock on 'job:42' in receiver's sink_deliveries table.")
-        log("   - Can operator deduce root cause from Relay log alone? NO.")
-        log("   - Relay sees a generic HTTP read timeout; the causal chain crosses the network boundary")
-        log("     and is completely masked by the RPC interface.")
+        log(f"Dispatcher elapsed : {disp_elapsed:.4f} s (echo=True)")
+        log(f"Dispatcher error   : {error_line}")
         log("================================================================================")
 
     finally:

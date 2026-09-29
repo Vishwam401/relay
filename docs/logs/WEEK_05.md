@@ -1409,3 +1409,331 @@ pehla aadha isi sawaal ka hai, aur uska jawab kisi log me nahi, `pg_stat_activit
 *Din 4 BRIEF:* [`../daily/week_05/DIN_04_BRIEF.md`](../daily/week_05/DIN_04_BRIEF.md) ·
 *Din 4 KEY:* [`../daily/week_05/DIN_04_KEY.md`](../daily/week_05/DIN_04_KEY.md) ·
 *Seal:* [`../daily/week_05/DIN_04_PREDICTIONS_FROZEN.md`](../daily/week_05/DIN_04_PREDICTIONS_FROZEN.md)
+
+---
+
+## Din 5 — `P-41` ki chain end-to-end naapi gayi, `D-30` ke dono gate chale, aur outage ne ek aisi log line pakdi jo kabhi sach nahi thi (`2026-09-28`)
+
+**Layer L2, `src/` gate held teesre din: `git diff --name-only HEAD -- src/` → `0`, chhe hashes Step 0 ke barabar.**
+Aaj `labs/w5d5_chain_probe.py` naya bana aur `scripts/supervisor.py` badla — dono instrument hain, feature nahi.
+
+**Din ka pehla half saaf compose hua, har link ek file me.** Arm C me ek hi sequential dispatcher ne receiver ka
+`2+0` pool do timeouts me bhar diya: `pg_stat_activity` me do sink sessions `Lock / transactionid` pe, blocker holder
+ka pid, aur teesre se paanchve attempt ne sink ke log me `QueuePool limit of size 2 overflow 0 reached … timeout
+3.00` diya — jabki Relay ne sirf `status_code=500` likha. **Aur ek finding jo sawaal me nahi thi:** dono arms me
+effect us request ne apply kiya jise Relay ne `[dispatch_error] … error=` likha, aur Relay ka `status=dispatched`
+ek `duplicate` ko mila. `received_at` ne ye bataya, echo lines ne nahi.
+
+**Doosra half `D-30` ke dono gate the, aur dono chale.** `35.006 s` DB-down (`stop_returned → start_begin`, file me),
+teen process supervisor ke neeche, `30` jobs ka backlog: `EXITED` lines `0`, `30/30 succeeded`, `pending_or_running=0`.
+**Par din ka sabse zaroori finding usi run ke in-flight job me chhupa tha aur report ne use miss kiya:** worker ne
+`[mark] Marked job 8 as 'succeeded' (rowcount=1)` print kiya, **phir** uska `COMMIT` mara. Reaper ne 40 s baad job 8
+ko `pre_status=running` pe paaya. Relay ki har lifecycle line `COMMIT` se pehle print hoti hai — **`P-56`**.
+
+**Seal lagatar chauthe din held:** `DIN_05_PREDICTIONS_FROZEN.md` SHA-256
+`8B38705BD0F9E21999BF5910DB0F7821B6B8D533E045AE30D1A3C00F0CDB10C2` — Step 0 ki **file**, Step 7 ki line, aur
+reviewer ka independent hash, teeno barabar. File `13:39:03` pe likhi gayi, arm A `13:54:24` pe chala.
+
+---
+
+### 📊 Measured / Observed
+
+User ke saare artifacts reviewer ne padhe. **Reviewer ke apne chaar measurements `[MEASURED-R 2026-09-28]` hain** —
+httpx client construction, refused-connect cost, ek throwaway repo me `.gitignore` ke teen shapes, aur ek fresh local
+clone me frozen files ke bytes (Din 6 ke liye; `P-57`). Temporary scripts delete hue; throwaway repo aur clone `%TEMP%`
+me bane aur hataye gaye (`tmp_removed=True`, `clone_removed=True`).
+
+#### 1. Bench, seal, aur ek timing note
+
+| Gate | Measured | File |
+|---|---|---|
+| Din 4 commit | `c145a11`, exactly `8` staged files, koi KEY/`P-54` class nahi | `w5d5_step0_staged.txt`, `w5d5_step0_d4_tracked.txt` → `3` |
+| `src_diff` · chhe hashes · `heads` | `0` · `a2ec8e9f…` `edcde815…` `dcdb6343…` `d55e3b8a…` `fc5bde22…` `fcfc9059…` · `w4d4_sink_unique (head)` — Step 0 aur Step 7 identical ✅ | `w5d5_step0_bench.txt`, `w5d5_step7_bench.txt` |
+| Din 2 supervisor log SHA-256 | `9ABF8EA2…5A6F` — Step 0, Step 5 check, aur reviewer ka close re-read ✅ | `w5d5_step5_check.txt` |
+| evidence DB, nau counters | `133\|145\|19\|4\|7\|39\|5\|0\|1` — Step 0, Step 7, aur reviewer ka close re-read; **delta `0` on the nine counters** ✅ | `w5d5_step0_counters.txt`, `w5d5_step7_bench.txt` |
+| `relay_underscore_dbs` · `relay_python` · `key_index`/`key_tree`/`pyc_control` · `p54` · `labs_w5d5_ignored` | `0` · `0` · `0`/`0`/`1` · `20` · khaali ✅ | `w5d5_step7_bench.txt` |
+
+**Timing note:** Step 0 ka bench aur counters `2026-09-27 18:37` pe bane — Din 4 ke commit ke turant baad, seal se
+`19 h` pehle. `src/` ke liye Step 7 ki equality us gap ko cover karti hai; bench ka *"Step 0"* label kal raat ka hai.
+
+#### 2. Step 1 — `P-52` ki cleanup
+
+`9` annotations teen Din 4 artifacts me (`w5d4_step2_…073239` lines `7`/`26`/`28`, `…073712` `7`/`26`/`28`,
+`w5d4_step5_…` `55`/`58`/`61`) ✅. Generators se chhe prose lines hati, `py_compile` clean ✅. **Ek residue:**
+`w5d4_composed_failure.py` ab `Dispatcher elapsed : {disp_elapsed}` print karta hai — neutral label, par
+`disp_elapsed` abhi bhi `Popen` se shuru hota hai. Label value ka start nahi batata.
+
+#### 3. Arm A — `P-45` ka teesra number (`logs/w5d5_A_20260928_082424_934619_*`)
+
+| Observation | Value | File |
+|---|---|---|
+| sink premise | `resolved_db=relay_w5d5 app_name=sink_w5d5 pool=2+0`, probe log me copy | probe + sink log |
+| uncontended (`n = 10`) | first **`0.0305 s`** · median of nine **`0.0185 s`** · max `0.0305 s` | probe log |
+| sink-side first request | `BEGIN 29.668 → COMMIT 29.680` (`12 ms`, `generated in 0.00022s`) vs `~4 ms` baad me (`cached since …`) | sink log |
+| contended `POST job:42` | **`200`, `3.0565 s`**, `result=applied` | probe + sink log |
+| sink ka lock wait, server side | `BEGIN 13:54:30.524 → COMMIT 13:54:32.986` = **`2.461 s`** | sink log (echo) |
+| poll, holder ke dauran | `8` samples `sink_w5d5 active / Lock / transactionid`, `blockers=[62]` = holder ka pid; holder khud `idle in transaction / Client / ClientRead` (`8`) | poll log |
+| sink log, wait ke dauran | **kuch nahi** — `INSERT` echo, phir `2.46 s` baad `COMMIT` aur `result=applied` | sink log |
+| `received_at` | `08:24:30.527438+00` = `13:54:30.527` — `INSERT` ke transaction ka start, `COMMIT` (`32.986`) nahi | probe log |
+| row id | `12` — `11` holder ke rolled-back `INSERT` ne khaya (sequence non-transactional) | probe log |
+
+**Do contended numbers, `0.54 s` ka farak, aur wo lock se pehle hai.** `holder_start 29.982` → sink `BEGIN 30.524`.
+Probe `httpx.AsyncClient()` timed task ke **andar** banata hai, aur reviewer ne naapa: construction **`0.366`–`0.700 s`**
+(`n = 4`), synchronous, event loop pe `[MEASURED-R]`. Gap ko usi ko attribute karna `[INFERRED]` hai. Pehla poll bhi
+`30.612` pe aaya (`+0.63 s`) — usi blocked loop ke consistent. **Replacement:** `0.4703 s` → `0.0305` / `0.0185 s`;
+`2.8133 s` → client `3.0565 s`, server `2.461 s`. **Retired, reconcile nahi** (`P-45` amendment).
+
+#### 4. Arm B — `--hold 6` (`logs/w5d5_B_20260928_082503_817815_*`)
+
+| Observation | Value | Source |
+|---|---|---|
+| anchor | probe `13:55:09.852`; dispatcher ka `SELECT … FOR UPDATE` echo `09.791` — anchor **reader-side, `61 ms` late** | probe + dispatcher log |
+| `holder_end − anchor` | `6.136 s` — `holder_end` line `conn.close()` ke **baad** likhi gayi; rollback `≤ 15.878` (sink ka applied `COMMIT`), anchor + 6 = `15.852` | probe + sink log |
+| attempts before holder_end | **2** — `+0` aur `+5.055 s` (`cached since 5.055s ago`) | dispatcher log |
+| attempt 1 lock hold | `SELECT 09.791 → COMMIT 14.839` = **`5.048 s`**; end = `UPDATE outbox SET attempts` + **`COMMIT`** | dispatcher log |
+| attempt 2 lock hold | `SELECT 14.846 → COMMIT 16.089` = `1.243 s` | dispatcher log |
+| result lines | `[dispatch_error] … error= attempts=1` · `[dispatch] … status=dispatched attempts=2` · row 2 `status=dispatched attempts=1` | dispatcher log |
+| sink | H1 `BEGIN 09.830`, H2 `BEGIN 14.928`; `COMMIT 15.878 result=applied`, `COMMIT 15.920 result=duplicate` | sink log |
+| wake-up, seen by Postgres | `15.868`: H2 (pid `71`) `blockers=[67]` — H1, holder nahi | poll log |
+| final | row 1 `attempts=2`, `dispatched_at 13:55:14.847`; row 2 `attempts=1`; `sink_deliveries` **1** row, `received_at 13:55:09.831029` | probe log |
+| census | `access_lines=3` · `applied 1, duplicate 2` | probe log |
+
+**`received_at` = H1 ka `BEGIN`** → effect attempt 1 ki request ne apply kiya, jiska client `14.83` pe ja chuka tha.
+H1 client ke jaane ke `1.04 s` baad bhi lock pe wait karta raha — **sink pe bhi cancellation nahi** (Din 4 ne API pe
+naapa tha). Relay ka success attempt 2 ko mila, jise sink ne `duplicate` diya. Aur `dispatched_at` (`14.847`) effect ke
+`COMMIT` (`15.878`) se **`1.03 s` pehle** hai — wo attempt 2 ke transaction ka start hai.
+
+#### 5. Arm C — `--hold 20` (`logs/w5d5_C_20260928_082544_746686_*`)
+
+Anchor probe `13:55:53.019`; offsets dispatcher echo `BEGIN 52.936` se, jahan diya hai.
+
+| `t − anchor` | sink sessions `Lock` (poll) | dispatcher ki last result line | sink log ki nayi lines |
+|---|---|---|---|
+| `+2` (`55.127`) | `1` | — | H1 ka `INSERT` echo |
+| `+7` (`59.969`) | `2` | `[dispatch_error] … attempts=1` | H2 ka `INSERT` echo |
+| `+12` (`04.984`) | `2` | `[dispatch_error] … attempts=2` — attempt 3 `QueuePool` ki queue me, Postgres ko invisible | — |
+| `+17` (`10.027`) | `2` | `[dispatch_failed] … status_code=500 attempts=4` | do `500` access lines + do `TimeoutError` tracebacks |
+| `+22` (`15.072`) | `0` | `[dispatch] outbox_id=2 status=dispatched attempts=1` | `applied`, `duplicate` ×3, do `200` |
+
+- **Max sink sessions in any poll: `2`**, `111` polls me. Pehla 2-lock poll `13:55:58.121`, aakhri lock poll `13:56:12.958`.
+- Attempts `+0`, `+5.06`, `+10.10`, `+13.15`, `+16.18`, `+19.21 s`; shapes `error=`, `error=`, `500`, `500`, `500`,
+  `dispatched`. Row 1 final **`attempts=6`**, ek effect ke liye.
+- **`QueuePool limit … timeout 3.00`: sink ke log me, `3` baar; Relay ke log me kabhi nahi.** Pehli baar `+13.15 s` —
+  dispatcher echo se, kyunki sink ki uvicorn error lines pe timestamp nahi hota.
+- `received_at 13:55:52.973202` = H1 `BEGIN 52.971` — **phir attempt 1 ki orphan jeeti**, `n = 2`. Attempt 6 ko
+  `13:56:13.031` pe connection mila (H1 ke `COMMIT 13.027` ke `4 ms` baad) aur `duplicate` aaya; Relay ne
+  `status=dispatched attempts=6` likha. `dispatched_at 13:56:12.144` = attempt 6 ka start.
+- Access lines `6` = `8` requests − `2` orphans. Census ka `exceptions={"exc.TimeoutError": 3, "sqlalchemy.exc.TimeoutError": 3}`
+  **lines ginta hai, events nahi** — ek traceback do regex matches deta hai.
+
+**`P-41` dobara likha, sirf aaj ki files se** (`P-41` amendment): har timed-out attempt receiver me ek handler chhodta
+hai jo ek pooled connection pakde conflicting writer pe baitha rehta hai; **ek** sequential dispatcher do timeouts me
+receiver ka `2+0` pool bhar deta hai; symptom receiver ke log me `pool_timeout`, Relay me `500`.
+
+#### 6. Step 5 — supervisor
+
+`RELAY_SUPERVISOR_PREFIX` na ho to `RuntimeError` — **fail-closed** ✅. Dispatcher teesra process ✅. Dry run: `3`
+`Started` lines, Din 2 log SHA intact, `0` Relay python ✅. **BRIEF ne prefix-missing ke faisle ka cost ek line me
+maanga tha — wo kisi file me nahi hai.** Supervisor log UTC likhta hai (`+00:00`), baaki sab local — join karte waqt
+`+5:30`.
+
+#### 7. Step 6 — `35 s` outage, fleet, backlog
+
+**Timeline, sab files se:**
+
+| Moment | Value | File |
+|---|---|---|
+| supervisor start | `16:03:02.022` (log me `10:33:02 UTC`) | `w5d5_step6_supervisor.log` |
+| premise | chaar lines, chaaron `resolved_db=relay_w5d5` (API `api_w5d5 2+0`; baaki `5+10`, distinct names) ✅ | `w5d5_step6_premise.txt` |
+| backlog | `30` ids | `w5d5_step6_jobs.txt` |
+| job 8 claim / execution row | `UPDATE 16:03:55.643`, `COMMIT 55.660` / `COMMIT 55.717` | worker log |
+| `stop_begin` · `stop_returned` | `16:03:55.974` · `16:03:57.355` | `w5d5_step6_fault.txt` |
+| job 8 mark | `UPDATE 56.746` → print `Marked … 'succeeded' rowcount=1` → `COMMIT 56.751` **mara** | worker log |
+| `start_begin` · `start_returned` | `16:04:32.361` · `16:04:33.387` → **outage `35.006 s`** ✅ | `w5d5_step6_fault.txt` |
+| pehli successful DB activity | worker `16:04:35.001` (`+1.61 s`) · dispatcher `35.780` (`+2.39 s`) · reaper `35.902` (`+2.52 s`) | stdout logs |
+| reclaim | `[reclaim] job_id=8 pre_status=running matched=1`, DB time `16:04:35.924` | reaper log |
+| job 8 dobara | job **9** pehle claim hua (`35.066`); job 8 gen `2` attempt `2` `36.119`; mark `COMMIT 37.146` | worker log |
+| final | `succeeded\|1\|29` · `succeeded\|2\|1` · `pending_or_running=0` | `w5d5_step6_final_jobs.txt` |
+
+**Lease:** `claimed_at` ≈ `16:03:55.64` → lease `16:04:25.6` pe expire hua, **DB down ke dauran**. Reclaim reaper ke
+pehle successful pass pe, expiry ke `10.3 s` baad. **Is run me recovery outage-bounded thi, lease-bounded nahi.**
+
+**Tag census** (`w5d5_step6_summary.txt`): worker `claim 31 · execute 31 · mark 31 · mark_error 4 · mark_abandoned 1 ·
+poll_error 5`; reaper `poll_error 7 · reclaim 1`; dispatcher `poll_error 7`. **`mark=31` prints hain, commits nahi** —
+`30` jobs, ek print jhootha (`P-56`). `execute=31` = job 8 ka handler do baar chala (`sleep`, koi effect nahi).
+
+**Failure classes per process** — teeno me same shape: pehli failure `InterfaceError` (stale pooled connection), phir
+`5` × `ConnectionRefusedError`, aakhri `ConnectionError: unexpected connection_lost()` (Postgres start ho raha tha). Worker
+ke mark path pe pehli failure `ConnectionDoesNotExistError: connection was closed in the middle of operation` — **`COMMIT`
+ke beech**. `CannotConnectNowError` aaj kahin nahi aaya.
+
+**Sampler — outage ke andar** (`w5d5_step6_sampler.txt` + API log):
+
+| Endpoint | Samples | Exception (API log) |
+|---|---|---|
+| `/health` | `200` ×4, `0.0027`–`0.0487 s` | — |
+| `/healthz` | pehla **`500 0.042 s`**, phir `500` `4.077` / `4.080` / `4.089 s` | pehla: `InterfaceError: connection is closed` (stale pooled, `pool_pre_ping=False`); baaki `ConnectionRefusedError` |
+| `/db-ping` | `500` `4.186` / `4.101` / `4.091 s`, aakhri `500 1.551 s` (`16:04:33.675`) | `ConnectionRefusedError` ×3; aakhri `ConnectionError: unexpected connection_lost()` |
+| recovery ke baad pehla `/healthz` | `16:04:36.800` **`200 0.060 s`**; phir sab `200` | — |
+
+API log ki `api_exc` counts traceback lines hain: `8` failing requests = `1` stale (tin chained lines) + `6` refused +
+`1` connection_lost.
+
+**`4.08 s` kahan se aata hai — reviewer ne naapa** `[MEASURED-R]`: `DATABASE_URL` ka host `localhost` hai;
+`getaddrinfo('localhost')` → `['::1', '127.0.0.1']`; closed port pe refused connect `127.0.0.1` `2.016`/`2.032 s`,
+`::1` `2.017`/`2.032 s`, `localhost` **`4.046`/`4.062 s`**. Windows ek refused connect pe `~2 s` leta hai, aur asyncpg dono
+addresses try karta hai. **DB-down `/healthz` = do refused connects + `~30 ms`.** Din 4 ka saturated `/healthz` `3.067 s` =
+`pool_timeout`. Aaj latency `~1 s` se alag hui — **par do asambandhit configs ke sanyog se:** host `127.0.0.1` pe DB-down
+`~2.03 s` hota, aur `pool_timeout = 4.0` pe starvation `~4.06 s` `[INFERRED from the measured parts, not run]`.
+
+**`D-30` ke liye do lines:**
+- **Gate 1 — restarts bounded over a `~30 s` DB-down: satisfied as written.** `35.006 s` outage, `EXITED` lines `0`
+  (grep ka positive control: Din 2 log me `4`), teeno children zinda. **Bound boundaries se aaya, supervisor se nahi:**
+  `0` exits ka matlab supervisor ka backoff code ek baar bhi nahi chala, to `P-53(d)` us exit class ke liye unpriced hai
+  jo asal me matter karti hai (`os._exit`, `P-36`).
+- **Gate 2 — teeno ek saath, backlog ke neeche: worker aur reaper ke liye satisfied, dispatcher ke liye aadha.** Worker ne
+  `30` drain kiye, ek in-flight reclaim hua, `0` lost. **Dispatcher ke paas `0` outbox rows thi** (`sleep` jobs outbox nahi
+  likhte) — wo outage survive kiya, load ke neeche nahi tha. `n = 2` total (Din 2 + Din 5).
+
+#### 8. Part C — jo chala, jo nahi chala
+
+| Check | Status |
+|---|---|
+| `C1`, `C2`, `C5`, `C6`, `C7` | chale, pass ✅ |
+| `C3` prose check (`logs\w5d5_c3_prose.txt`) | **file exist nahi karti — chala hi nahi.** Reviewer ne chalaya: `0` Din 5 probe logs pe, positive control `2` Din 4 ke `w5d4_step5_…` pe `[MEASURED-R]` |
+| `C3` poll coverage `≥ 80%` | A `39/44` (`89%`), B `62/66` (`94%`), C `111/124` (`90%`) ✅ — par pehla poll holder_start ke `0.21`–`1.11 s` baad; arm A me contended request **pehle poll se pehle** pahunchi |
+| `C3` anchor `± 0.3 s` | A `3.011`, B `6.136`, C `20.013 s` ✅ |
+| `C4` generator SHA-256 in headers | **probe ise log nahi karta** — BRIEF ki Step 2 requirement table me ye row thi hi nahi (reviewer ka defect). Reviewer ne mtime se answer kiya: probe `13:53:29`, arm A `13:54:24` — teeno arms same file |
+| probe ki `cleanup: remaining_relay_python=1` | leak jaisa padhta hai; count apna PID exclude karta hai, venv launcher parent nahi. Reviewer ke apne probe ne same `2`-process shape dikhaya. Step 7 `relay_python=0` ✅ |
+
+---
+
+### 🧠 Prediction review — `0.00 / 5.0`, calibration `5/5`, aur aath derivable sub-parts `idk`
+
+Frozen text `docs/daily/week_05/DIN_05_PREDICTIONS_FROZEN.md` se **quote**, hash verify hua.
+
+| Q | Frozen text (verbatim) | Measured | Score |
+|---|---|---|---|
+| **Q1** | *"idk"* | **NOT ANSWERED** | **`0.00 / 1.0`** |
+| **Q2** | *"idk"* | **NOT ANSWERED** | **`0.00 / 1.0`** |
+| **Q3** | *"idk"* | **NOT ANSWERED** | **`0.00 / 1.0`** |
+| **Q4** | *"idk"* | **NOT ANSWERED** | **`0.00 / 1.0`** |
+| **Q5** | *"idk"* | **NOT ANSWERED** | **`0.00 / 1.0`** |
+
+**Total `0.00 / 5.0`. Week 5 frozen total: `1.45 / 25.0`.** Inflation zero, lagatar chautha din — ye record saaf hai.
+
+**Par ye zero Din 4 wala zero nahi hai.** KEY ke scoring note ne aath sub-parts ko naam se *"run se pehle derivable"*
+likha tha: `Q1(a)` (`src/sink.py` ka `lifespan`) · `Q2(a)`, `Q2(b)` (`src/dispatcher.py` + `P-35`) · `Q3(d)` · `Q4(a)`,
+`Q4(c)`, `Q4(d)` (Din 1–2 ka record + `scripts/supervisor.py`) · `Q5(a)` (`src/main.py`). **`2.0` points padhne se mil
+sakte the.** Aur is baar BRIEF ne Part B ke upar hi likha tha: *"Jis sawaal me ek file ya line ka naam hai, `idk` likhne
+se pehle wo file kholo."* `Q1(a)` aur `Q2(b)` dono me file ka naam hai. **Do din se reading gap wahi hai, aur ek explicit
+instruction ne use nahi hilaya.**
+
+**Aur ek format note:** frozen file me har sawaal ka ek `idk` hai, sub-part ka nahi. `Q2(b)` source se padha ja sakta
+tha aur `Q2(c)` genuinely naapna tha — ek hi `idk` dono ko barabar kar deta hai. **Din 6 se `idk` per sub-part.**
+
+**Beat 4 ka record nahi hai.** Report ke mechanisms (*"Request that applied side effect was logged as error"*) sahi hain,
+par Din 5 ke liye koi file nahi jisme run ke baad aur KEY se pehle apni explanation likhi ho. **Wo derived tha ya padha
+gaya — ye `not recorded` hai**, aur protocol ki value isi beat me hai.
+
+---
+
+### 🤖 Reviewer ki apni galat predictions — record ke liye
+
+1. **KEY `Q5(b)`: DB-down `/healthz` ko `~2.7`–`3.3 s` likha, *"saturated `3.03 s` se `~0.4 s` ke andar"*.** Measured
+   `4.077`–`4.089 s`. Mechanism reviewer ne aaj naapa — `localhost` dual-stack × `~2.02 s` Windows refused connect. Din 1
+   ka `failure_cost ≈ 3.3 s` ek derived mean tha, direct measurement nahi, aur KEY ne use constant ki tarah use kiya.
+2. **KEY `Q4(b)` ne in-flight path *"mark `UPDATE` → DB down → `[mark_error]`"* likha.** `UPDATE` safal hua, success line
+   print hui, `COMMIT` mara. **Print ki position Din 2 ke review me bhi nahi pakdi gayi** — `P-56`. Aur *"`~3` lines"* →
+   `4` (`1` mark + `3` retries).
+3. **KEY `Q1(b)` aur BRIEF requirement 8 ne ye nahi socha ki client ka `t0` kahan hai.** `httpx.AsyncClient()` banana
+   `0.37`–`0.70 s` leta hai, aur probe use timed task ke andar banata hai. Client number `3.0565 s`, lock wait `2.461 s`.
+4. **BRIEF `C4` ne generator ka SHA-256 header me maanga, par Step 2 ki requirements table me wo row thi hi nahi.** Probe
+   ne use nahi likha; `C4` mtime se answer hua.
+5. **BRIEF Step 6 ka tag census prints ginta hai** — `mark=31` ko marks padhna `P-56` ki galti dohrata hai. Census ko
+   *"prints"* label chahiye tha.
+6. **KEY trap `14` ne startup pe `CannotConnectNowError` expect kiya;** aaj teeno process me `ConnectionError:
+   unexpected connection_lost()` aaya, `CannotConnectNowError` kahin nahi.
+
+**KEY ne jo theek kaha, aur aaj live confirm hua:** `Q1(a)` ms ka farak (`30.5` vs `18.5 ms`) · `Q1(c)` `active / Lock /
+transactionid`, blocker holder, holder `idle in transaction / ClientRead` · `Q1(d)` wait ke dauran sink silent, phir
+`applied` · `Q2(a)` do attempts, `+5.055 s` · `Q2(b)` `COMMIT`, `~5.05 s` · `Q2(c)` race + `received_at` · `Q2(d)`
+`attempts=2` aur asymmetry · `Q3(a)` `2` · `Q3(b)` poora order · `Q3(c)` sink ke log me, `+13 s`, access lines `= requests −
+orphans` · `Q4(a)` `0` · `Q4(c)` nahi · `Q4(d)` exercise nahi hua · `Q5(a)` · `Q5(c)` class, HTTP nahi · `Q5(d)` `200` ·
+pehla `/healthz` sabse tez failure. **Composition ka har link hold hua — teen measured facts ka jod hi prediction tha.**
+
+---
+
+### 💡 What the session established — **user ko ye apne shabdon me dobara likhna hai**
+
+> Ye section reviewer ne likha hai. Protocol ke hisaab se isko user ke apne shabdon me replace hona hai.
+
+1. **Client ka timeout server ke liye ek disconnect hai, aur server kaam karta rehta hai.** Isliye ek sequential client
+   bhi server ka pool bhar sakta hai — server un clients ka kaam kar raha hai jo ja chuke hain.
+2. **Jis request ne kaam kiya aur jis request ko credit mila, wo alag ho sakti hain.** `200` kehta hai *"ek `200` aaya"*,
+   *"isne kiya"* nahi. Attribution us data se karo jo kaam **shuru** hote waqt likha gaya (`received_at`), response se nahi.
+3. **Postgres ka `now()` transaction ka start hai.** `received_at`, `dispatched_at`, `claimed_at` teeno apne naam wale
+   event ka nahi, us transaction ke shuru hone ka waqt hain.
+4. **Transaction ke andar print hui line ek irada hai, tab tak jab tak `COMMIT` wapas na aaye.**
+5. **`restarts = 0` ka matlab boundaries ne kaam kiya.** Supervisor ka apna bound us run me test hi nahi hua.
+6. **Ek latency jo ek machine pe do causes alag karti hai, wo tab tak sanyog hai jab tak mechanism usko explain na kare.**
+   `4.08 s` = do refused connects; `3.07 s` = `pool_timeout`. Ek config badlo aur dono mil jaate hain.
+7. **HTTP starvation ko DB-down se alag nahi kar sakta; process ke log ki exception class kar sakti hai.**
+
+---
+
+### ⚠️ Closeout corrections
+
+| # | Jaise report hua | Jo measured hai | Provenance |
+|---|---|---|---|
+| 1 | *"Saare gates strictly PASS"* | `C3` ka prose check chala hi nahi (file nahi hai; reviewer: `0`, control `2`) · `C4` ka generator hash log nahi hua (mtime se answer) · Step 5 ka cost line kisi file me nahi · Step 0 bench `19 h` pehle ka | `[MEASURED-R]` |
+| 2 | *"Contended POST job:42 … 3.0565 s (replaces 2.8133 s)"* | Client number sahi, par usme `httpx.AsyncClient()` construction shamil hai (`0.37`–`0.70 s`, reviewer). Server-side lock wait **`2.461 s`**. Dono replacements hain | `[MEASURED]` sink echo + `[MEASURED-R]` |
+| 3 | *"Holder rollback 13:55:15.988"* | Wo `holder_end` line `conn.close()` ke baad ki hai. Rollback `≤ 15.878` (sink ka applied `COMMIT`) | `[MEASURED]` probe + sink log |
+| 4 | *"/healthz first 500 in 0.042 s fast connection refused"* | **`InterfaceError: connection is closed`** — stale pooled connection (`pool_pre_ping=False`). Refused uske baad aaye | `[MEASURED]` API log |
+| 5 | *"/db-ping (500 in ~4.1 s)"* | teen `4.09`–`4.19 s`, aur aakhri **`1.551 s`** `ConnectionError: unexpected connection_lost()` ke saath, Postgres start ke dauran | `[MEASURED]` sampler + API log |
+| 6 | *"sleep finished, 4 mark retries failed"* | `1` mark + `3` retries = `4` `mark_error`. **Aur mark ne `Marked job 8 as 'succeeded' (rowcount=1)` apne `COMMIT` se pehle print kiya, jo mara** — `P-56` | `[MEASURED]` worker + reaper log |
+| 7 | *"At 16:04:35.924 (lease > 30s expired), Reaper reclaimed Job 8"* | Sahi. Lease `16:04:25.6` pe DB down ke dauran expire hua; reclaim `10.3 s` baad, reaper ke pehle successful pass pe — **outage-bounded**. Job 9 job 8 se pehle claim hua | `[MEASURED]` |
+| 8 | *"Zero lost, zero corrupted"* | **Zero lost, `n = 1`** ✅. *"Corrupted"* naapa nahi gaya. Job 8 ka handler do baar chala (`execute=31`) — `sleep` me koi effect nahi, isliye yahan harmless | `[MEASURED]` / not measured |
+| 9 | *"D-30 Gate 1 and Gate 2 strictly SATISFIED"* | Gate 1 as written satisfied — bound boundaries se, backoff kabhi nahi chala. Gate 2: dispatcher ke paas `0` outbox kaam tha. **"Satisfied", "strictly" nahi** | `[MEASURED]` |
+| 10 | *"Attempt 6 succeeded at 20s on rollback"* | Relay ne `dispatched` likha; sink ne us request ko **`duplicate`** diya. Effect attempt 1 ki orphan ne apply kiya (`received_at 13:55:52.973`) | `[MEASURED]` |
+| 11 | *"P-41 composed chain verified live"* | ✅ `n = 1` per arm, aur winner `n = 2` | `[MEASURED]` |
+| 12 | *"Evidence DB relay delta = 0"* | ✅ reviewer ka close re-read identical — *"delta `0` on the nine counters"* | `[MEASURED-R]` |
+
+---
+
+### 🚧 Unresolved / carried
+
+1. **`P-56`** — lifecycle prints `COMMIT` se pehle. Census aur fix dono Week 6 (`P-55` ke saath).
+2. **`D-30` close — Din 6**, upar ki do lines ke saath. `os._exit` crash-loop pe backoff ka pricing **Week 6**.
+3. **`D-28` amendment — Din 6:** discriminator ka teesra column logs me hai, HTTP me nahi; aur latency ka farak config ka
+   sanyog hai.
+4. **`P-41` fixes** (`lock_timeout`, cancellation, `P-35` backoff) — Week 6, sab `narrow`.
+5. **Din 5 commit nahi hua:** frozen file, `labs/w5d5_chain_probe.py`, dono `labs/w5d4_*.py` edits, `scripts/supervisor.py`,
+   aur aaj ke docs. Named `git add`, Din 6 Step 0.
+6. **Din 5 ka saara evidence (`logs/w5d5_*`, `47` files) sirf is disk pe hai** — `/logs/` ignored hai. `D-32` ka retention
+   half abhi bhi likha nahi gaya.
+7. **`P-54` ke teen faisle, `.pyc`, `logs/` count** — Din 6.
+7a. **`P-57`, review me mila:** seal ka SHA-256 working-copy bytes pe hai. `core.autocrlf = true`, koi `.gitattributes`
+    nahi, aur is machine pe fresh clone LF-only frozen files ko CRLF me checkout karta hai — `DIN_03` `B2A10C31…` →
+    `3B894833…`, `DIN_04` `62196E9A…` → `42D0F894…` `[MEASURED-R]`. Committed blob invariant hai. Faisla Din 6, `D-32` ke andar.
+8. **Probe ke reuse ke liye chaar instrument notes:** client construction timed region ke andar · pehla poll `0.2`–`1.1 s`
+   late · census regex lines ginta hai, events nahi · generator hash log nahi hota.
+9. **Beat 4 ki file** — Din 5 ke liye koi nahi.
+
+---
+
+### ❓ Next thought
+
+Din 3 ne poocha tha kaunsa outcome defaults ke overlap se aata hai. Aaj teen mile, aur teeno ek hi shape ke hain:
+**record kisi aur moment ka hai jiska naam wo leta hai.** `received_at` transaction ka start hai, delivery nahi.
+`dispatched_at` attempt ka start hai, confirmation nahi. `Marked … 'succeeded'` ek `UPDATE` ka rowcount hai, commit nahi.
+
+Din 6 verdicts likhne ka din hai — `D-30`, `D-32`, README ka promise #4. **Har verdict ek record pe khada hoga. Kaunsa
+record us cheez ka hai jiska wo naam leta hai, aur kaunsa kisi pichhle moment ka?**
+
+---
+
+*Din 5 BRIEF:* [`../daily/week_05/DIN_05_BRIEF.md`](../daily/week_05/DIN_05_BRIEF.md) ·
+*Din 5 KEY:* [`../daily/week_05/DIN_05_KEY.md`](../daily/week_05/DIN_05_KEY.md) ·
+*Seal:* [`../daily/week_05/DIN_05_PREDICTIONS_FROZEN.md`](../daily/week_05/DIN_05_PREDICTIONS_FROZEN.md) ·
+*Din 6 BRIEF:* [`../daily/week_05/DIN_06_BRIEF.md`](../daily/week_05/DIN_06_BRIEF.md)

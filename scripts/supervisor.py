@@ -5,14 +5,20 @@ import subprocess
 import sys
 import time
 
-SUPERVISOR_LOG = "logs/w5d2_step4_supervisor.log"
+def get_supervisor_prefix() -> str:
+    prefix = os.environ.get("RELAY_SUPERVISOR_PREFIX")
+    if not prefix:
+        raise RuntimeError("RELAY_SUPERVISOR_PREFIX environment variable must be set")
+    return prefix
 
 
 def log_event(msg: str) -> None:
+    prefix = get_supervisor_prefix()
+    supervisor_log = f"logs/{prefix}_supervisor.log"
     now_str = datetime.datetime.now(datetime.timezone.utc).isoformat()
     line = f"[{now_str}] [supervisor] {msg}"
     print(line, flush=True)
-    with open(SUPERVISOR_LOG, "a", encoding="utf-8") as f:
+    with open(supervisor_log, "a", encoding="utf-8") as f:
         f.write(line + "\n")
         f.flush()
 
@@ -93,21 +99,28 @@ def main():
         signal.signal(signal.SIGBREAK, sig_handler)
 
     os.makedirs("logs", exist_ok=True)
+    prefix = get_supervisor_prefix()
     log_event("Supervisor starting...")
 
-    # Supervise worker and reaper
+    # Supervise worker, reaper, and dispatcher
     processes = [
         SupervisedProcess(
             "worker",
             [sys.executable, "-m", "src.worker"],
-            "logs/w5d2_step4_worker.stdout.log",
-            "logs/w5d2_step4_worker.stderr.log",
+            f"logs/{prefix}_worker.stdout.log",
+            f"logs/{prefix}_worker.stderr.log",
         ),
         SupervisedProcess(
             "reaper",
             [sys.executable, "-m", "src.reaper"],
-            "logs/w5d2_step4_reaper.stdout.log",
-            "logs/w5d2_step4_reaper.stderr.log",
+            f"logs/{prefix}_reaper.stdout.log",
+            f"logs/{prefix}_reaper.stderr.log",
+        ),
+        SupervisedProcess(
+            "dispatcher",
+            [sys.executable, "-m", "src.dispatcher"],
+            f"logs/{prefix}_dispatcher.stdout.log",
+            f"logs/{prefix}_dispatcher.stderr.log",
         ),
     ]
 
