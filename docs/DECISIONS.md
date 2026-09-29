@@ -2322,6 +2322,26 @@ did not run — and the latency-based separator in the Din 4 KEY is `[INFERRED]`
 confirm the measurement survives the fix); Din 5 measures the DB-down arm; or a second API instance exists, which is
 the point at which readiness-removal stops meaning *"no API"*.
 
+### Week 5 Din 6 amendment — D-28 (`2026-09-29`)
+
+**Status: MEASURED — 3-way discriminator completed with Din 5 database outage measurements.**
+
+#### Discriminator Matrix: 3 Causes × 4 Observations
+
+| Observation | Cause: Process Dead | Cause: Pool Starved | Cause: DB Down |
+|---|---|---|---|
+| `/health` | TCP Connection Refused / Timeout `[MEASURED-R 2026-09-24]` | `200 OK` in `0.006`–`0.031 s` (`logs/w5d4_step3_discriminator.txt`) `[MEASURED]` | `200 OK` in `0.0027`–`0.0487 s` (`logs/w5d5_step6_sampler.txt`) `[MEASURED]` |
+| `/healthz` status + latency | TCP Connection Refused / Timeout `[MEASURED-R]` | `500` in `3.033`–`3.067 s` (anchored on `pool_timeout=3.0s`, `logs/w5d4_step3_discriminator.txt`) `[MEASURED]` | Stale checkout: `500` in `0.042 s`; Subsequent: `500` in `4.077`–`4.089 s` (`logs/w5d5_step6_sampler.txt`) `[MEASURED]` |
+| Process log exception class | Process terminated, 0 lines emitted (`logs/w5d2_step5_supervisor.txt`) `[MEASURED]` | `TimeoutError`: `QueuePool limit of size 2 overflow 0 reached, timeout 3.00` (`sqlalchemy/pool/impl.py:167`, API log) `[MEASURED]` | Stale pooled: `sqlalchemy.exc.InterfaceError`; Refused attempts: `ConnectionRefusedError`; Startup: `ConnectionError: unexpected connection_lost()` (`logs/w5d5_step6_summary.txt`) `[MEASURED]` |
+| `pg_stat_activity` | `0` connections from API `[MEASURED]` | `2 active` connections held by in-flight handlers/holds (`logs/w5d4_step1_peak.txt`) `[MEASURED]` | Unreachable / socket refused (`ConnectionRefusedError`, `logs/w5d5_step6_fault.txt`) `[MEASURED]` |
+
+#### Analysis: Coincidental Latency Separation vs Structural Discriminator
+
+1. **Why latency separated today, and how a config change collapses it:**
+   On Din 4, pool starvation `/healthz` failed at `~3.067 s`, determined strictly by `pool_timeout = 3.00 s`. On Din 5, DB-down `/healthz` failed at `~4.08 s` because `DATABASE_URL` uses host `localhost`, resolving to both IPv6 (`::1`) and IPv4 (`127.0.0.1`), with Windows kernel socket connection refusal taking `~2.02 s` per address (`2.02 + 2.02 ≈ 4.04 s` + asyncpg overhead). These two latencies separated by `~1.0 s` purely due to coincidental configuration. If `DATABASE_URL` targeted `127.0.0.1` directly, DB-down `/healthz` latency would collapse to `~2.02 s`; conversely, if `pool_timeout` was set to `4.0 s`, pool starvation would produce `~4.06 s`, colliding directly with DB-down latency. Therefore, latency is a fragile, coincidental discriminator; the true structural discriminator is the process log exception class (`QueuePool.TimeoutError` vs `ConnectionRefusedError`/`InterfaceError`).
+2. **HTTP prober discrimination boundary:**
+   An external HTTP prober observing only HTTP status codes can reliably separate only **2 of the 3 causes**: it easily distinguishes *Process Dead* (connection refused on `/health`) from an *Alive-but-Degraded* system (`/health` returns `200`). However, an external HTTP prober cannot structurally distinguish *Pool Starvation* from *Database Down* using status codes alone (both return `200` on `/health` and `500` on `/healthz`). Disambiguating pool starvation from a database outage requires either database-level inspection (`pg_stat_activity`) or internal process exception telemetry.
+
 ---
 
 ## D-29: no leader election — one reaper, and the reclaim `UPDATE`'s own predicate is what makes a second one safe
@@ -2421,7 +2441,7 @@ on evidence rather than on scope. **That run is the honest owner of this entry's
 
 ---
 
-## D-30 — `OPEN` — the worker's poll-loop exception boundary, and what the loop does after the catch
+## D-30 — the worker's poll-loop exception boundary, and what the loop does after the catch
 
 > **Status: OPEN, and deliberately half-written.** `WEEK_05.md` scopes `D-30` as *"exception boundary **+
 > supervisor**"* and publishes it on Din 6. Din 1 only produced the first half. The `Supervisor` section below
@@ -2633,6 +2653,40 @@ and heartbeat paths are guarded (`P-48`, which turns `Cost 7` and `Cost 8` into 
 open defects); and when a multi-process outage produces a real connection-storm number, which is the one place
 `Cost 4` stops being an inference.
 
+### Supervisor — Week 5 Din 6, decided
+
+Closed on Week 5 Din 6 based on Din 2 baselines and Din 5 Step 6 measurements.
+
+#### Chosen: Option (b) host supervisor (`scripts/supervisor.py`) with process prefixes
+
+Supervises worker, reaper, and dispatcher simultaneously on the host. Instrument evolution on Din 5:
+- Dispatcher added to supervisor process tree under `RUN_DISPATCHER=1` (`scripts/supervisor.py`).
+- Distinct stdout/stderr line prefixes (`[worker]`, `[reaper]`, `[dispatcher]`) added to cleanly isolate stream outputs across concurrent processes.
+
+#### Evidence
+
+Din 2 established baseline mechanics (`w5d2_step5_supervisor.txt`): 4 restarts (2 worker, 2 reaper), launch latency `2.790 s`, and lease-anchor to reclaim `35.191 s`. Din 5 Step 6 ran both previously unsatisfied gates:
+
+1. **Gate 1 (`w5d5_step6_fault.txt`, `w5d5_step6_summary.txt`) — Restarts bounded over a `~30 s` DB-down: satisfied as written.**
+   A `35.006 s` outage (`16:03:57.355` stop_returned to `16:04:32.361` start_begin) resulted in `EXITED lines = 0` across all three supervised processes (`w5d5_step6_summary.txt`). All child processes survived intact. The resilience bound derived entirely from the poll-loop exception boundaries (`D-30` Part A), not from the supervisor's restart logic: zero process exits meant the supervisor's backoff code was exercised zero times.
+2. **Gate 2 (`w5d5_step6_final_jobs.txt`, `w5d5_step6_summary.txt`) — Fleet resilience under backlog load: satisfied for worker/reaper, half-satisfied for dispatcher.**
+   Under a 30-job backlog, worker and reaper drained all work to completion (`succeeded|1|29`, `succeeded|2|1`, `pending_or_running=0` in `w5d5_step6_final_jobs.txt`). In-flight Job 8 was reclaimed by the reaper at lease expiry and succeeded on attempt 2. Dispatcher survived the outage (recording 7 `poll_error` lines), but processed 0 outbox rows because the backlog consisted of sleep jobs that produce no outbox side effects. Total runs: `n = 2` (Din 2 + Din 5).
+
+#### Cost
+
+1. **Bound comes from poll-loop exception boundaries, not the supervisor backoff.** With 0 child process exits during the 35 s outage, the supervisor's restart/backoff logic (`scripts/supervisor.py`) ran 0 times. The uptime-reset defect (`P-53(d)`) remains unexercised and unpriced for non-boundary crashes (`os._exit`, `P-36`).
+2. **Dispatcher was not under message load during Gate 2.** Backlog consisted of sleep jobs that produce no outbox records; dispatcher survived database unavailability but processed 0 events.
+3. **Host script is Windows-specific and non-deployable.** Uses `subprocess.Popen` on Windows host rather than container orchestration (`systemd`, Kubernetes, Docker Compose restart policies).
+
+#### Rejected
+
+**Rejected:** Option (a) — Moving all five processes into Docker Compose with `restart: unless-stopped` — rejected because altering host network ports (`localhost:5433` -> `db:5432`) would invalidate all retained baseline measurements and exceeded the development budget; remains the production target.
+**Rejected:** Option (c) — `restart:` policy on PostgreSQL container (`db`) only — rejected because restarting Postgres alone does nothing to restart crashed Python host processes, satisfying the plan's wording without providing process resilience.
+
+#### Owner / Revisit
+
+Crash-loop backoff pricing under rapid `os._exit` loops (`P-36`, `P-53(d)`), child PID logging, and containerized deployment are owned by **Week 6**.
+
 ---
 
 ## D-31 — `pool_pre_ping` stays `False`, and this time the premise is true and the benefit was measured at zero
@@ -2764,7 +2818,7 @@ is the number this decision is actually protecting.
 
 ---
 
-## D-32 — `DRAFT` — the publishing surface is a per-file classification with a directory-level fallback, and the rule as written defaults to **publish**
+## D-32 — the publishing surface is a per-file classification with a directory-level fallback, defaulting to ignore inside daily/
 
 **Written Week 5 Din 3 (`2026-09-26`). Status `DRAFT` — final text closes on Din 6.** The draft the user wrote
 is `scratch/d32_classification_rule.md`; the `.gitignore` implementing it is committed; **the part that keeps
@@ -2808,8 +2862,8 @@ Three `.gitignore` changes, measured in place `[MEASURED 2026-09-26]`:
 | `docs/daily/**/*PREDICTIONS_FROZEN*.md` | `13` | **`Public`** | the hashed pre-measurement record. **This class is the one that makes the whole process auditable by a third party, and it was the class most completely absent from the repository** |
 | `docs/daily/**/*HANDOFF*.md` | `6` | **`Public`** | cross-week state, referenced from `DECISIONS.md` and `MAP.md` |
 | `docs/blog/`, `docs/career/`, `docs/dsa/` | — | `Local` | reconciles with `f6a85c2`, `2582b37`, `15d82d9` (`2026-09-24`): drafts and personal tracking are outside the engine's surface. **Note the asymmetry honestly — those three commits removed them from `HEAD` and the blobs remain readable in history** |
-| **`*_ANSWERS.md`** | **`13`** | **`—` undecided** | **publishes today by default.** Carries `### After KEY` blocks, i.e. a paraphrase of that day's sealed outcomes — `P-54` |
-| **`*_DESIGN.md` / `*_PROBLEM.md` / `*_PROPERTY.md`** | **`7`** | **`—` undecided** | **publishes today by default** — `P-54` |
+| **`*_ANSWERS.md`** | **`13`** | `Local` | `### After KEY` blocks paraphrase sealed outcomes (`P-54`); publishing breaks seal for future readers |
+| **`*_DESIGN.md` / `*_PROBLEM.md` / `*_PROPERTY.md`** | **`7`** | `Local` | intermediate working artifacts and scratch hypotheses outside public surface (`P-54`) |
 
 ### Cost, and the first item is the one that keeps the status at `DRAFT`
 
@@ -2834,6 +2888,9 @@ Three `.gitignore` changes, measured in place `[MEASURED 2026-09-26]`:
    in `HEAD`.
 6. **`.gitignore` narrows accidental publication; it does not close it.** `git add -f`, an editor's "stage all",
    and any filename outside the pattern all remain. **Narrowed, not eliminated.**
+7. **`Local` status leaves scratch answers unbacked.** The 13 `*_ANSWERS.md` and 7 `_DESIGN/_PROBLEM/_PROPERTY` files exist solely on the author's local workstation; a catastrophic disk loss loses those writeups. Accepted deliberately: losing private scratch notes is reversible; leaking sealed answer keys to public git history is irreversible (`D-04`, `D-32` Cost #4).
+8. **Flip rule requires explicit directory traversal un-ignore.** Because Git does not descend into ignored directories, ignoring `**/daily/**` requires un-ignoring directories (`!**/daily/**/`) before leaf file re-inclusions (`!**/daily/**/*_BRIEF.md`, etc.) can match.
+9. **Dual hash increases verification ceremony.** Maintaining `.gitattributes` (`eol=lf`) and recording both `sha256` and `git hash-object` blob IDs requires multi-step seal verification scripts (`P-57`).
 
 ### Transcript and retention rule (the `P-50` half)
 
@@ -2849,6 +2906,33 @@ error `P-50` describes. **Owner: after Din 6.**
 **Revisit when:** a new artifact class appears under `docs/daily/` · the repository is cloned onto a
 case-sensitive filesystem or built in CI · `logs/` growth makes retention a real cost · or anything in `HEAD`
 needs to become private, at which point item 4 applies and the answer is *"you cannot, only going forward"*.
+
+### Week 5 Din 6 — final
+
+Four decisions closed per user choice on Week 5 Din 6:
+
+1. **`*_ANSWERS.md` (13 files) -> `Local`**
+   - **Chose:** `Local`. Contains `### After KEY` blocks paraphrasing sealed outcomes; keeping them local preserves the verification seal for all readers cloning the repository.
+**Rejected:** `Public` — would permanently leak sealed outcomes into git history (`P-54`), violating one-way door heuristic (`D-04`, `D-32` Cost #4).
+
+2. **`*_DESIGN.md` / `*_PROBLEM.md` / `*_PROPERTY.md` (7 files) -> `Local`
+   - **Chose:** `Local`. Scratch notes, problem sketches, and intermediate property drafts remain outside the repository's public contract.
+**Rejected:** `Public` — exposes raw, unverified working hypotheses in the public tree without architectural or empirical gates.
+
+3. **Rule shape -> Flip to default-ignore inside `daily/`**
+   - **Chose:** Flip rule (`**/daily/**` ignored by default, with directory traversal `!**/daily/**/` and explicit re-inclusions for `_BRIEF.md`, `_PREDICTIONS_FROZEN.md`, `*HANDOFF*.md`). Fail-safe design guarantees that any future unenumerated class is ignored by default.
+**Rejected:** Allow-list of ignores (default-publish, Din 3 shape) — fail-open; 20 unenumerated files became publishable without decision (`P-54`).
+
+4. **Seal hash (`P-57`) -> Both (`.gitattributes` + dual-hash)**
+   - **Chose:** Both. `.gitattributes` enforces `eol=lf` on `*_PREDICTIONS_FROZEN.md` to prevent Windows CRLF mutation on fresh clones, alongside recording both working-copy SHA-256 and immutable `git hash-object` blob IDs in seal audit files.
+**Rejected:** Single working-copy SHA-256 alone (`P-57` CRLF mutation fails fresh clone audit); `.gitattributes` alone without canonical blob verification.
+
+5. **Tracked `.pyc` handling (`day1_async.cpython-313.pyc`) -> Untrack (`git rm --cached`)**
+   - **Chose:** Untrack from Git index. Compiled bytecode is build output, not source code.
+   - **Cost:** Historical blob (`868` bytes in `01f42c6`) remains in commit history; new positive control for non-empty tracking is `*_BRIEF.md` instead of `pyc_control`.
+**Rejected:** Leaving tracked `.pyc` in HEAD — permanently keeps platform-specific bytecode in repository tree.
+
+With the Flip rule ignoring `**/daily/**` by default and all 20 `_ANSWERS.md`, `_DESIGN.md`, `_PROBLEM.md`, `_PROPERTY.md` files classified as `Local`, the untracked sensitive surface is `p54 = 0`.
 
 ---
 

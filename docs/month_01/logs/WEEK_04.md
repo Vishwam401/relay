@@ -187,6 +187,13 @@ bhi pre-existing modified file hai; reviewer ne usko Day 1 implementation me att
 | Q5 | `0/1.0` | `[INFERRED]` Honest `idk`; accurate provenance, zero credit as specified |
 | **Total** | **`1.0/5.0`** | `[INFERRED from fixed rubric]` |
 
+### 💡 What I understood — own words, 2026-09-29
+
+1. **`status` cycle karta hai par ownership token (`claim_generation`) monotonic hona chahiye:** `status` `pending -> running -> pending` wapas ghoomta hai, isliye sirf `status='running'` check karne se stale worker doosre cycle ke naye worker ka claim nahi pehchan sakta. Monotonic integer `claim_generation` (`src/worker.py`) har claim pe `+1` hota hai aur wapas peeche nahi jaata.
+2. **`RETURNING claim_generation` claim atomic banata hai:** Agar separate `SELECT` chalate to concurrency window me koi doosra worker generation padh ke use rubber stamp bana deta. `UPDATE ... RETURNING claim_generation` se worker ko wahi generation milti hai jo usne atomic lock me claim ki.
+3. **Fencing lifecycle mark ko reject karta hai, execution ko cancel nahi karta:** Job 128 me worker A lease expire hone ke baad bhi background me chalta raha (`w4d1_run1.log`). Fencing ne mark ke time `rowcount=0` karke terminal write ko drop kiya, par in-flight CPU work ko kill nahi kiya.
+4. **`effect_key` aur `claim_generation` do alag identity hain:** `effect_key` business intent (`job:128`) ko deduplicate karta hai; agar usme `generation` mila dete to har retry nayi key banata aur `side_effects` me duplicate row insert ho jati.
+
 ### 💡 What the session established — **user must rewrite this in his own words**
 
 > Ye reviewer-written synthesis hai, user ka “What I Understood” nahi.
@@ -201,6 +208,8 @@ bhi pre-existing modified file hai; reviewer ne usko Day 1 implementation me att
    answer karte hain; ek ko doosre me milana dedup ko todta hai.
 5. `[MEASURED-R/INFERRED]` Job 128 ne safety failure ko liveness failure me convert hote dikhaya: false terminal
    write ruki, lekin long handler/short lease shape intervention ke bina terminal progress guarantee nahi deti.
+
+Gaps vs reviewer: Reviewer ne point 5 me safety failure vs liveness failure ka framing diya ki fencing se safety to bach gayi par short lease/long handler configuration me terminal progress ruk sakti hai jab tak lease badhai na jaye.
 
 ### ⚠️ Closeout corrections
 
@@ -593,6 +602,13 @@ din nahi. Score `0` ek symptom hai, cause ye hai.
 Din 1 ki dono predictions sahi thin; aaj ek sahi, ek untested. Running tally: `3` correct, `0` wrong,
 `1` untested.
 
+### 💡 What I understood — own words, 2026-09-29
+
+1. **`claimed_at` instrument ka liveness signal hai, true queue latency nahi:** `claimed_at` heartbeat loop har 10 s me refresh karta hai (`src/worker.py:126`). Agar latency nikalne ke liye `completed_at - claimed_at` calculate karein to wo 45 s ke bajaye sirf aakhri heartbeat tick ka difference (`4.98 s`) dikhata hai (`P-22`).
+2. **Synchronous blocking loop shutdown signal delivery ko rok deta hai:** Run 2 me `time.sleep(40)` ne event loop ko block kar diya (`w4d2_run2_worker.log`), jisse Python signal handler 42.068 s tak execute hi nahi ho paya. Graceful shutdown ka bound `remaining_time` nahi balki poora `handler_duration` ban gaya.
+3. **Graceful shutdown tabhi kaam karta hai jab `handler_duration < LEASE_DURATION`:** Run 2 me handler ne kaam poora kiya, par lease (30 s) pehle expire ho gayi. Reaper ne reclaim kar diya, aur worker ne clean exit kiya par mark reject ho gaya (`rowcount=0`). Safety ko `effect_key` UNIQUE constraint ne bachaya, heartbeat ya fence ne nahi.
+4. **`Conflict on mark` vs `Mark fenced` alag failure causes hain:** `Conflict on mark` ka matlab hai generation wahi thi par status badal gaya (`pre_generation == post_generation`, reaper ne reclaim kiya). `Mark fenced` tab hota hai jab rival worker ne nayi generation le li ho. Run 2 me 7 conflict mile aur zero fence (`w4d2_run2_worker.log`).
+
 ### 💡 What the session established — **user must rewrite this in his own words**
 
 > Ye reviewer-written synthesis hai, user ka *"What I Understood"* nahi. Isko apne shabdon me likho, warna ye
@@ -619,6 +635,8 @@ Din 1 ki dono predictions sahi thin; aaj ek sahi, ek untested. Running tally: `3
 6. `[MEASURED]` **Ek void run ko void likhna hi uska value hai.** Run 3 ka anchor job `134` pe tha, queue ne
    `133` di, signal kabhi nahi gaya. Q5 ka aadha jawab `[NO EVIDENCE]` hai — aur usi void run ne
    *unintentionally* `effect_key` ka planned se bada imtihaan diya: `7` dispatches, `4` workers, `1` effect.
+
+Gaps vs reviewer: Reviewer ne clearly highlight kiya ki reaper generation ko deliberately touch nahi karta, isliye `rowcount=0` ko bina predicate distinguish kiye "fenced" label dena evidence ko over-report karna hai.
 
 ### ⚠️ Closeout corrections
 
@@ -1073,6 +1091,14 @@ and it is where the day's real gain sits.
 
 ---
 
+### 💡 What I understood — own words, 2026-09-29
+
+1. **Fencing tabhi prove hoti hai jab rival claim sach me exist kare:** Din 1 aur Din 2 me sirf `Conflict on mark` dekha tha. Din 4 Job 7 me Worker B ne actually claim karke generation `2` ki (`w4d4_step5_worker_b.log`), tab jaakar Worker A ka mark `claim_generation=1` pe `Mark fenced` hua (`fenced_lines=1`).
+2. **Application-level check aur database unique constraint me race window ka farak hai:** `SELECT` then `INSERT` me concurrency window hoti hai jisme 5 concurrent requests ne 5 duplicate rows banayi thin. Database-level `UNIQUE(effect_key)` + `ON CONFLICT DO NOTHING` atomic index-level check karta hai, jisse 5 requests me se exactly 1 row commit hui (`side_effects=1`).
+3. **Loop rate lease aur transport par depend karta hai:** Poison pill retry loop 30 s lease expiry se bandha hota hai (`~32 s` period), jabki dispatcher ka connection retry loop TCP connect refusal se chalta hai (`~2.5 s`). Dono loops hain par pacing mechanisms alag hain.
+4. **`job_executions > jobs` duplicate execution ka proof hai:** Din 4 me `20 > 9` executions the (`w4d4_step6_summary.txt`), tabhi ye claim banta hai ki duplicate execution hone ke bavajood side effects duplicate nahi hue (`effects_ok|0`).
+5. **Atomic `UPDATE` me status aur last_error ek saath drop ho jaate hain:** Jab compare-and-set predicate fail hota hai, to status ke saath saath exception observation (`last_error`) bhi commit nahi hota (`rowcount=0`), jisse error history drop ho jati hai (`P-25`).
+
 ### 💡 What the session established — **user must rewrite this in his own words**
 
 *Reviewer-written. Three of these are what you will be asked about; the wording below is mine and should not
@@ -1096,6 +1122,8 @@ survive as mine.*
 5. `[MEASURED]` **A rejected `UPDATE` drops everything it was carrying, together.** One statement, one
    `rowcount`. Correct for `status`; wrong for `last_error`, which is an observation rather than a transition,
    and the only process that saw the exception is the one being refused. `P-25` / `P-30`, third carrier.
+
+Gaps vs reviewer: Reviewer ne point 4 me explicitly mention kiya ki equality (`executions == jobs`) ka matlab hai koi redispatch hua hi nahi, toh dedup test hi nahi hua; Din 4 ne unequal count (`20 > 9`) se hi claim ko license kiya.
 
 ---
 
@@ -1976,6 +2004,14 @@ kal likhe gaye the.**
 
 ---
 
+### 💡 What I understood — own words, 2026-09-29
+
+1. **Compensating errors ek sum ko artificially balance kar sakti hain:** Agar chain verification me do alag jagah opposite sign ki galtiyan hon (`+3` aur `-3`), to aggregate total pass ho jayega par andar ka data galat hoga. Isliye accounting hamesha per-line verification aur source attribution ke sath honi chahiye.
+2. **`DELETE` ke baad `count(*)` aur `last_value` sequence alag sach bolte hain:** `sink_deliveries` par `count(*)=7` tha par sequence `last_value=10` tha (`w4d6_step2_counters.txt`). `count(*)` sirf bache hue rows batata hai, jabki sequence batata hai ki total kitni insertions land hui thin.
+3. **`[NO EVIDENCE]` aur "broken" me farak hai, waise hi jaise Mechanism aur Observation alag hain:** Recovery mechanism ek claim hai jo bina experiment run kiye design se likha ja sakta hai; Evidence actual empirical observation hai. Row 9 me mechanism "None" aur evidence `[NO EVIDENCE]` hona gap ko acknowledge karta hai.
+4. **Bare `protected` bina qualification ke pore claims ko invalid karta hai:** Relay me koi bhi promise bina scope ke protected nahi hai. Promise 5 sabse strong hai par wo bhi `os._exit` poison pill (`P-36`) aur retry overdraft (`P-27`) ke holes ke sath narrowed hai.
+5. **Fence stale writes ko rokti hai par work ko nahi:** Worker A ne fence hone se pehle side effect insert kar diya tha. Aur agar `claim_generation` ko `effect_key` me add kar dein to idempotency key har attempt pe change ho jayegi aur duplicate commit ho jayenge.
+
 ### 💡 What the session established — **user must rewrite this in his own words**
 
 > Ye reviewer ka likha hua hai. Iska matlab ye **nahi** hai ki ye tumne samjha; iska matlab ye hai ki session me
@@ -2009,6 +2045,8 @@ kal likhe gaye the.**
    advisory lock ko single-reaper ke Din 5 numbers se maar sakta tha aur wo interview me ek hi sawaal me girta
    (*"wo number kya tha?"*). Jo likha gaya: **rejected on scope, not on measurement** — plus lock ka apna
    failure mode.
+
+Gaps vs reviewer: Reviewer ne point 6 me add kiya ki do alag runs me agar same metric number (jaise `signal_to_exit_s`) aaye, to bina process breakdown naape dono runs ka mechanism same nahi mana ja sakta.
 
 ---
 

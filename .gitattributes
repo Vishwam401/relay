@@ -1,0 +1,2 @@
+# Week 5 Din 6 (D-32 / P-57): disable line-ending conversion for frozen prediction files
+*_PREDICTIONS_FROZEN.md -text

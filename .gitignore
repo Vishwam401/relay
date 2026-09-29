@@ -44,7 +44,11 @@ desktop.ini
 # Depth-independent on purpose: the month_NN/ archive folders must inherit the same
 # exclusions, otherwise archiving a month silently publishes its sealed KEY files.
 **/planning/
-**/daily/**/*KEY*.md
+**/daily/**
+!**/daily/**/
+!**/daily/**/*_BRIEF.md
+!**/daily/**/*_PREDICTIONS_FROZEN.md
+!**/daily/**/*HANDOFF*.md
 **/ddia_summaries/
 **/design/
 docs/roadmap/
