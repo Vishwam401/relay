@@ -2995,3 +2995,82 @@ so hashing that (or recording `git hash-object`, which is over the blob) survive
 
 **Owner:** Din 6, alongside `P-54`'s three decisions. `narrows`, not `closes`: a seal is evidence that a file existed
 before a measurement only if the timestamp is also trusted, and nothing here changes that.
+
+---
+
+## P-57 — amendment (Week 5 Din 6 review): the attribute protects a fresh clone, and the author's own working copy is now the one that does not reproduce its seals — since a `git pull --rebase` on `2026-09-28 17:28:51`
+
+**Status: MEASURED-R on Week 5 Din 6 review (`2026-09-29`).** The user's repository was read only (`git ls-files --eol`,
+`Get-FileHash`, `git hash-object`, `git cat-file blob`, `git reflog`); every write happened in two throwaway clones under
+`%TEMP%`, both removed (`tmp_removed=True`).
+
+**Din 6's own artifact already showed it, and nobody read the first column.** `logs/w5d6_step10_clone.txt` line 1:
+
+```text
+docs/daily/week_05/DIN_04_PREDICTIONS_FROZEN.md here=42D0F894 clone=62196E9A clone_blob=90f6da79 head_blob=90f6da79
+```
+
+The fresh clone reproduced the original seal (`62196E9A`, this card's table). The author's working copy did not —
+`42D0F894` is the **CRLF** hash from the same table. Din 6 checked the clone against the seal and never checked *here*
+against the seal.
+
+**Census, all `16` tracked seals** `[MEASURED-R]`:
+
+| Check | Match | Examples of the `14` that do not |
+|---|---|---|
+| `git ls-files --eol` | `2` are `i/lf w/lf` (`week_05/DIN_05`, `DIN_06`) | `14` are `i/lf w/crlf attr/-text` — every Week 3, Week 4 and Week 5 Din 1–4 seal |
+| working-copy SHA-256 vs SHA-256 of `git cat-file blob HEAD:<path>` | `2 / 16` | `DIN_01` `A71606DB` vs `D75A08AD` · `DIN_02` `6BDC4ADB` vs `7D9351BE` · `DIN_03` `3B894833` vs `B2A10C31` · `DIN_04` `42D0F894` vs `62196E9A` |
+| `git hash-object <file>` vs `git rev-parse HEAD:<path>` | `2 / 16` | `DIN_04` `81584003` vs `90f6da79` |
+| `git status --porcelain` · `git diff --stat` | `0` lines · empty | — |
+
+**When it happened — the reflog, not a guess:** `HEAD@{2026-09-28 17:28:48}: reset: moving to HEAD`, then
+`17:28:51 pull --rebase origin main (start): checkout 826fda1…`, finish `17:28:52`. The rebase re-wrote every tracked
+file with `core.autocrlf = true` and no attribute yet, so LF blobs came out CRLF. `LastWriteTime` of the four Week 5
+seals is `9/28/2026 5:28:51 PM`. `DIN_05` (committed later from an LF file) and `DIN_06` (created on `2026-09-29`)
+were never re-checked-out. `68` tracked files are `w/crlf` in total; for everything except the seals that is harmless,
+because nothing hashes their bytes.
+
+**Why `git status` says clean — the stat cache, not the content.** Git re-hashes a file only when its size or mtime
+differs from the index entry. Din 6's `-text` changed what these files *should* hash to, not their stat, so git never
+looks. **Measured in a faithful replica** (clone → `checkout f8e3a2c` under `autocrlf=true` → refresh the index → wait →
+`checkout main`), which reproduces the user's state exactly (`status` `0` lines, `w/crlf attr/-text`):
+
+| Command on a stat-clean CRLF seal | `w/` after |
+|---|---|
+| `git checkout -- <file>` | **`crlf`** — no-op |
+| `git restore --worktree -- <file>` | **`crlf`** — no-op |
+| delete the file, then `git checkout -- <file>` | **`lf`**, SHA-256 `7D9351BE` = committed bytes |
+| touch the mtime, then `git status` | the file shows **`M`** |
+
+In a plain fresh clone the index is racily clean instead, so `status` shows `15` `M` immediately — the same state
+reads *clean* in one checkout and *modified* in another.
+
+**Consequence 1 — the attribute that was decided is not the attribute that was written.** `D-32`'s *"Week 5 Din 6 —
+final"* item 4 and its Cost 9 say `eol=lf`; `.gitattributes` line 2 says `-text`. On the CRLF `DIN_04`, in a replica
+`[MEASURED-R]`:
+
+| `.gitattributes` line | `git hash-object` | equals `HEAD` blob `90f6da79…`? |
+|---|---|---|
+| `*_PREDICTIONS_FROZEN.md -text` (as committed) | `81584003…` | **no** |
+| `*_PREDICTIONS_FROZEN.md eol=lf` (as `D-32` says) | `90f6da79…` | yes |
+| `*_PREDICTIONS_FROZEN.md text eol=lf` | `90f6da79…` | yes |
+
+`-text` stores and checks out bytes as-is; `eol=lf` normalises CRLF → LF before hashing. **So the Week 5 handoff's line
+*"dual-hash verification … to ensure cross-platform auditability"* fails today on the author's own machine for `14`
+of `16` seals, on both hashes.** Under `eol=lf` the blob half would hold; the SHA-256 half would still differ until the
+working copy is rewritten.
+
+**Consequence 2 — a latent commit hazard.** Under `-text`, the next thing that touches these files' mtime (an editor
+save, a formatter, a search-and-replace across `docs/`) makes git see CRLF content against an LF blob, and a `git add`
+of any of them stores the CRLF bytes as a **new blob** — changing the one identity this card called invariant. Named
+`git add`, never `-A`, narrows that; it does not close it.
+
+**Fix directions — a user decision, owner Week 6 Din 1 Step 0:**
+- **Rewrite the `14` working copies from the index:** delete, then `git checkout -- <paths>`. Measured to restore the
+  original seal bytes; committed blobs are not touched.
+- **Line 2:** switch to `eol=lf` (the text `D-32` already contains), or keep `-text` and amend `D-32` to say `-text`
+  with Consequence 1 as its cost.
+- **Neither makes a working-copy SHA-256 a cross-machine invariant.** `git rev-parse <commit>:<path>` remains the only
+  number every checkout agrees on.
+
+`narrowed`, not `closed`.

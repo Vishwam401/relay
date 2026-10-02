@@ -2443,6 +2443,11 @@ on evidence rather than on scope. **That run is the honest owner of this entry's
 
 ## D-30 — the worker's poll-loop exception boundary, and what the loop does after the catch
 
+> **Status (Week 5 Din 6 review, `2026-09-29`): CLOSED as a decision** — see `### Supervisor — Week 5 Din 6, decided`
+> below. The `OPEN` line that follows is Din 1's text, kept for the audit trail. It survived Din 6 because that day's
+> check (`d30_header_open`) read only the `## D-30` heading, which never contained the word — a check that could not
+> fail, and it was reviewer-written.
+>
 > **Status: OPEN, and deliberately half-written.** `WEEK_05.md` scopes `D-30` as *"exception boundary **+
 > supervisor**"* and publishes it on Din 6. Din 1 only produced the first half. The `Supervisor` section below
 > is empty on purpose, with a named owner. **Do not read this entry as closed, and do not quote its `Cost`
@@ -2933,6 +2938,19 @@ Four decisions closed per user choice on Week 5 Din 6:
 **Rejected:** Leaving tracked `.pyc` in HEAD — permanently keeps platform-specific bytecode in repository tree.
 
 With the Flip rule ignoring `**/daily/**` by default and all 20 `_ANSWERS.md`, `_DESIGN.md`, `_PROBLEM.md`, `_PROPERTY.md` files classified as `Local`, the untracked sensitive surface is `p54 = 0`.
+
+### Week 5 Din 6 review — two lines above do not match the repository `[MEASURED-R 2026-09-29]`
+
+1. **Item 4 and Cost 9 say `eol=lf`; `.gitattributes` line 2 says `-text`.** They are different mechanisms, and the
+   difference is measurable on this machine: on a CRLF working copy of `DIN_04_PREDICTIONS_FROZEN.md`, `-text` gives
+   `git hash-object` `81584003…` against the `HEAD` blob `90f6da79…`; `eol=lf` gives `90f6da79…`. Fourteen of the
+   sixteen tracked seals are CRLF in the author's working copy since a `git pull --rebase` on `2026-09-28 17:28:51`, so
+   under the committed `-text` both halves of the dual hash fail for them today. Detail and the restore procedure:
+   `P-57` amendment (Week 5 Din 6 review). **Decision owed, Week 6 Din 1 Step 0:** change line 2 to what this entry
+   says, or keep `-text` and amend item 4 with this cost.
+2. **Item 3 says the flip *"guarantees that any future unenumerated class is ignored by default."*** Cost 6 of this
+   same entry says `.gitignore` *"narrows accidental publication; it does not close it"* (`git add -f`, editor
+   stage-all). The flip changes the **default**; *guarantees* overstates it. Read item 3 as *"defaults to ignored"*.
 
 ---
 

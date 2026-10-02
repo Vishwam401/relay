@@ -1737,3 +1737,254 @@ record us cheez ka hai jiska wo naam leta hai, aur kaunsa kisi pichhle moment ka
 *Din 5 KEY:* [`../daily/week_05/DIN_05_KEY.md`](../daily/week_05/DIN_05_KEY.md) ·
 *Seal:* [`../daily/week_05/DIN_05_PREDICTIONS_FROZEN.md`](../daily/week_05/DIN_05_PREDICTIONS_FROZEN.md) ·
 *Din 6 BRIEF:* [`../daily/week_05/DIN_06_BRIEF.md`](../daily/week_05/DIN_06_BRIEF.md)
+
+---
+
+## Din 6 — Week close: faisle likhe gaye aur flip rule do positive controls ke saath chala, par din ki apni clone file me ek seal mismatch tha jo kisi ne nahi padha (`2026-09-29`)
+
+**Layer L2 · `src/` gate held chauthe din: `git diff --name-only HEAD -- src/` → `0`, chhe hashes Step 0 = Step 10.**
+Do commits: `88f2308` (`.pyc` untrack) aur `27d5f91` (week close, exactly `8` named files, koi KEY nahi). Evidence DB
+delta `0`.
+
+**Jo bana, har ek apni file ke saath:** `D-32` final (paanch picks, har ek ka `Rejected`), flip rule jo do positive
+controls ke saath differential me pass hua, `.pyc` untrack aur uski jagah naya control, `D-30` ka decided section,
+`D-28` ka discriminator block, README rows 4/7/8/9, Week 4 ke chaar `💡` apne shabdon me `Gaps vs reviewer` lines ke
+saath, handoff, DoD audit, Incident 04, fresh clone.
+
+**Review me chhe cheezein mili, aur sabse badi din ki apni file me thi:** `w5d6_step10_clone.txt` ki pehli line
+`DIN_04 here=42D0F894 clone=62196E9A`. Clone ne original seal reproduce kiya; **author ki apni working copy ne nahi** —
+`42D0F894` `P-57` table ka CRLF hash hai. Chaudah seals `2026-09-28 17:28:51` ke `git pull --rebase` se CRLF hain, aur
+jo attribute likha gaya (`-text`) wo nahi hai jo `D-32` kehta hai (`eol=lf`). Baaki paanch: Incident 04 ka root cause
+source me nahi hai · `D-30` ki status line abhi bhi `OPEN` thi · handoff `P-51` ko galat naam deta hai · README row 9
+*"proving"* kehta hai · ek probe database (`blogprobe`) jo bench ko dikh hi nahi sakta.
+
+**Seal held:** `DIN_06_PREDICTIONS_FROZEN.md` SHA-256 `C7F08739…4766`, blob `73b95b49…` — Step 0 file (`19:16:10`),
+Step 10 bench, aur reviewer ka re-read, teeno barabar. File `19:15:53` pe likhi gayi; pehla measurement (Step 2) `19:24:36`.
+
+---
+
+### 📊 Measured / Observed
+
+User ke saare `logs/w5d6_*` artifacts reviewer ne padhe. **Reviewer ke apne reads `[MEASURED-R 2026-09-29]`:** user ke
+repo pe sirf read-only commands (`git ls-files --eol`, `Get-FileHash`, `git hash-object`, `git cat-file`, reflog), aur
+har write do throwaway clones me (`%TEMP%`, dono hataye). Week 6 Din 1 ki KEY ke probes ek disposable `relay_w6d1r` pe
+chale (dropped); unke logs `logs/w6d1r_*` sealed material hain aur yahan cite nahi hote.
+
+#### 1. Bench, seal, commit
+
+| Gate | Step 0 | Step 10 | File |
+|---|---|---|---|
+| `src_diff` · chhe hashes · `heads` | `0` · `a2ec8e9f…` `edcde815…` `dcdb6343…` `d55e3b8a…` `fc5bde22…` `fcfc9059…` · `w4d4_sink_unique (head)` | identical ✅ | `w5d6_step0_bench.txt`, `w5d6_step10_bench.txt` |
+| nau counters | `133\|145\|19\|4\|7\|39\|5\|0\|1` | same ✅, aur reviewer ka close re-read bhi | `w5d6_step0_counters.txt` |
+| `p54` | `20` | **`0`** — ignored, deleted nahi | |
+| `tracked_ignored` | `1` (`.pyc`) | `1` (`GEMINI_RULES.md`) | |
+| `frozen_tracked` · `logs_in_head` | `15` · `0` | — | KEY `Q1(a)`, `Q1(b)` ✅ |
+| `key_index` · `key_tree` · `brief_control` | — | `0` · `0` · `29` | |
+| `relay_python` · `relay_underscore_dbs` | `0` | `0` · `0` | — par §9 dekho |
+| staged at close | — | `8` files, `0` KEY / `P-54` class | `w5d6_step10_staged.txt` |
+
+#### 2. Flip rule — differential, dono positive controls ke saath (Step 2)
+
+`w5d6_step2_rule.txt`: `DIN_99_BRIEF.md` **PUBLISH** · `DIN_99_KEY.txt`, `DIN_99_SEALED.md`, `DIN_99_NEWCLASS.md`
+ignored · `frozen_05_publishable=True` · `dryrun_key_md=0` · `probes_left=0` · `tracked_ignored=2` = `GEMINI_RULES.md` +
+`.pyc` — **exactly wo do jo KEY ne naam se likhe the.** Ye check galat rule pe fail ho sakta tha, aur sahi rule pe pass
+hua. **Jo nahi chala:** purane rule ka arm aur *bina `!**/daily/**/` wala* flip (KEY `Q2(a)`, `Q2(b)`) asli repo pe
+nahi naape gaye — sirf chuna hua rule. Wo do rows reviewer ke throwaway-repo measurements hi rehti hain.
+
+#### 3. `.pyc` (Step 3) — `88f2308`
+
+`pyc_tracked=0` · `pyc_in_01f42c6_bytes=868` · `pyc_on_disk=True` · `new_control_brief=29`. History untouched, control
+usi din replace hua — `P-40` ka habit follow hua.
+
+#### 4. Decisions (Steps 1, 4, 5)
+
+`d32`: `0 · 0 · 1 · 5` · `d30`: `0 · 1 · 6 · 3 · 1` · `d28`: `1 · 3 · 3 · 6`. `w5d6_c3_removed_lines.txt` me teen `-`
+lines — `D-32` ki heading aur uski do `— undecided` rows, jo bharni hi thi. Koi aur purani line nahi hati ✅.
+
+**Par `d30_header_open=0` hamesha `0` tha.** `## D-30` heading me `OPEN` kabhi tha hi nahi; do line neeche status line
+`> **Status: OPEN, and deliberately half-written.**` Din 6 ke baad bhi wahi thi. Check galat field padh raha tha — aur
+wo check reviewer ka likha tha. Review pe status line ke upar ek amendment line judi (purana text chhoda).
+
+#### 5. README (Step 6)
+
+`w5d6_step6_readme.txt`: row 4 `week5=2` · row 7 `week5=1` · row 8 `week5=1`, `no_evidence=1` (Month 1 baseline ka zikr)
+· row 9 `week5=2`, `no_evidence=1` (baseline) · **`cites_logs_dir=0` har row me** ✅ — KEY `Q4(c)`, aur `P-47` ka naya
+instance nahi bana.
+
+**Teen cheezein jo check nahi dekh sakta tha:** row 9 ka evidence *"proving crash point is averted by poll boundaries"*
+kehta hai — `n = 2` outages, ek shape, dispatcher bina load ke; ye `narrows` hai. Row 4 `2.790 s` restart cite karta hai,
+jiska start clock kisi file me nahi (`P-53(c)`). Aur matrix ke neeche ka prose ab bhi kehta hai *"Row 9's Recovery
+mechanism cell says none"* aur *"Read rows 5 and 9 together … an untested hole"* — edited row ke khilaaf.
+
+#### 6. `💡` rewrites (Step 7) — `4 · 4 · 6` ✅
+
+`docs/month_01/logs/WEEK_04.md` lines `190`, `605`, `1094`, `2007` pe chaar own-words blocks, chaar `Gaps vs reviewer:`
+lines, reviewer ke blocks rakhe gaye. Teesra hafta carry band hua. **Order (reviewer text band karke pehle likhna)
+kisi file se verify nahi hota — `not recorded`.**
+
+#### 7. Close + handoff (Step 8) — `0 · 29 · True · True`
+
+Har untick ke saath reason hai ✅. **Do ticks review pe hold nahi karte:** *"Chhe din ki log entries"* — close pe `5`
+thi, ye chhathi hai aur review pe likhi gayi; *"Ek external postmortem, `P-43` pe mapped"* — mapped hai, source ke
+saath match nahi karta (§9).
+
+#### 8. Fresh clone (Step 10) — aur wo column jo kisi ne nahi padha
+
+| File | `here` | `clone` | `clone_blob` = `head_blob` |
+|---|---|---|---|
+| `DIN_04` | **`42D0F894`** | `62196E9A` | `90f6da79` ✅ |
+| `DIN_05` | `8B38705B` | `8B38705B` | `1021825f` ✅ |
+| `DIN_06` | `C7F08739` | `C7F08739` | `73b95b49` ✅ |
+
+KEY `Q5(a)` ✅ (clone = `62196E9A`), `Q5(c)` ✅. `Q5(b)` ke do arms (purane commit ka checkout) nahi chale.
+**`42D0F894` CRLF hash hai.** Poora mechanism `P-57` amendment me: `14/16` seals `w/crlf` since `pull --rebase`
+`2026-09-28 17:28:51` (reflog), `git status` clean sirf stat cache ki wajah se, `git checkout --` aur `git restore` is
+state me no-op, delete + checkout restore karta hai, aur `-text` ke neeche `git hash-object` bhi `HEAD` blob se alag
+(`81584003…` vs `90f6da79…`) jabki `eol=lf` ke neeche barabar.
+
+#### 9. Reviewer ke apne reads `[MEASURED-R 2026-09-29]`
+
+- **`blogprobe` database exist karta hai** — `7655 kB`, ek table `jobs`. `docs/blog/POST_01_OUTLINE.md:337` kehta hai
+  *"`blogprobe` dropped"*. Bench ka `relay\_%` filter isko dekh hi nahi sakta, to `relay_underscore_dbs=0` ek probe DB ke
+  hote hue pass hua. Check naam pe chalta hai, `P-54` ki shakal me.
+- **Incident 04 vs uska source.** GitHub ka [October 21 post-incident analysis](https://github.blog/news-insights/company-news/oct21-post-incident-analysis/)
+  ek alag kahani kehta hai: `43 s` connectivity loss ke baad Orchestrator ne primaries West Coast pe promote kar diye,
+  dono data centers me aise writes aa gaye jo doosre me nahi the, safe fail-back possible nahi raha, aur degradation
+  ghanton ke backup restore aur replication catch-up se bani; backlog me paanch million se zyada hook events the aur
+  TTL paar karne wale `~200k` webhook payloads drop hue. Entry ka root cause — *workers unhandled lost-connection
+  exceptions pe mare, poisoned pools, manual fleet restarts* — aur quoted `MySQL::Error: Lost connection` source me nahi
+  hain. Entry ka link (`…/postmortem-of-october-21s-incident/`) `404` deta hai. *(Source summary rephrased for
+  compliance with licensing restrictions.)* **Ritual ki value doosre ke incident se seekhna hai; ye entry Relay ka
+  `P-43` GitHub pe project karti hai.**
+- **Evidence DB, reviewer probing ke baad:** counters `133|145|19|4|7|39|5|0|1`, jobs `108` `dead_letter|4|0`, `128`
+  `succeeded|4|4`, `136` `running|1|1` — unchanged. `0` `relay_` DBs, `0` Relay python, `git status` clean.
+
+---
+
+### 🧠 Prediction review — `0.00 / 5.0`, aur is baar ek bhi line number nahi
+
+Frozen text `docs/daily/week_05/DIN_06_PREDICTIONS_FROZEN.md` se **quote**, hash verify hua.
+
+| Q | Frozen text (verbatim) | Score |
+|---|---|---|
+| **Q1** | *"(a) idk (b) idk (c) idk"* | **`0.00 / 1.0`** |
+| **Q2** | *"(a) idk (b) idk (c) idk (d) idk"* | **`0.00 / 1.0`** |
+| **Q3** | *"(a) idk (b) idk"* | **`0.00 / 1.0`** |
+| **Q4** | *"(a) idk (b) idk (c) idk"* | **`0.00 / 1.0`** |
+| **Q5** | *"(a) idk (b) idk (c) idk (d) idk"* | **`0.00 / 1.0`** |
+
+**Total `0.00 / 5.0`. Week 5 frozen total: `1.45 / 30.0`** (Din 1 `not scored`, Din 2 `1.45`, Din 3–6 `0.00`).
+
+Sub-part level `idk` pehli baar hua — Din 5 ka format note follow hua. **Par BRIEF ka doosra naya rule — *"jis sub-part
+me file ya command ka naam hai, uske jawab ke saath wo line number likho jo padha"* — solah me se ek bhi sub-part me
+nahi.** KEY ke scoring note ne das sub-parts derivable likhe the (`Q1(a)`, `Q1(b)`, `Q2(a)`, `Q2(b)`, `Q2(d)`, `Q3(a)`,
+`Q3(b)`, `Q4(a)`–`(c)`) — `~3.4` points padhne se.
+
+**Ab ye paanchwa lagatar din hai jisme ek bhi prediction attempt nahi hui.** Inflation zero hai aur wo record saaf hai.
+Par protocol ki mechanism — predict, phir measurement se takrao — paanch din se chali hi nahi. Week 6 ka plan isko format
+se attack karta hai (kam sub-parts, har sub-part pe `[padh ke]` / `[chala ke]` tag, aur ek `[padh ke]` `idk` bina *"kya
+padha"* ke reading gap gina jaata hai), kyunki instruction akele do din me nahi hili. **Beat 4 ki file — nahi.**
+
+---
+
+### 🤖 Reviewer ki apni galat predictions aur defects — record ke liye
+
+1. **KEY trap 8 ne *"LF-only frozen files pe `-text` se koi farak nahi"* likha.** KEY `17:18` pe likhi gayi; `17:28:51`
+   pe `pull --rebase` ne chaudah seals CRLF kar diye. Premise likhte waqt sach tha aur dus minute baad galat. Aur yahi wo
+   jagah hai jahan `-text` farak dalta hai.
+2. **BRIEF Step 10 ka clone check `here=` print karta tha, par Part C ki koi row use recorded seal se compare nahi karti
+   thi.** Check author ki side pe fail ho hi nahi sakta tha. File me mismatch tha, aur na user ne padha na check ne.
+3. **BRIEF Step 4 ka `d30_header_open` heading padhta tha** — hamesha `0`. `P-18` ki shakal, reviewer ke haath se.
+4. **Bench ka `relay_underscore_dbs` naam-bound hai** (Week 4 se carry) — `blogprobe` jaisa probe usko dikhta hi nahi.
+
+**KEY ne jo theek kaha, aur aaj measured:** `Q1(a)` `0` · `Q1(b)` `15` · `Q1(c)` same/same · `Q2(c)` exactly `.pyc` +
+`GEMINI_RULES.md` · `Q2(d)` BRIEFs tracked rahe (`29`) · `Q3(a)` `0`/`868`/`True` · `Q4(c)` `0` · `Q5(a)` · `Q5(c)`.
+
+---
+
+### 💡 What the session established — **user ko ye apne shabdon me dobara likhna hai** (Week 6 Din 2, Step 0.5)
+
+> Ye section reviewer ne likha hai. Protocol ke hisaab se isko user ke apne shabdon me replace hona hai.
+
+1. **Default wahi decide karta hai jo us cheez ke saath hota hai jiska kisi ne naam nahi liya.** Ignores ki list → nayi
+   class publish. Flip → nayi class chhup jaati hai. Fail-safe hai, fail-silent nahi: jo class publish honi chahiye thi
+   wo bhi chupchaap local reh sakti hai.
+2. **Git ignored directory me utarta hi nahi.** Isliye `!**/daily/**/` pehle, leaf negations baad me — traversal, ordering nahi.
+3. **`.gitignore` kabhi untrack nahi karta**, aur tracked∩ignored hamesha defect nahi hota (`GEMINI_RULES.md`).
+4. **Positive control apne subject ke saath expire hota hai.** `.pyc` gaya to control usi din `*_BRIEF.md` pe gaya.
+5. **Galat field padhne wala check decorative hai** — heading vs status line, clone vs apni copy.
+6. **Attribute ye badalta hai ki content ka hash kya *hona chahiye*, disk pe kya hai ye nahi.** Git tab dekhta hai jab stat badle.
+7. **"Satisfied as written" aur "jo test karna tha wo test hua" alag claims hain** — `D-30` gate 1 ka bound boundaries se aaya.
+
+---
+
+### ⚠️ Closeout corrections
+
+| # | Jaise record hua | Jo measured / source me hai | Provenance |
+|---|---|---|---|
+| 1 | Handoff §3.3: *"`P-51` (Stale reaper query) — update reaper query to check `claim_generation`"* | `P-51` = `record_execution` handler ke `try` ke andar, infra fault job failure gina jaata hai; decided shape: use `try` se bahar le jaana (`P-51` amendment, Din 3). Reaper query ka isse koi lena-dena nahi | `docs/PROBLEMS.md` `P-51` |
+| 2 | `D-32` final item 4 + Cost 9: *"`.gitattributes` enforces `eol=lf`"* | File me `-text`. CRLF copy pe `hash-object`: `-text` `81584003…`, `eol=lf` `90f6da79…` = `HEAD` | `[MEASURED-R]`, `D-32` amendment |
+| 3 | Handoff: *"dual-hash … to **ensure** cross-platform auditability"* | Author ki machine pe `14/16` seals dono hash pe fail. Sirf attribute wale commit ka fresh clone bachta hai → `narrows` | `[MEASURED-R]`, `P-57` amendment |
+| 4 | `D-32` item 3: flip *"**guarantees** that any future unenumerated class is ignored"* | Default badalta hai; `git add -f` aur stage-all bache hain — `D-32` Cost 6 khud *narrows* kehta hai | `DECISIONS.md` |
+| 5 | Step 4: `OPEN` header se hata (`d30_header_open=0`) | Status line `OPEN` hi thi; check heading padhta tha. Review pe amendment line | `[MEASURED-R]` |
+| 6 | README row 9: *"**proving** crash point is averted"*; matrix ke neeche ka prose | `n = 2`, ek outage shape → `narrows`. Prose ab bhi row 9 ko *"none"* + *"untested hole"* kehta hai | README |
+| 7 | README row 4: *"`2.790 s` restart in Week 5 Din 2"* | Start clock `12:08:31.188` kisi file me nahi (`P-53(c)`) | `P-53` |
+| 8 | POSTMORTEMS Incident 04 ka root cause aur link | Source ek cross-region failover + split writes + restore/replication ki kahani hai; entry ka mechanism source me nahi; link `404` | GitHub post-incident analysis, §9 |
+| 9 | DoD `[x]` *"Chhe din ki log entries"* | Close pe `5`. Ye chhathi hai, review pe | `WEEK_05.md` headings |
+| 10 | Bench *"`0` probe DBs"* | `blogprobe` maujood; `POST_01_OUTLINE.md:337` usko dropped kehta hai | `[MEASURED-R]` |
+| 11 | `D-30` Owner: *"containerized deployment … Week 6"* | Din 6 BRIEF Part D: *"Processes Compose me — Month 2 ke baad"*; `D-30` Rejected (a): *"remains the production target"*. Teen jagah teen owner. `WEEK_06.md` isko Month 4 (§5.5) deta hai, reason ke saath | `DECISIONS.md` |
+
+---
+
+### 🚧 Unresolved / carried → Week 6
+
+1. **`P-57` restore + attribute ka faisla** — Week 6 Din 1 Step 0.
+2. **Week 5 ke paanch `💡`** — Week 6 Din 1. **Is entry ka `💡`** — Week 6 Din 2 Step 0.5.
+3. **`P-56` census + fix, `P-55`** — Week 6 Din 1.
+4. **`P-44`** Din 2 · **`P-51`** Din 4 · **`P-45`** load harness Din 5 · **`P-53(d)`/`P-36`** crash-loop + `P-53(b)` Din 6.
+5. **Incident 04 source se dobara, aur Incident 05** — Week 6 Din 6.
+6. **README row 9 ka wording, uske neeche ka prose, row 4 ka number** — Week 6 Din 6.
+7. **`D-32` ka retention half (`logs/`)** — Din 3 se unowned; `WEEK_06.md` isko Week 8 (Month 2 close) deta hai.
+8. **`blogprobe`** — drop ya keep, user ka faisla, Week 6 Din 1 Step 0.
+9. **SQL parallel track** (`MONTH_02.md` §2: *"chaaron hafte"*) — Week 5 me schedule hi nahi hua. Silent slip tha, ab
+   record hai. Faisla `WEEK_06.md` me.
+
+---
+
+### Week 5 close
+
+| Din | Subject | Grade | Frozen |
+|---|---|---|---|
+| 1 | Worker claim-poll boundary | `8.0` | `not scored` |
+| 2 | Heartbeat/mark/reaper/dispatcher boundaries, supervisor, `D-31` | `7.5` | `1.45` |
+| 3 | Publishing surface `D-32` `DRAFT`, `D-33` pins, `P-51` decided | `7.5` | `0.00` |
+| 4 | Pool premise observed, two lost numbers replaced, `P-44` shape | `7.0` | `0.00` |
+| 5 | `P-41` end to end, `D-30` gates, `P-56` | `7.5` | `0.00` |
+| 6 | Week close — `D-30`, `D-32`, `D-28`, README, handoff | **`6.5`** | `0.00` |
+
+**Din 6 `6.5/10`:** faisle aur checks ki shape achhi — `D-32` ka differential galat rule pe fail ho sakta tha aur hua
+nahi, `.pyc` ka control usi din replace hua, `D-30` me `Rejected` naam se, README ke cells tracked files pe point karte
+hain. Neeche khinchne wali cheezein: seal mismatch din ki apni file me tha aur padha nahi gaya; jo attribute likha gaya
+wo faisla nahi tha; ek public file ek asli company ke incident ka galat root cause kehti hai; aur `ensure`, `guarantees`,
+`proving` teen jagah wahan jahan evidence `narrows` kehta hai.
+
+**Promise #4 ka process half `[NO EVIDENCE]` se `narrowed` hua — Week 5 ka main result, aur wo earned hai.**
+
+---
+
+### ❓ Next thought
+
+Week 5 ne ek sawaal chhe shakal me poocha: *record kis moment ka hai?* Din 6 ne uska ek aur roop dikhaya — **record kis
+jagah ka hai.** Clone ka hash sahi tha, author ki copy ka nahi. Heading me `OPEN` nahi tha, status line me tha. Postmortem
+ne GitHub ka naam liya, kahani Relay ki thi.
+
+Week 6 me pehli baar ek external cheez aa rahi hai jo apna record khud rakhti hai — provider ki call count, tokens, bill.
+Relay ka record (`attempts`, log lines) usse alag hoga, aur Din 1 ke baad bhi log sirf utna sach bolega jitna `COMMIT`
+bolta hai. **Jab dono record alag number dein, paisa kaunsa naapta hai?**
+
+---
+
+*Din 6 BRIEF:* [`../daily/week_05/DIN_06_BRIEF.md`](../daily/week_05/DIN_06_BRIEF.md) ·
+*Seal:* [`../daily/week_05/DIN_06_PREDICTIONS_FROZEN.md`](../daily/week_05/DIN_06_PREDICTIONS_FROZEN.md) ·
+*Handoff:* [`../daily/WEEK_05_HANDOFF.md`](../daily/WEEK_05_HANDOFF.md) ·
+*Next:* [`../planning/WEEK_06.md`](../planning/WEEK_06.md) → [`../daily/week_06/DIN_01_BRIEF.md`](../daily/week_06/DIN_01_BRIEF.md)

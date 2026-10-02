@@ -163,3 +163,13 @@ Inspecting `pg_stat_activity` revealed the following multi-session lock contenti
 3. **`P-56` (DML vs TCL / Print Before Commit):** Din 5 also demonstrated that if the database drops mid-transaction, an application that prints `Marked succeeded` prior to `COMMIT` misrepresents reality. In GitHub's incident and Relay's Job 8, the DML executed in session memory, but the `COMMIT` failed; Postgres rolled back uncommitted work. Durability requires verifying the TCL commit, not statement execution.
 
 **Still to verify:** Relay's current supervisor (`scripts/supervisor.py`) operates as a host-level Python monitor. Verifying process resilience under container orchestration (e.g. Docker Compose `restart: unless-stopped` with health checks) remains deferred to Week 6.
+
+> **Review note (`2026-09-29`) — this entry does not yet match its source; rewrite owed, Week 6 Din 6.** The linked URL
+> returns `404`; the post lives at [GitHub's October 21 post-incident analysis](https://github.blog/news-insights/company-news/oct21-post-incident-analysis/).
+> That analysis describes a different mechanism from the *Root cause* above: after the `43 s` connectivity loss,
+> Orchestrator failed clusters over to the West Coast, both sites then held writes the other lacked, a safe fail-back
+> was no longer possible, and the `24 h 11 min` degradation came from restoring from backups and waiting for
+> replication to catch up, plus a queued webhook backlog. Worker processes dying on unhandled lost-connection errors,
+> poisoned pools, and fleet restarts are not in the source, and neither is the quoted `MySQL::Error` message. The
+> *Relay connection* section may still hold as Relay's own record (`P-43`, `D-30`, `P-56`), but it is not what this
+> incident teaches. *(Source summary rephrased for compliance with licensing restrictions.)*

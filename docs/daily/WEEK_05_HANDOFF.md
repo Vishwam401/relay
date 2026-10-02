@@ -71,3 +71,32 @@ Definitions, consistent across all weekly handoffs:
 - All 9 measurement requirements: 8 completed, 1 slipped (`Load connection count against 97` slipped, needs load harness in Week 6).
 - All 8 written requirements: completed (`D-30`, `D-31`, `D-32` finalized; README rows updated; Week 4 `💡` rewritten).
 - All 5 hygiene requirements: 100% passed (evidence DB delta = 0 on all 9 counters; 0 probe databases; alembic heads intact).
+
+---
+
+## 5. Review corrections — Week 5 Din 6 review (`2026-09-29`)
+
+Appended by the reviewer; sections 1–4 above are left as written. Each line is measured or read from the named file.
+
+1. **§3 item 3 names the wrong problem.** `P-51` is not a reaper query. It is `record_execution` sitting inside the
+   handler's `try`, so an infrastructure fault is counted as a job failure and dead-letters a healthy job
+   (`docs/PROBLEMS.md` `P-51`, measured Week 5 Din 2). The decided shape (Din 3) is to move that call out of the `try`;
+   its cost line is `[INFERRED]` and must be measured when it lands. Owner: Week 6 Din 4, with `D-11`, because both are
+   classification decisions in the same `except` block.
+2. **§1 item 5 — *"to ensure cross-platform auditability"* — fails on the author's own machine.** Fourteen of the sixteen
+   tracked seals are CRLF in this working copy since a `git pull --rebase` on `2026-09-28 17:28:51`; both their SHA-256
+   and their `git hash-object` differ from the committed blob, and `git status` is clean only because of the stat cache.
+   Din 6's own `logs/w5d6_step10_clone.txt` shows it (`DIN_04 here=42D0F894`, seal `62196E9A`). The committed attribute is
+   `-text`; `D-32` says `eol=lf`, and only `eol=lf` makes `hash-object` normalise. `narrows`, not `ensures`. Detail:
+   `P-57` amendment. Owner: Week 6 Din 1 Step 0.
+3. **§4 — two DoD ticks do not hold at review.** *"Six day log entries"*: `docs/logs/WEEK_05.md` had five at close; the
+   sixth is the review's. *"An external postmortem, mapped to `P-43`"*: Incident 04 is mapped, but its root cause is not
+   in GitHub's post-incident analysis and its link returns `404` (review note under the entry). Rewrite owner: Week 6 Din 6.
+4. **§4 — *"`restart:` in Compose deferred to Week 6"*.** `D-30` Rejected (a) calls Compose *"the production target"* and
+   the Din 6 BRIEF's scope guard said *"Month 2 ke baad"*. `docs/planning/WEEK_06.md` gives containerised deployment to
+   Month 4 (Part 2 §5.5), because it invalidates every retained baseline and no Week 6 experiment needs it.
+5. **Open items this handoff does not list, now owned in `WEEK_06.md`:** `D-32`'s retention half for `logs/` (unowned
+   since Din 3) · the SQL parallel track (`MONTH_02.md` §2 says all four weeks; Week 5 never scheduled it) · a leftover
+   `blogprobe` database (`7655 kB`) that the bench's `relay\_%` filter cannot see.
+6. **Frozen total for the week: `1.45 / 30.0`.** Din 3–6 are four consecutive zeros with zero inflation; Din 6's sixteen
+   sub-parts were all `idk` with no line numbers, although ten were derivable by reading.
