@@ -330,6 +330,15 @@ Branch A.
 
 ---
 
+### 💡 What I understood — own words, 2026-09-30
+
+1. DB outage ke waqt python me do alag-alag exception trees aate hain: pool me padi stale connection tootne par `sqlalchemy.exc.InterfaceError` aata hai, par jab port band ho to OS-level `ConnectionRefusedError` (`OSError`) aata hai jisme `DBAPIError` ya `connection_invalidated` attribute exist hi nahi karta (`labs/w5d1_exc_probe.py`). Isliye sirf `except Exception` hi dono ko safely swallow kar pata hai.
+2. Outage ke dauran poll failure count ka calculation simple `outage / interval` nahi hota. 26.373 s outage aur 2.0 s poll interval me expected 13 ki jagah sirf 5 failures measure hue (`w5d1_step4_worker.stdout.log`), kyunki har failed connection attempt ka apna TCP timeout/refusal cost hota hai (~3.27 s extra per cycle).
+3. Bina sleep ke busy-retry karna recovery ko fast nahi balki slow banata hai: arm 1 (no sleep) me 33 failures aaye aur Postgres startup window me `CannotConnectNowError` khane ki wajah se recovery 2.176 s me hui, jabki 2.0 s sleep wale arm 2 me 1.668 s me hui.
+4. `try/except` boundary ne worker ko crash hone se eliminate nahi kiya balki shift kiya: claim loop bacha par terminal status mark (`worker.py:305`) unguarded hone ke karan in-flight job wala worker wahin mar gaya, aur re-execution par `side_effects_id_seq` 1 se advance hokar 2 ho gaya.
+
+Gaps vs reviewer: Reviewer ne explicitly emphasize kiya ki boundary ne process ko outage se nahi balki sirf ek loop ko bachaya, aur busy-spin loop sleep se nahi balki TCP connection attempt se rate-limited hota hai.
+
 ### 💡 What the session established — **user ko ye apne shabdon me dobara likhna hai**
 
 > Ye section reviewer ne likha hai. Protocol ke hisaab se isko user ke apne shabdon me replace hona hai —
@@ -675,6 +684,15 @@ kisi aur wajah se mar raha hai"* — exactly `P-36` nikli · trap #11 ka poison-
 
 ---
 
+### 💡 What I understood — own words, 2026-09-30
+
+1. `finally` block ke andar se raise hone wali exceptions (`await heartbeat_task` at `src/worker.py:287`) outer `try/except` boundary se nahi pakdi jaati aur unhandled reh kar process maar deti hain. Heartbeat task ko try/except se wrap karke aur `send_heartbeat` ke DB block ko guard karke worker ko zinda rakha gaya.
+2. Bounded retry loop me 1.0 s sleep ke bavajood 10 s deadline me keval 3 retry attempts ho payi, kyunki har failed connection attempt ~2.7 s kha gayi (failure cost). Ant me mark abandon hua aur reaper reclaim se `attempts = 2` hua — yaani bounded retry ne is outage me mark bachane ka koi fayda nahi diya.
+3. Reaper (`src/reaper.py`) aur dispatcher (`src/dispatcher.py`) ke main loops me `try/except Exception` lagane se DB outage ke dauran dono zinda rahe aur recovery ke baad reaper ne stuck jobs reclaim kiye aur dispatcher ne outbox row 6 deliver kiya.
+4. Process-level `os._exit(1)` (`P-36`, poison pill job 136) python ke kisi bhi `try/except` block se nahi pakda ja sakta; uske liye external supervisor (`scripts/supervisor.py`) ka hona anivarya hai jisne worker ko 4 restarts dekar wapas revive kiya.
+
+Gaps vs reviewer: Reviewer ne note kiya ki `record_execution` par galat boundary lagne se infra DB fault job-level application failure me classify ho jata hai (P-51), aur fixed deadline lease duration se disconnected hone ke karan real bound provide nahi karti.
+
 ### 💡 What the session established — **user ko ye apne shabdon me dobara likhna hai**
 
 > Ye section reviewer ne likha hai. Protocol ke hisaab se isko user ke apne shabdon me replace hona hai —
@@ -967,6 +985,16 @@ defects (`Q5`) · `step6_harness.ps1` history me zinda (`Q4`) · `.env.example` 
 karo, predict mat karo"* — resolve chala, `35` packages, conflict `0`.
 
 ---
+
+### 💡 What I understood — own words, 2026-09-30
+
+1. Git me directory-level ignore rule (`**/daily/`) poori directory ko traverse hone se prune kar deta hai, jisse uske andar negation patterns (`!**/daily/**/*BRIEF*`) evaluate hi nahi hote (`docs/daily/week_05/DIN_03_BRIEF.md`). Isliye negation ke bajay direct file-level ignore `**/daily/**/*KEY*.md` use karna padta hai.
+2. Seal audit me index (`git ls-files`), commit history (`git ls-tree`), aur pattern rules (`git check-ignore --no-index`) teen alag layers hain; tracked `.pyc` (count 1) positive control ki tarah prove karta hai ki checks bina pattern match ke empty output dekar false pass nahi ho rahe.
+3. Incomplete allow-list security hole ban jaati hai (`P-54`): `D-32` ne 133 files me se sirf 4 classes (71 files) classify ki, jisse 20 files (`ANSWERS` 13, `DESIGN` 5, `PROBLEM` 2) default-open behavior ke karan public stage hone ke khatre me aa gayi.
+4. `requirements.txt` me 11 pins aur `pip list --not-required` me 11 packages ka count match hona coincidence tha; `pip` extra tha, `psycopg` binary split tha, aur `sqlalchemy` missing tha. Fresh resolve par 35 packages clean install hue.
+5. Log retention verification script (`scratch/test_probe_retention.py`) microsecond timestamp use karke pass ho gaya, jabki actual probe (`step5_preping_bench.py`) me second-level timestamp hone ke karan ek hi second me collision aur file overwrite ka risk zinda raha (`P-50`).
+
+Gaps vs reviewer: Reviewer ne emphasize kiya ki rule ka shape un cheezon ka faisla leta hai jinke baare me rule chup rehta hai (default-open behavior), aur verification naye scratch script se satisfy hone par actual target script ka bug chhupa reh sakta hai.
 
 ### 💡 What the session established — **user ko ye apne shabdon me dobara likhna hai**
 
@@ -1326,6 +1354,15 @@ nahi pahunchi · `500`, `503` nahi · `sqlalchemy.exc.TimeoutError`, builtin nah
 
 ---
 
+### 💡 What I understood — own words, 2026-09-30
+
+1. Pool limit (`pool_size=2`, `max_overflow=0`) database server nahi balki client application ke andar SQLAlchemy engine enforce karta hai (`w5d4_step1_api.log`): teesri concurrent request ke waqt `_do_get` method me `TimeoutError` raise hua aur uska `SELECT pg_sleep` kabhi Postgres server tak pahuncha hi nahi.
+2. Pool timeout ka bound isolation: `RELAY_POOL_TIMEOUT` ko 1.5 s, 3.0 s, aur 5.0 s set karke run karne par failure latency exact timeout ke mutabiq 1.588 s, 3.096 s, aur 5.076 s aayi, jisse prove hua ki starvation failure latency strictly pool timeout parameter se bound hoti hai.
+3. Health check endpoints ka discrimination: Pool saturation ke dauran non-DB endpoint `/health` turant `200 OK` (0.03 s) deta hai jo process liveness prove karta hai, jabki `/healthz` aur `/db-ping` pool queue me block hokar 3.06 s baad `500` return karte hain (`w5d4_step3_discriminator.txt`).
+4. Client-side HTTP disconnect hone par server-side DB work abort nahi hota: client ne 3 s pe timeout/disconnect kiya par Postgres me `SELECT pg_sleep(20)` poore 20.025 s chala aur tab tak pool connection held raha (`C4`).
+
+Gaps vs reviewer: Reviewer ne note kiya ki `Tee-Object` khali pipeline par zero output retain nahi karta jisse absence verify karna mushkil ho jata hai, aur client disconnect ke dauran access log me request record hi nahi hoti.
+
 ### 💡 What the session established — **user ko ye apne shabdon me dobara likhna hai**
 
 > Ye section reviewer ne likha hai. Protocol ke hisaab se isko user ke apne shabdon me replace hona hai, aur ye
@@ -1663,6 +1700,15 @@ orphans` · `Q4(a)` `0` · `Q4(c)` nahi · `Q4(d)` exercise nahi hua · `Q5(a)` 
 pehla `/healthz` sabse tez failure. **Composition ka har link hold hua — teen measured facts ka jod hi prediction tha.**
 
 ---
+
+### 💡 What I understood — own words, 2026-09-30
+
+1. Client timeout hone par server-side request abort nahi hoti (`logs/w5d5_B_*`, `logs/w5d5_C_*`): dispatcher ne 5 s par HTTP timeout maan kar request drop kar di par sink server par orphaned handler lock release hone tak DB connection hold karke baitha raha. Is cascading effect se sequential dispatcher ne bhi sink ka 2+0 QueuePool saturate kar diya (`P-41`).
+2. Request attribution aur actual effect me mismatch hota hai: Arm B me effect attempt 1 ki timed-out request ne apply kiya (`received_at 13:55:09.831`), jabki Relay ko `status=dispatched` attempt 2 par mila jise sink ne `duplicate` diya. 200 response milna is baat ka proof nahi hai ki usi request ne side-effect apply kiya.
+3. Postgres ka `now()` function statement execution time ya commit time nahi balki transaction start time capture karta hai; isliye `received_at` aur `dispatched_at` transaction ke begin hone ka waqt darshate hain na ki actual effect ya commit ka.
+4. Transaction ke andar print hui outcome line DB commit ki guarantee nahi hoti (`P-56`): Din 5 fleet outage me worker ne job 8 ke liye `Marked job 8 as 'succeeded'` print kiya par transaction rollback ho gayi, aur baad me reaper ne job 8 reclaim karke dobara run karwaya.
+
+Gaps vs reviewer: Reviewer ne note kiya ki HTTP client starvation aur DB-down ko endpoint latency se alag nahi kiya ja sakta balki process log ke exception class se kiya jata hai, aur `restarts = 0` boundaries ke kaam karne ka proof hai par supervisor backoff limits ka test nahi.
 
 ### 💡 What the session established — **user ko ye apne shabdon me dobara likhna hai**
 

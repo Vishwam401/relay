@@ -23,6 +23,7 @@ def request_shutdown(signum: int, frame: Any) -> None:
 
 async def reap_stuck_jobs() -> int:
     reclaimed_count = 0
+    post_commit_reclaims = []
     async with async_session() as session:
         async with session.begin():
             predicate = or_(
@@ -62,11 +63,12 @@ async def reap_stuck_jobs() -> int:
                 # Field order is load-bearing: `job_id=<n> pre_status=... matched=...
                 # post_status=...` keeps the Din 1/Din 2 `id=<n> pre_status=...`
                 # substring intact, so older Get-LogEvent patterns still match.
-                print(
+                reclaim_msg = (
                     f"[{REAPER_ID}] [DB_TIME: {ts_str}] [reclaim] job_id={candidate.id} "
                     f"pre_status={candidate.status} matched={matched} post_status={post_status} "
                     f"pre_generation={candidate.claim_generation} post_generation={post_generation}"
                 )
+                post_commit_reclaims.append(reclaim_msg)
                 if matched > 0:
                     reclaimed_count += matched
 
@@ -75,6 +77,9 @@ async def reap_stuck_jobs() -> int:
                 print(
                     f"[{REAPER_ID}] [{ts}] Pass completed: candidates=0 reclaimed=0"
                 )
+
+        for msg in post_commit_reclaims:
+            print(msg)
 
     return reclaimed_count
 

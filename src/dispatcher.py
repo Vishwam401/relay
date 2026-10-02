@@ -37,6 +37,7 @@ async def run_dispatcher() -> None:
 
             try:
                 async with async_session() as session:
+                    post_commit_msg = None
                     async with session.begin():
                         query = (
                             select(Outbox)
@@ -50,15 +51,18 @@ async def run_dispatcher() -> None:
 
                         if outbox_row:
                             dispatched = True
-                            key = outbox_row.effect_key or f"job:{outbox_row.job_id}"
+                            row_job_id = outbox_row.job_id
+                            row_outbox_id = outbox_row.id
+                            new_attempts = outbox_row.attempts + 1
+                            key = outbox_row.effect_key or f"job:{row_job_id}"
                             payload_data = {
                                 "idempotency_key": key,
-                                "job_id": outbox_row.job_id,
+                                "job_id": row_job_id,
                                 "body": outbox_row.payload or {},
                             }
 
                             print(
-                                f"[{DISPATCHER_ID}] Attempting dispatch: job_id={outbox_row.job_id} outbox_id={outbox_row.id} key={key}..."
+                                f"[{DISPATCHER_ID}] Attempting dispatch: job_id={row_job_id} outbox_id={row_outbox_id} key={key}..."
                             )
                             sys.stdout.flush()
 
@@ -73,29 +77,29 @@ async def run_dispatcher() -> None:
                                         crash_at_flag = crash_env or (outbox_row.payload or {}).get("crash_at")
                                     if crash_at_flag == "after_http":
                                         print(
-                                            f"[{DISPATCHER_ID}] [crash_at] Triggering after_http crash for job_id={outbox_row.job_id} outbox_id={outbox_row.id}."
+                                            f"[{DISPATCHER_ID}] [crash_at] Triggering after_http crash for job_id={row_job_id} outbox_id={row_outbox_id}."
                                         )
                                         sys.stdout.flush()
                                         os._exit(1)
 
                                     outbox_row.dispatched_at = func.now()
                                     outbox_row.attempts = outbox_row.attempts + 1
-                                    print(
-                                        f"[{DISPATCHER_ID}] [dispatch] job_id={outbox_row.job_id} outbox_id={outbox_row.id} status=dispatched attempts={outbox_row.attempts}"
+                                    post_commit_msg = (
+                                        f"[{DISPATCHER_ID}] [dispatch] job_id={row_job_id} outbox_id={row_outbox_id} status=dispatched attempts={new_attempts}"
                                     )
-                                    sys.stdout.flush()
                                 else:
                                     outbox_row.attempts = outbox_row.attempts + 1
-                                    print(
-                                        f"[{DISPATCHER_ID}] [dispatch_failed] job_id={outbox_row.job_id} outbox_id={outbox_row.id} status_code={response.status_code} attempts={outbox_row.attempts}"
+                                    post_commit_msg = (
+                                        f"[{DISPATCHER_ID}] [dispatch_failed] job_id={row_job_id} outbox_id={row_outbox_id} status_code={response.status_code} attempts={new_attempts}"
                                     )
-                                    sys.stdout.flush()
                             except Exception as exc:
                                 outbox_row.attempts = outbox_row.attempts + 1
-                                print(
-                                    f"[{DISPATCHER_ID}] [dispatch_error] job_id={outbox_row.job_id} outbox_id={outbox_row.id} error={exc} attempts={outbox_row.attempts}"
+                                post_commit_msg = (
+                                    f"[{DISPATCHER_ID}] [dispatch_error] job_id={row_job_id} outbox_id={row_outbox_id} error={type(exc).__name__}: {exc} attempts={new_attempts}"
                                 )
-                                sys.stdout.flush()
+                    if post_commit_msg:
+                        print(post_commit_msg)
+                        sys.stdout.flush()
             except Exception as exc:
                 print(
                     f"[{DISPATCHER_ID}] [poll_error] Database operation failed: {type(exc).__name__}: {exc}"

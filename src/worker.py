@@ -45,6 +45,7 @@ async def send_heartbeat(
         except asyncio.TimeoutError:
             try:
                 async with async_session() as session:
+                    heartbeat_msg = None
                     async with session.begin():
                         update_stmt = (
                             update(Job)
@@ -61,7 +62,9 @@ async def send_heartbeat(
                                 f"[{WORKER_ID}] Heartbeat lost: job_id={job_id} generation {generation} is no longer active"
                             )
                             break
-                        print(f"[{WORKER_ID}] Heartbeat sent for job_id={job_id}")
+                        heartbeat_msg = f"[{WORKER_ID}] Heartbeat sent for job_id={job_id}"
+                    if heartbeat_msg:
+                        print(heartbeat_msg)
             except Exception as exc:
                 print(
                     f"[{WORKER_ID}] [heartbeat_error] Heartbeat update failed for job_id={job_id}: {type(exc).__name__}: {exc}"
@@ -173,6 +176,7 @@ async def run_worker() -> None:
         claimed_job = None
 
         try:
+            claim_msg = None
             async with async_session() as session:
                 async with session.begin():
                     claim_query = (
@@ -219,10 +223,13 @@ async def run_worker() -> None:
                                 current_attempts,
                                 generation,
                             )
-                            print(
+                            claim_msg = (
                                 f"[{WORKER_ID}] [claim] Claimed job {job.id} (job_id={job.id}, generation={generation}, attempt={current_attempts}, rowcount=1). Status is now 'running'."
                             )
+                if claim_msg:
+                    print(claim_msg)
         except Exception as exc:
+            claimed_job = None
             print(
                 f"[{WORKER_ID}] [poll_error] Database claim poll failed: {type(exc).__name__}: {exc}"
             )
@@ -299,6 +306,7 @@ async def run_worker() -> None:
         mark_deadline = asyncio.get_event_loop().time() + 10.0
         while True:
             try:
+                mark_msg = None
                 async with async_session() as session:
                     async with session.begin():
                         mark_stmt = (
@@ -329,9 +337,11 @@ async def run_worker() -> None:
                                     f"[{WORKER_ID}] Conflict on mark: job_id={job_id} status was modified by another transaction (rowcount=0)."
                                 )
                         else:
-                            print(
+                            mark_msg = (
                                 f"[{WORKER_ID}] [mark] Marked job {job_id} as '{new_status}' (job_id={job_id}, rowcount={mark_result.rowcount})."
                             )
+                    if mark_msg:
+                        print(mark_msg)
                 break
             except Exception as exc:
                 print(

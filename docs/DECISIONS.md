@@ -2948,6 +2948,7 @@ With the Flip rule ignoring `**/daily/**` by default and all 20 `_ANSWERS.md`, `
    under the committed `-text` both halves of the dual hash fail for them today. Detail and the restore procedure:
    `P-57` amendment (Week 5 Din 6 review). **Decision owed, Week 6 Din 1 Step 0:** change line 2 to what this entry
    says, or keep `-text` and amend item 4 with this cost.
+   - **Week 6 Din 1 Step 0 decision:** Kept `-text` on `.gitattributes`. Cost: working copy SHA-256 diverges on CRLF checkout until restored via `scripts/seal_audit.ps1 -Restore`; immutable Git blob ID (`git hash-object`) remains canonical and byte-auditable across all clones.
 2. **Item 3 says the flip *"guarantees that any future unenumerated class is ignored by default."*** Cost 6 of this
    same entry says `.gitignore` *"narrows accidental publication; it does not close it"* (`git add -f`, editor
    stage-all). The flip changes the **default**; *guarantees* overstates it. Read item 3 as *"defaults to ignored"*.
