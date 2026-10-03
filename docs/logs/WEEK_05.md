@@ -1948,6 +1948,15 @@ padha"* ke reading gap gina jaata hai), kyunki instruction akele do din me nahi 
 
 ---
 
+### 💡 What I understood — own words, 2026-10-03
+
+1. Git directory traversal: `.gitignore` me agar directory level ignore rule lagaya jaye to git us directory ke andar jata hi nahi, isliye `!**/daily/**/` jaise directory negations pehle lagane padte hain aur specific files baad me.
+2. Allow-list vs deny-list ka default: Deny-list (sirf chuni hui files ignore) me nayi unclassified files chupchap public ho jati hain (`P-54`), jabki Flip rule (default-ignore) lagane se nayi unclassified files local rehti hain aur public leak prevent hota hai (`D-32`).
+3. Tracked aur Ignored ka intersection: `.gitignore` pehle se tracked files ko untrack nahi karta; `.pyc` history me tracked tha isliye use explicit `git rm --cached` se clean kiya gaya, jabki `GEMINI_RULES.md` deliberate exception tha.
+4. Positive controls expire hote hain: Jab `.pyc` repo se delete ho gaya to positive control ko usi din `*_BRIEF.md` par switch kiya gaya taaki checks functional rahein.
+
+Gaps vs reviewer: Reviewer ne emphasize kiya ki galat field padhne wale check (heading vs status line) decorative hote hain jo hamesha pass dikhte hain, aur git attributes content ka canonical hash rule badalta hai disk ke actual bytes nahi.
+
 ### 💡 What the session established — **user ko ye apne shabdon me dobara likhna hai** (Week 6 Din 2, Step 0.5)
 
 > Ye section reviewer ne likha hai. Protocol ke hisaab se isko user ke apne shabdon me replace hona hai.

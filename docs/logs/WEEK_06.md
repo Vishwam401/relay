@@ -305,6 +305,15 @@ ka hai: reaper ke `29` lines ka breakdown (`15 + 12 + 2`) user ke apne log me th
 
 ---
 
+### 💡 What I understood — own words, 2026-10-03
+
+1. Log line sirf DML intent hoti hai jab tak `COMMIT` safal na ho: Outcome lines ko `session.begin():` ke bahar shift karke uncommitted false positive logs (489 prints vs 13 commits) ko eliminate kiya gaya (`P-56`).
+2. Nayi failure window (Narrowed, not eliminated): Commit safal hone ke baad aur print chalne se pehle agar process crash ho jaye to DB me committed transition exist karega par log me line nahi aayegi (false negative).
+3. Differential ke do guards: `fixed_equal=True` ke sath `committed_ge_1=True` hona anivarya hai taaki line deletion se aane wali khokhli barabari (`0 = 0`) prevent ho sake.
+4. Exception class explicit formatting: `httpx.ReadTimeout` ka `str(exc)` empty hota hai, isliye `{type(exc).__name__}: {exc}` format use karne par hi log me class name `ReadTimeout:` dikhta hai (`P-55`).
+
+Gaps vs reviewer: Reviewer ne note kiya ki transaction ka scope uska blast radius hota hai (reaper ke ek pass me ek refusal sabhi reclaims ko rollback karta hai - P-58), aur ek hi event ke teen alag records hote hain (log, DB, receiver).
+
 ### 💡 What the session established — **draft, user ko ye apne shabdon me dobara likhna hai** (Week 6 Din 2, Step 0.5)
 
 > Ye section reviewer ne likha hai. **Ye user ki samajh nahi hai.** Protocol ke hisaab se Din 2 Step 0.5 pe iske upar

@@ -1,3 +1,5 @@
+import os
+
 from fastapi import Depends, FastAPI, HTTPException, status
 from sqlalchemy import select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -13,6 +15,10 @@ app = FastAPI(title="Relay API")
 app.middleware("http")(limit_payload_size)
 
 
+ENABLE_TEST_ROUTES = os.environ.get("ENABLE_TEST_ROUTES")
+print(f"test_routes={ENABLE_TEST_ROUTES!r}", flush=True)
+
+
 @app.get("/health")
 async def health_check():
     return {"ok": True}
@@ -24,16 +30,11 @@ async def healthz(db: AsyncSession = Depends(get_db)):
     return {"status": "ok"}
 
 
-@app.get("/db-ping")
-async def db_ping(db: AsyncSession = Depends(get_db)):
-    result = await db.execute(text("SELECT 1"))
-    return {"db": result.scalar()}
-
-
-@app.get("/slow-hold")
-async def slow_hold(seconds: float = 4.0, db: AsyncSession = Depends(get_db)):
-    await db.execute(text("SELECT pg_sleep(:s)"), {"s": seconds})
-    return {"held": seconds}
+if ENABLE_TEST_ROUTES == "1":
+    @app.get("/slow-hold")
+    async def slow_hold(seconds: float = 4.0, db: AsyncSession = Depends(get_db)):
+        await db.execute(text("SELECT pg_sleep(:s)"), {"s": seconds})
+        return {"held": seconds}
 
 
 @app.post(
