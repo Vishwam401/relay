@@ -3074,3 +3074,193 @@ of any of them stores the CRLF bytes as a **new blob** — changing the one iden
   number every checkout agrees on.
 
 `narrowed`, not `closed`.
+
+---
+
+## P-55 — amendment (Week 6 Din 1): resolved for the class — the line now names it, measured against a silent server and a closed port; the message is still empty for `ReadTimeout`, and the receiver's half is untouched
+
+**Status: RESOLVED on Week 6 Din 1 (`2026-10-02`), commit `58071f3`, for what this card owns: Relay's own line naming
+the exception.** User's run `logs/w6d1_p55_20261002_192647_405993_census.txt`; mechanism re-measured by the reviewer
+(`logs/w6d1rv_httpx_probe.txt`, httpx `0.28.1`) `[MEASURED-R]`.
+
+**The edit:** `src/dispatcher.py:98` prints `error={type(exc).__name__}: {exc}` — the shape the other exception lines in
+`src/` already used. The line itself moved after `COMMIT` with the rest of `P-56`'s fix.
+
+| Arm | window | `[dispatch_error]` lines | class | `outbox_attempts` | first line |
+|---|---|---|---|---|---|
+| silent server `127.0.0.1:8099` | `13 s` | `2` | `ReadTimeout` × `2` | `2` | `error=ReadTimeout:  attempts=1` |
+| closed port `127.0.0.1:8098` | `8 s` | `3` | `ConnectError` × `3` | `3` | `error=ConnectError: All connection attempts failed attempts=1` |
+
+`relay_python_after=0`. The silent arm reproduces this card's original symptom; the closed arm never did — its exception
+carries a message.
+
+**Why the `str` is empty, traced to source `[MEASURED-R]`:** `httpcore/_backends/anyio.py:33` wraps the read in
+`anyio.fail_after()`, which raises a builtin `TimeoutError()` with no arguments; `httpcore/_exceptions.py:14` re-raises it
+as `httpcore.ReadTimeout(TimeoutError())`; `httpx/_transports/default.py:117–118` takes `message = str(exc)` → `''` →
+`httpx.ReadTimeout('')`. `ConnectError` carries anyio's `OSError("All connection attempts failed")`
+(`anyio/_core/_sockets.py:265`), so its message survives. Elapsed: `ReadTimeout` `5.1031` / `5.0149 s` (`timeout=5.0`);
+closed loopback connect `2.0289`–`2.0477 s` on this Windows host, inside the `5 s` connect timeout, which is why it is
+`ConnectError` rather than `ConnectTimeout`.
+
+**`2` vs `3` lines is a window effect, not a class effect.** The dispatcher does not sleep after a failure
+(`dispatched = True` once a row is found, `src/dispatcher.py:53`; `P-35`), so the line count is
+`floor((window − startup) / per-attempt cost)`: `(13 − 1.65) / 5.04 → 2`, `(8 − 1.75) / 2.05 → 3`, the third landing
+`~0.1 s` before the kill. Timestamps `[MEASURED]`, arithmetic `[INFERRED]`.
+
+**What stays, and why this is resolved rather than closed in the wider sense:**
+- The message for `ReadTimeout` is still empty — the double space in `error=ReadTimeout:  attempts=1` is that empty
+  string. The class name carries what `str` never had; nothing carries *where* the read stalled.
+- **`P-41`'s half is untouched.** The line still cannot name the receiver's lock or its pool; that lives in the receiver.
+- `outbox` still has no error column. A durable record of the cause remains a schema decision (`P-35`'s per-attempt
+  shape), not a log edit.
+- `[dispatch_failed]` (non-200) under a refused `COMMIT` was not measured (`P-56` amendment below).
+
+---
+
+## P-56 — amendment (Week 6 Din 1): narrowed — outcome lines now print after `COMMIT`, and a deterministic commit refusal shows log lines equal committed transitions for five tags; three failure directions are still open, and one class of outcome-shaped line sits outside every transaction
+
+**Status: NARROWED on Week 6 Din 1 (`2026-10-02`), commit `58071f3` (`src/worker.py`, `src/reaper.py`,
+`src/dispatcher.py`, `+36/−17`).** User's runs on disposable `relay_w6d1` (dropped); reviewer's independent fixed-phase
+re-run and a `[dispatch_error]` refusal probe on `relay_w6d1_review` (dropped) `[MEASURED-R 2026-10-02]`. Evidence DB
+delta `0`.
+
+**The census this card asked for** (`labs/w6d1_print_census.py`, AST over `async with session.begin():` blocks): `15`
+prints inside a transaction on the pre-fix code — dispatcher `5`, reaper `2`, worker `8`. **Seven are outcome lines**:
+dispatcher `:83` `[dispatch]`, `:89` `[dispatch_failed]`, `:95` `[dispatch_error]`; reaper `:65` `[reclaim]`; worker `:64`
+`Heartbeat sent`, `:222` `[claim]`, `:332` `[mark]` (line numbers at `58071f3^`). **This card's table named four; it
+missed the heartbeat line and two of the three dispatcher lines** `[MEASURED][R]`. After the fix: `8` prints inside, none
+of them an outcome line (intent, `crash_at`, or `rowcount = 0` observations) `[MEASURED][R]`.
+
+**The differential — deferred constraint triggers refuse chosen `COMMIT`s; audit triggers in the same transaction count
+the ones that commit:**
+
+| Tag | control lines / committed | fixed lines / committed |
+|---|---|---|
+| claim | `10 / 5` | `5 / 5` |
+| heartbeat | `2 / 1` | `1 / 1` |
+| mark | `15 / 4` | `4 / 4` |
+| reclaim | `29 / 2` | `2 / 2` |
+| dispatch | `433 / 1` | `1 / 1` |
+| total | `489 / 13` | `13 / 13` |
+
+`[MEASURED]` (`logs/w6d1_step4_diff.txt`); reviewer re-run identical `[MEASURED-R]`. Every tag had `≥ 1` refused and
+`≥ 1` committed transition of its own kind in both runs, so neither `0 = 0` nor *"line deleted"* can pass. Tag text is
+unchanged, so `P-32`'s grep contract holds.
+
+**`[dispatch_error]` under a refused `COMMIT` — not reachable by the user's harness** (its dispatch refusal fires only
+on the success path). Reviewer probe, closed-port sink, deferred trigger refusing the `attempts + 1` commit
+(`logs/w6d1rv_dErr_20261002_200449_356008_census.txt`): refused arm `0` lines / `3` `poll_error` / `attempts=0`; positive
+control `3` lines / `0` / `attempts=3` `[MEASURED-R]`. **`[dispatch_failed]` under refusal: not recorded** — same
+variable and print site, so `[INFERRED]` the same.
+
+**What the fix does not cover — why this is `narrowed`:**
+1. **Committed but not printed.** A process death between `COMMIT` and `print` leaves a committed transition with no line.
+   This card's own *"Fix directions"* called that direction recoverable, and it is — but **the harness never produces it**
+   (processes die only at the end, by `Stop-Process`). Untested.
+2. **Commit outcome unknown.** If `COMMIT` reaches Postgres and commits but the connection dies before the ack, asyncpg
+   raises and the code prints `[poll_error]` / `[mark_error]` for a transition that committed. The caller cannot know
+   which happened. **The lifecycle line is now a lower bound on commits, not an exact count** `[INFERRED]`.
+3. **Outcome-shaped lines outside any transaction**, which the census cannot see by construction: `src/worker.py:250–252`
+   `Unknown handler … Marking terminal 'dead_letter'`, `:287–289` `… Scheduling retry … (new_status='pending')`,
+   `:294–296` `reached max_attempts … Marking terminal 'dead_letter'` (HEAD line numbers). All three print before the mark
+   transaction begins and name a status the following `[mark]` may never commit — job 1 in the control run had `11`
+   refused marks, then `mark_abandoned`. Intent by wording; read as results by anyone grepping for status `[INFERRED]`.
+4. **The timestamp on `[reclaim]` is still pre-commit:** `DB_TIME` is `clock_timestamp()` from the `UPDATE`'s
+   `RETURNING` (`src/reaper.py:51`).
+5. **The reaper's `matched=0` observations** moved with the `O+B` line, so they are now lost when a pass's `COMMIT` fails.
+   Correct side to err on for an outcome line; a change in what the observation half reports.
+6. **A log line is still not a database read.** `D-28`'s SQL queries remain the source of truth.
+
+**What the fix deliberately did not change:** the dispatcher's HTTP side effect still happens before its `COMMIT`. In the
+control run `432` refused dispatch commits were `432` real deliveries (`sink_duplicate=432`); the fix removed the `432`
+false lines, not the `432` requests (`P-35`, Week 7). `worker_echo_COMMIT` (`36` in both runs) counts attempted commits
+and cannot distinguish control from fixed.
+
+**Found by the same control run, not part of this card:** the reaper's single-transaction pass lets one un-committable row
+roll back every other row's reclaim — `P-58`.
+
+**Owner for what remains:** none fixed to a day yet. Item 1 is cheapest alongside Week 6 Din 5's crash-after-call hook
+(`os._exit` between `COMMIT` and `print`); item 3 is a wording decision for the user. `narrowed`, not `closed`.
+
+---
+
+## P-57 — amendment (Week 6 Din 1): audited — the fourteen working copies are restored and an instrument now audits every seal on each run; `-text` was kept, and the seal's own hash record for Din 1 has a defect
+
+**Status: AUDITED on Week 6 Din 1 (`2026-10-02`).** `scripts/seal_audit.ps1` (committed `58071f3`) compares every tracked
+`*_PREDICTIONS_FROZEN.md` against its committed blob and, with `-Restore`, rewrites a working copy from the index only
+when it differs by line endings alone.
+
+| Run | `seals` | `wc_sha_equals_committed` | `hash_object_equals_head` | `restored` | `blocked` | Provenance |
+|---|---|---|---|---|---|---|
+| Step 0, before | `16` | `2` | `2` | `0` | `0` | `[MEASURED]` |
+| Step 0, `-Restore` | `16` | `16` | `16` | `14` | `0` | `[MEASURED]` |
+| Step 7 | `16` | `16` | `16` | `0` | `0` | `[MEASURED]` |
+| review, read-only | `17` | `17` | `17` | `0` | `0` | `[MEASURED-R]` — `17` because Din 1's seal is now committed |
+
+**The restore arms confirm this card's replica on the real repository:** `logs/w6d1_step0_restore_arms.txt` — `start`,
+after `git checkout --`, after `git restore --worktree --`: all three `w/crlf`. Plain checkout and restore were no-ops on
+the stat-clean CRLF copies; the instrument's delete-then-checkout (`seal_audit.ps1:29`) restored them `[MEASURED]`.
+
+**The attribute: `-text` kept** (user's decision, sub-bullet under `D-32`'s Week 5 Din 6 review item 1). Its cost, from
+this card's previous amendment, still holds: under `-text`, `git hash-object` on a CRLF working copy does **not** equal
+the committed blob (`81584003…` vs `90f6da79…`, replica `[MEASURED-R]`), and the latent commit hazard (Consequence 2)
+remains. **The number every checkout agrees on is `git rev-parse <commit>:<path>`, not `git hash-object <file>`.** A
+review note under `D-32` records this.
+
+**One new defect, in the seal's record rather than its content.** `logs/w6d1_step0_frozen_hash.txt` holds four lines —
+the correct `sha256=` and `git_blob=` and then two empty `git_blob=` lines — and its mtime is `19:33:25.278`, `21 s`
+after commit `58071f3` (`19:33:04`). The Din 1 BRIEF's C0 check (*"two lines, mtime before Step 0d's first file"*) **fails
+as written** `[MEASURED-R]`. The hash values are correct (`0CFE74DD…`, `634f3958…`, both re-verified, and equal to
+`HEAD:<path>`). The only witness that the predictions predate the experiments is the frozen file's own mtime
+(`18:51:01`), which is mutable; the blob reached a commit only after every experiment. **"Frozen before the run" is
+`[INFERRED]` from a timestamp, not attested by a third party** — `P-47`'s point, still open.
+
+`audited`. The working copies are clean today and the instrument can detect the next drift; it does not prevent it, and
+nothing here makes a working-copy SHA-256 a cross-machine invariant.
+
+---
+
+## P-58 — The reaper reclaims every candidate in one transaction, so one row whose reclaim cannot commit rolls back the reclaim of every other row in the same pass, on every pass, for as long as it fails
+
+**Status: MEASURED on Week 6 Din 1 (`2026-10-02`) in the user's control run on disposable `relay_w6d1` (dropped);
+grouping by the reviewer `[MEASURED-R]` from `logs/w6d1_control_…` reaper log; source read `src/reaper.py` at `95518640…`.**
+Anticipated as a candidate in the Din 1 KEY (`Q3(b)`); not a `P-56` instance — the log line is now honest about it, the
+behaviour is unchanged.
+
+**The mechanism, from source.** `reap_stuck_jobs()` opens one `async with session.begin()` (`src/reaper.py:28`), selects
+every `running` row with an expired lease (`:29–39`), and issues one `UPDATE … RETURNING` per candidate inside the same
+transaction (loop `:41–72`). The block's exit is the only `COMMIT`. If that `COMMIT` fails, the exception leaves the block,
+the outer loop logs `[poll_error]` (`:100–103`), and **every row's reclaim in that pass rolls back together.**
+
+**What the control run shows.** Job 4's reclaim was refused on every phase-1 pass by a deferred trigger; job 1 had no
+refusal of its own. Grouped by `BEGIN`:
+
+| Pass shape | Count | Lines | Committed |
+|---|---|---|---|
+| `[job 4, COMMIT, ERR]` | `15` | `15` | `0` |
+| `[job 1, job 4, COMMIT, ERR]` — after job 1's lease expired | `6` | `12` | `0` |
+| `[job 1, job 4, COMMIT]` — phase 2, trigger dropped | `1` | `2` | `2` |
+
+`21` errors = `reaper_poll_error=21`; `reclaim_committed=2` `[MEASURED]`. **Job 1's reclaim was rolled back six times
+because job 4 shared its transaction.** It stayed `running` with an expired lease until the refusal was removed.
+
+**Blast radius.** One un-committable row blocks every reclaim in the same pass for as long as it keeps failing — the
+reaper does not shrink the batch, skip the row, or retry rows separately `[INFERRED from the measured grouping and the
+source]`. Promise #4's row-level recovery depends on the reaper; this makes it depend on every candidate committing at once.
+
+**How likely today.** Relay's schema has no deferred constraint or trigger on `jobs`, so a *persistent* per-row commit
+failure has no known source today `[INFERRED]`; the harness had to install one. A transient failure (connection loss at
+`COMMIT`) also rolls back the whole pass, but the next pass retries all rows. **Severity low today; the mechanism is
+measured, and it becomes relevant the first time `jobs` gains a constraint that one row can violate at commit.**
+
+**Fix directions, each narrows:**
+- **One transaction per candidate.** Isolates a bad row; costs one `COMMIT` per reclaimed job (a WAL flush each under
+  Postgres's default `synchronous_commit=on` — the setting on `relay-db-1` was not read today) and lets a pass partially
+  succeed.
+- **A savepoint per candidate** (`session.begin_nested()`) — isolates statement errors. **Does not help with a failure at
+  the outer `COMMIT`** (a deferred trigger fires there), which is exactly today's case.
+- **Set-based single `UPDATE … WHERE … RETURNING`.** Fewer round trips; the same all-or-nothing commit.
+- **Neither of the first two removes the poison row;** it still needs a bound or a terminal state of its own.
+
+**Owner: the user's call.** The Din 1 KEY suggests Month 4, with `D-20`'s reaper coordination. Not Week 6: no Week 6
+experiment depends on it.

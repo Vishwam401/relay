@@ -2949,6 +2949,16 @@ With the Flip rule ignoring `**/daily/**` by default and all 20 `_ANSWERS.md`, `
    `P-57` amendment (Week 5 Din 6 review). **Decision owed, Week 6 Din 1 Step 0:** change line 2 to what this entry
    says, or keep `-text` and amend item 4 with this cost.
    - **Week 6 Din 1 Step 0 decision:** Kept `-text` on `.gitattributes`. Cost: working copy SHA-256 diverges on CRLF checkout until restored via `scripts/seal_audit.ps1 -Restore`; immutable Git blob ID (`git hash-object`) remains canonical and byte-auditable across all clones.
+   - **Week 6 Din 1 review note `[MEASURED-R 2026-10-02]` — the pick stands; one clause of its Cost does not.**
+     `git hash-object <file>` hashes the **working-copy** bytes after the attribute's clean filter, and under `-text`
+     there is no filter: on a CRLF copy it gives `81584003…` against the committed blob `90f6da79…` (`P-57` amendment,
+     replica). The number every clone agrees on is the committed blob, read as `git rev-parse <commit>:<path>` (or
+     `git cat-file blob`), not `git hash-object`. Today `hash-object` matches `HEAD` for `17/17` seals only because
+     the working copies are LF again after the restore. Two costs of `-text` that the sub-bullet does not name:
+     (a) the next tool that rewrites a seal as CRLF makes `hash-object` diverge too, where `eol=lf` would not; (b) a
+     `git add` of such a file stores the CRLF bytes as a **new blob** (`P-57` Consequence 2) — named `git add` narrows
+     that, it does not close it. Item 4 above still reads `eol=lf`; read it as `-text` with these costs.
+     `scripts/seal_audit.ps1` detects drift on every run; it does not prevent it.
 2. **Item 3 says the flip *"guarantees that any future unenumerated class is ignored by default."*** Cost 6 of this
    same entry says `.gitignore` *"narrows accidental publication; it does not close it"* (`git add -f`, editor
    stage-all). The flip changes the **default**; *guarantees* overstates it. Read item 3 as *"defaults to ignored"*.
