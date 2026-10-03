@@ -2342,6 +2342,39 @@ the point at which readiness-removal stops meaning *"no API"*.
 2. **HTTP prober discrimination boundary:**
    An external HTTP prober observing only HTTP status codes can reliably separate only **2 of the 3 causes**: it easily distinguishes *Process Dead* (connection refused on `/health`) from an *Alive-but-Degraded* system (`/health` returns `200`). However, an external HTTP prober cannot structurally distinguish *Pool Starvation* from *Database Down* using status codes alone (both return `200` on `/health` and `500` on `/healthz`). Disambiguating pool starvation from a database outage requires either database-level inspection (`pg_stat_activity`) or internal process exception telemetry.
 
+### Week 6 Din 2 amendment — D-28 (`2026-10-03`)
+
+**Status: Cost 6's inventory rows 3 and 4 implemented, commit `bb90c15`; measured with a six-arm differential
+(`logs/w6d2_step1_both.txt`). Details and what stays open: `P-44` amendment (Week 6 Din 2).**
+
+| Endpoint | Decided (Week 5 Din 4) | Implemented (Week 6 Din 2) | Measured |
+|---|---|---|---|
+| `/health` | liveness | unchanged | `200` every arm |
+| `/healthz` | readiness | unchanged | `200` every arm |
+| `/db-ping` | dropped | deleted | `404` every arm, `openapi_db_ping=0`, `db_ping_mentions=0` |
+| `/slow-hold` | behind `ENABLE_TEST_ROUTES=1` | registered only if the raw value `== "1"`, read once at import (`src/main.py:18`, `:33`) | off arms `GET 404`, `POST 404`, `openapi 0`; `'1'` arm `GET 200`, `POST 405`, `openapi 1` |
+
+**The parsing rule is part of the decision, so it is recorded here.** Three were priced: (i) exact `"1"`, everything else
+off · (ii) allowlist with start-up failure on anything else · (iii) a truthy set. **Chose (i)** — the user's pick.
+**The reasoning in the rest of this paragraph is the reviewer's**: the day's `ANSWERS` records the pick without the cost
+line the BRIEF asked for, so the user must confirm or replace it in his own words. The real reason is the
+direction of the failure: under (i) a wrong value can only *remove* a test route, never add one, and `P-44`'s harm is an
+added route. **The strongest alternative is (ii)** — it also never adds a route, and it surfaces the typo at start-up
+instead of hiding it. It loses on availability: one wrong environment value stops the API process from starting (KEY
+v3 `[MEASURED-R 2026-10-02]`: `exited=True exit_code=1`, port never listened), and Relay runs one API process, so a
+config typo becomes an outage of the only instance. (i)'s cost: a typo (`ture`, `yes`, `' 1'`) leaves test routes
+silently off — `' 1'`, `'1 '`, `'TRUE'` measured off `[MEASURED-R]`. The start-up line `test_routes=<repr>` is what makes
+that cost visible: it prints the raw value, so `' 1'` is distinguishable from `None` in the log.
+
+**Not done from this entry's revisit line:** the three-arm saturation re-run with `ENABLE_TEST_ROUTES=1`. The README
+endpoint table still lists `/db-ping` and an ungated `/slow-hold` (owner Week 6 Din 6).
+
+**No new `D-` entry for the fake provider.** Its Din 2 shape (header trigger `x-fake-mode`, in-memory ledger at handler
+entry with a separate `GET /v1/ledger`, word-count tokens) is a test-lab choice with nothing persisted and no schema,
+so it is reversible at the cost of editing one file (`D-04`'s asymmetry does not bite). The one choice that crosses a
+boundary — the header trigger needs a path through Din 3's provider interface — is an input to Din 3's decision, not a
+decision taken today. Recorded in `docs/logs/WEEK_06.md` Din 2, Step 2 table.
+
 ---
 
 ## D-29: no leader election — one reaper, and the reclaim `UPDATE`'s own predicate is what makes a second one safe

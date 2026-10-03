@@ -389,3 +389,356 @@ gap ko dekh bhi sakta hai?**
 *Seal:* [`../daily/week_06/DIN_01_PREDICTIONS_FROZEN.md`](../daily/week_06/DIN_01_PREDICTIONS_FROZEN.md) ·
 *Reviewer evidence:* `.agents/tasks/w6d1-review-w6d2-brief/EVIDENCE.md` ·
 *Din 2 BRIEF:* [`../daily/week_06/DIN_02_BRIEF.md`](../daily/week_06/DIN_02_BRIEF.md)
+
+---
+
+## Din 2 — `P-44` ka gate register-time pe, ek differential ke saath jo galat gate ko pass nahi hone deta; fake provider ne dikhaya ki `timeout=5.0` ek deadline nahi hai (`trickle` `200` at `8.462 s`) — par Part B phir das me das `idk`, chaar reading gaps, aur close bench ka ek fail check *"all criteria met"* likha gaya (`2026-10-03`)
+
+**Layer L2 · run `2026-10-03 13:24–14:26` · seal commit `d1d0ea9` (`13:37:40`) · feature commit `bb90c15` (`6` named
+files, `0` KEY, `0` ANSWERS, `0` FROZEN).** `src/` me do cheezein: `main.py` `+11/−10` (`d55e3b8a → 7241c055`) aur nayi
+`fake_provider.py` (`108` lines). Baaki saat hashes (`worker` `0eb94373` · `reaper` `95518640` · `dispatcher`
+`920d0d4a` · `database` `fc5bde22` · `sink` `fcfc9059` · `models` `04f04f84` · `schemas` `a53e7cc8`) Step 0 = Step 5
+`[MEASURED]`. Evidence DB delta `0` `[MEASURED]`, reviewer ke probes ke baad bhi `133|145|19|4|7|39|5|0|1` `[MEASURED-R]`.
+
+**Original goal (BRIEF se):** `P-44` ka decided shape implement karo — test routes sirf `ENABLE_TEST_ROUTES` on hone pe
+*register* hon, `/db-ping` jaaye, flag ki raw value startup pe dikhe — aur ek chhe-arm differential se dikhao ki gate
+register-time hai. Phir ek fake provider (deterministic failures, apna ledger, sirf `127.0.0.1`) aur caller ka view
+naapo: har mode pe `httpx.AsyncClient(timeout=5.0)` ko status, exception class, elapsed kya dikhta hai, aur kahan provider
+ki ginti aur caller ka record alag ho jaate hain. Saath me do `💡` own-words (Week 5 Din 6, Week 6 Din 1).
+
+- **(a) Goal met?** Haan, tested scope ke andar. Gate: fixed census me paanch off arms `slow_hold_get=404
+  slow_hold_post=404 openapi_slow_hold=0 db_ping=404 flag_lines=1`, `one` arm `200/405/1`, control me chhe ke chhe arms
+  `200/405/1` `[MEASURED]`. Provider: C3 aur C4 ki har row pass `[MEASURED]`. Do `💡` structure check pass `[MEASURED]`.
+  **Ek check fail:** C5 `trail_distinct_sha = trail_lines` — `7 ≠ 8` `[MEASURED]`.
+- **(b) Kuch aur seekha?** Haan. Provider-side ki teen ginti teen alag sawaalon ka jawab hain — ledger `14`, access log
+  `12`, posts `15` — aur dono direction me alag (`malformed` access me hai, ledger me nahi; `slow_above`/`hang` ledger me
+  hain, access me nahi) `[MEASURED]`. Review pe: provider ka **unknown mode chupchaap `200 ok`** deta hai (`5OO`, `Hang`,
+  `''`, `slow-above` → `200`) aur uski **startup line ek hardcoded literal hai** — port `8099` pe chalaya to bhi
+  `listening=127.0.0.1:8002` likha `[MEASURED-R]`. Aur ek multi-hop jo sawaal me nahi tha: Relay ka dispatcher
+  `FOR UPDATE SKIP LOCKED` row lock ke andar isi `timeout=5.0` ke saath POST karta hai → **`P-59`** (naya card).
+
+**Grade `7.0/10`.** Build aur measurement ka hissa Din 1 se saaf hai — gate ka differential apna kaam karta hai (POST
+column aur `openapi.json` v1 ko v2 se alag karte hain), saare Part C checks file me, provider loopback pe, koi DB import
+nahi. Neeche khinchne wali cheezein: Part B `0.00/5.0` aur paanch `[padh ke]` me se chaar me *"kya padha"* nahi — BRIEF ne
+ye exact defect naam leke warn kiya tha; Step 5 ki explanation *"All close bench criteria met"* jabki usi bench me
+`trail_lines=8 trail_distinct_sha=7` tha; Step 1b ki cost line aur do owed `ANSWERS` lines (pool probe, README) gayab;
+Step 4a ki explanation me koi mechanism nahi; provider ki startup line witness nahi, claim hai.
+
+---
+
+### 📊 Measured / Observed
+
+User ke saare `logs/w6d2_*` artifacts reviewer ne padhe (`52` files). **Reviewer ke apne runs `[MEASURED-R 2026-10-03
+~14:50]`**, `HEAD bb90c15` pe: gate ke paanch import-time arms (temp script, `src/` ke bahar) aur fake provider ek alag
+port `8099` pe chhe requests. Temp files (`%TEMP%\w6d2r_*`, `4`) delete kiye; `relay_python_after=0`, `listen_8099=0`,
+counters same. `[R]` = user ne khud nahi chalaya.
+
+#### Seal — record sahi, order phir ulta
+
+| Check | Value | Provenance |
+|---|---|---|
+| `Get-FileHash` frozen file | `A544B933…AC021CC0` = Step 0 = Step 5 = review | `[MEASURED]` / `[MEASURED-R]` |
+| `git hash-object` = `git rev-parse HEAD:<path>` | `289f308b…54d3` dono | `[MEASURED-R]` |
+| `w6d2_step0_frozen_hash.txt` | **exactly `2` lines**, koi khaali `=` nahi — C0 pass. Kal ka defect fix hua | `[MEASURED]` |
+| seal commit · hash file | commit `13:37:40`; hash file **CreationTime** `13:37:51` — commit ke **`11 s` baad bani** | `[MEASURED-R]` |
+| `seal_before_first_experiment` | `True` — commit `13:37:40` < `w6d2_gate_control_…_unset_api.log.err` `13:40:04` | `[MEASURED]` |
+
+**BRIEF ka block hash file pehle likhta hai, phir commit.** File commit ke baad *bani*, to block us order me nahi chala
+`[INFERRED from CreationTime]`. Aaj farak nahi padta — `git_blob = head_blob`, aur seal ka asli witness ab commit hai,
+hash file nahi. Kal `21 s`, aaj `11 s`: shakal wahi.
+
+#### Step 0 / 0.5
+
+| Kya | Result | Provenance |
+|---|---|---|
+| staged (0a) | exactly `5`, `0` KEY | `[MEASURED]` |
+| bench (0b) | saare expected values: `src_diff=0`, aath hashes, `heads=w4d4_sink_unique (head)`, `relay_python=0`, `listen_8000_8002=0`, `dbs=postgres,relay`, counters `133\|145\|19\|4\|7\|39\|5\|0\|1`, protected same, `dotenv_mentions_flag=0`, `key_index=0`, `brief_control=31` | `[MEASURED]` |
+| seals | `17/17/17 restored=0 blocked=0` → Step 5 `18/18/18 restored=0 blocked=0` | `[MEASURED]` |
+| `💡` rewrites | dono sections `own=1 gaps=1 rev=1 order_own_gaps_rev=True`; totals `6·6·6`, `1·1·1` | `[MEASURED]` |
+
+**`💡` ke content pe ek galti, user ke apne block me:** Week 6 Din 1 own-words point 1 — *"uncommitted false positive
+logs … ko eliminate kiya gaya"* — aur usi block ka point 2 — *"Narrowed, not eliminated"*. Din 1 ki closeout correction
+#3 ne ye exact wording `narrows` me badli thi. Ek block me dono claim nahi ho sakte. Structure check sirf headings
+ginta hai, wording nahi — ye usi check ka blind spot hai.
+
+#### Step 1 — `P-44`, control vs fixed (`logs/w6d2_step1_both.txt`)
+
+| Arm | control `get/post/db_ping/openapi_sh/flag_lines` | fixed `get/post/db_ping/openapi_sh/flag_lines` | fixed `flag_line` |
+|---|---|---|---|
+| `unset` | `200/405/200/1/0` | `404/404/404/0/1` | `test_routes=None` |
+| `empty` | `200/405/200/1/0` | `404/404/404/0/1` | `test_routes=''` |
+| `zero` | `200/405/200/1/0` | `404/404/404/0/1` | `test_routes='0'` |
+| `true` | `200/405/200/1/0` | `404/404/404/0/1` | `test_routes='true'` |
+| `garbage` | `200/405/200/1/0` | `404/404/404/0/1` | `test_routes='banana'` |
+| `one` | `200/405/200/1/0` | `200/405/404/1/1` | `test_routes='1'` |
+
+`[MEASURED]`. Har arm `health=200 healthz=200 listening=True err_mentions_flag=0`; `relay_python_after=0` dono phases.
+Control `main_hash=d55e3b8a…`, `src_diff_files_vs_HEAD=` khaali; fixed `7241c055…`, `src/main.py`. `py_compile_exit=0`,
+`db_ping_mentions=0`. Pick **(i)** — sirf exact `"1"` on — `true`/`garbage` off arm jaisa, jo (i) ka required row hai.
+
+**Differential ne kya alag kiya:** `slow_hold_post` off arms pe `404`, `405` nahi — route registered hi nahi, to router
+method tak pahunchta hi nahi. Handler-andar-`404` wala galat gate yahan `405` deta (KEY v2 `[MEASURED-R 2026-10-02]`).
+Akela `GET → 404` dono ko alag nahi karta.
+
+**Reviewer probes, user ke `main.py` pe, import-time `[MEASURED-R]`** (`app.routes` me `/slow-hold`, `/db-ping` dhundha):
+
+| `ENABLE_TEST_ROUTES` | test paths at import | import ke baad `os.environ = "1"` |
+|---|---|---|
+| `' 1'` | `[]` | `[]` |
+| `'1 '` | `[]` | `[]` |
+| `'TRUE'` | `[]` | `[]` |
+| unset (`None`) | `[]` | `[]` |
+| `'1'` (positive control) | `['/slow-hold']` | `['/slow-hold']` |
+
+Whitespace aur case strict gate pe off. **Chalte process me env badalne se route nahi judta** — KEY trap 7 `[INFERRED]` tha,
+ab off→on direction measured. Flag `main.py:18` pe padha jaata hai, `from src.database import get_db` (`:7`) ke baad — to
+`.env` me flag likha ho to wo lagega (`load_dotenv(override=False)`, shell jeet-ta hai) `[INFERRED from source]`; `.env` me
+flag aaj `0` mentions `[MEASURED]`; reviewer ne `.env` nahi chhui.
+
+#### Step 2 — design picks (`ANSWERS` Step 2; committed record sirf ye table hai)
+
+| Faisla | Pick | Cost (user ka likha) | Review |
+|---|---|---|---|
+| 1 trigger | (B) header `x-fake-mode` | caller ko headers thread karne padenge; header `jobs` me persist nahi | Din 3 ke `complete(prompt, params)` ko header ka rasta chahiye — input, aaj ka faisla nahi |
+| 2 ledger | (i) memory counter + `GET /v1/ledger` | restart pe `0` | `--workers N` = `N` ledgers `[INFERRED]`, cost me nahi likha |
+| 3 counter position | handler ki pehli line | — | ginta hai *"kitni valid calls handler tak aayi"*, *"kitni process hui"* nahi (neeche correction #6) |
+| 4 token rule | `tokens_in = len(prompt.split())`, `tokens_out = 10` | — | `ok` path pe sahi; `trickle` me `4` hardcoded `[MEASURED-R]` |
+| 5 hang shapes | `hang` = silence, `trickle` = chunked stream | — | `hang` `asyncio.sleep(30.0)` ke baad poora `200` deta hai — bounded silence |
+
+`w6d2_step2_requests.txt`: `labels=11 ok_equals_repeat=True distinct_requests=10` — C2 pass `[MEASURED]`.
+
+#### Step 3 — provider (`logs/w6d2_step3a_check.txt`, `w6d2_step3b_check.txt`)
+
+C3 ki har row pass `[MEASURED]`: `listen=127.0.0.1` · `ledger_read_stable=True` · `ok`/`ok_repeat`/`ok_longer` `200`,
+`ledger_delta=1` har ek, `ledger_total_delta=3` · `ok_keys=text,tokens_in,tokens_out` · tokens `(4,10) (4,10) (12,10)` —
+pair dono `True` · `imports_database=0` `resolved_db_lines=0` · `429` `retry_after='2'` · `500`/`400`/`401` · `slow_below`
+`3.020 s` · `py_compile_exit=0`. Har error mode pe `exc=none` `[MEASURED]` — httpx status pe raise nahi karta.
+
+**Timeline `[MEASURED]` file times se:** trail `step=2` `14:18:23` → `src/fake_provider.py` **CreationTime** `14:20:45` →
+3a check `14:21:22` → file ki aakhri write `14:22:29` → 3b check `14:22:58`. Step 3 ka budget `30 min`; Step 2 trail se
+Step 3b trail tak `4 min 52 s`, aur `108`-line file ki pehli save se aakhri save tak `104 s`. **File times authorship tay
+nahi karte** — file kahin aur likhi jaa sakti thi aur yahan save hui `[INFERRED]`. Protocol ka rule hai `src/` ki har line
+user likhta hai; ye kaise bani, `ANSWERS` me ek line user ko likhni hai. Poora din `62 min 44 s`, budget `125 min`.
+
+#### Step 4 — caller ka view (`logs/w6d2_step4_probe.txt`, `w6d2_step4_census.txt`)
+
+| Label | status / exc | `str` | elapsed | `ledger_delta` | stream `headers_at` / chunks / `max_gap` | access line |
+|---|---|---|---|---|---|---|
+| `ok` … `401` (7) | `200`/`429`/`500`/`400`/`401` · `none` | `''` | `0.005`–`0.007 s` | `1` har ek | — | haan |
+| `slow_below` | `200` · `none` | `''` | `3.013 s` | `1` | `3.017` / `1` / `0.000` | haan (dono pass) |
+| `slow_above` | `-` · `ReadTimeout` | `''` | `5.007 s` | `1` | — | **nahi** |
+| `hang` | `-` · `ReadTimeout` | `''` | `5.010 s` | `1` | `-` / `0` / `ReadTimeout` at `5.013 s` | **nahi** (dono pass) |
+| `trickle` | `200` · `none` | `''` | **`8.462 s`** | `1` | `0.014` / `8` / `1.217` | haan (dono pass) |
+| `malformed` | `422` · `none` | `''` | `0.008 s` | **`0`** | — | haan |
+
+`[MEASURED]`. `posts_sent=15 ledger_end=14 ledger_total_delta=14` · `access_lines_post_v1_complete=12` (`200×7`, `400`,
+`401`, `422`, `429`, `500` ek-ek) · `distinct_client_ports=3` · `listen=127.0.0.1` · `relay_python_after=0`.
+
+**Arithmetic:** `15 − 1` (`malformed`) `= 14` ledger. `15 − 3` (`slow_above`, `hang`, stream `hang`) `= 12` access.
+`200×7` = `ok`, `ok_repeat`, `ok_longer`, `slow_below`, `trickle`, stream `slow_below`, stream `trickle`. `trickle` =
+`7` gaps × `1.2 s` = `8.4 s` + overhead → `8.462` `[MEASURED]` / `[INFERRED]` split.
+
+**Connections, user ke provider log se `[MEASURED-R]`:** chaar client ports — `63692` (`ok` … `slow_below`, phir
+`slow_above` ka POST jiski line nahi) · `65387` (sirf do `GET /v1/ledger`; `hang` ka POST yahin timeout hua) · `57796`
+(`trickle` … stream `slow_below`, phir stream `hang`) · `59564` (stream `trickle`). **Teen `ReadTimeout`, chaar
+connections**; census sirf un ports ko ginta hai jinpe ek POST access line hai → `3`.
+
+**Teen ginti, teen sawaal, dono direction me alag:**
+
+| Source | Count | Kya ginta hai | Jo isme hai par doosre me nahi |
+|---|---|---|---|
+| probe | `15` posts | caller ne kitni requests bheji | — |
+| provider ledger (handler line 1) | `14` | kitni requests validation paar karke handler tak aayi | `slow_above`, `hang` ×2 — access log me nahi |
+| uvicorn access log | `12` | kitne responses **client ke rehte start** hue | `malformed` `422` — ledger me nahi |
+
+Mechanism `[MEASURED-R]` source, `uvicorn/protocols/http/h11_impl.py`: `:464` `if self.disconnected: return` response
+start se pehle; access line `:481–482` response start pe. Isliye `trickle` ki line `t ≈ 0.014 s` pe likhi gayi, body
+khatam hone se pehle, aur `slow_above` (`7 s` pe start, client `5 s` pe gaya) ki line kabhi nahi.
+
+#### Step 5 — close (`logs/w6d2_step5_bench.txt`)
+
+`src_status= M src/main.py ; ?? src/fake_provider.py` · saat hashes Step 0 jaise · `heads=w4d4_sink_unique (head)` ·
+`dbs=postgres,relay` · `relay_python=0` · `listen_8000_8002=0` · counters same · protected same · `key_index=0` ·
+`key_tree=0` · frozen dono Step 0 jaise · `seal_before_first_experiment=True` · staged `6`, `0` KEY/ANSWERS/FROZEN — pass
+`[MEASURED]`.
+
+**Fail:** `trail_lines=8 trail_distinct_sha=7`. Trail file `[MEASURED-R]`:
+
+```
+step=4a at=2026-10-03 14:25:34.369 sha=CB15DD8D8EA1
+step=4b at=2026-10-03 14:25:34.419 sha=CB15DD8D8EA1
+```
+
+`50 ms` apart, same hash → **4a aur 4b ki `ANSWERS` ek saath likhi gayi**, census (`14:24:59`) ke baad. BRIEF C5 ne
+exactly ye meaning likha tha. Trail ab `9` lines / `8` distinct — `step=5` line bench (`14:26:01`) ke baad `14:26:32`
+pe append hui. `ANSWERS` ka current SHA prefix `FACDA5E86938` = `step=5` line → us ke baad file nahi badli `[MEASURED-R]`.
+
+---
+
+### 🔎 Code audit — `git diff 0baaf1a bb90c15 -- src/` (2 files, `+119/−10`)
+
+**`src/main.py`**
+
+| Line | Kya | Check |
+|---|---|---|
+| `:1` `import os` · `:18` `ENABLE_TEST_ROUTES = os.environ.get(...)` | flag ek baar, import pe | `:7` `src.database` import ke baad → `.env` dikhta hai `[INFERRED]` source |
+| `:19` `print(f"test_routes={ENABLE_TEST_ROUTES!r}", flush=True)` | raw `repr`, grep prefix | `None` / `''` / `'0'` alag dikhe `[MEASURED]` |
+| `:33–37` `if ENABLE_TEST_ROUTES == "1":` → `@app.get("/slow-hold")` | register-time gate | off pe `openapi_slow_hold=0`, POST `404` `[MEASURED]` |
+| `/db-ping` | deleted | `db_ping=404` har arm, `db_ping_mentions=0` `[MEASURED]` |
+| `/slow-hold` body | unchanged | `seconds` ab bhi unbounded jab flag on (`P-44` note (b)) — rule 4 ke mutabik sahi |
+
+**Deletion test, `print`:** line hatao to gate wahi kaam karta hai — print protection nahi, **observability** hai. Wahi
+cheez jo `P-44` note (a) ne maangi thi: flag ki value ek premise hai, configure hona kaafi nahi. Ek limit: print stdout pe
+hai, aur uvicorn ki apni lines stderr pe (KEY trap 6) — log collector sirf ek stream padhe to ye line kho sakti hai `[INFERRED]`.
+
+**`src/fake_provider.py`** — contract ke andar, chaar review notes:
+
+1. **Unknown mode → `200 ok`, fail-open** `[MEASURED-R]`: `x-fake-mode: 5OO` / `Hang` / `''` / `slow-above` → `200
+   {"text":"fake completion",…}`. `Header(default="ok")` aur aakhri `return` ka fallthrough. Din 4 ka retry experiment
+   agar mode ka spelling galat kare, to *"koi retry nahi hua"* ek passing-looking result hoga. **Gate pe user ne fail-closed
+   chuna (typo → off); provider pe ulta hai.** Test lab me *"jo maanga wo nahi mila"* aur *"success"* alag dikhne chahiye.
+   Fix user ka; aaj ke contract ka violation nahi.
+2. **Startup line ek literal hai, witness nahi** `[MEASURED-R]`: `--port 8099` pe chalaya →
+   `fake_provider listening=127.0.0.1:8002 ledger=in_memory`, jabki uvicorn ne `Uvicorn running on http://127.0.0.1:8099`
+   likha. `resolved_db=` config se nikalta hai; ye line kuch nahi padhti. Bind ka asli witness aaj `Get-NetTCPConnection`
+   (`listen=127.0.0.1`) tha. **BRIEF me is contract row ka koi Part C check nahi tha** — reviewer defect, neeche.
+3. **`trickle` ke tokens hardcoded** (`', "tokens_in": 4'`) `[MEASURED-R]`: `LONGER` prompt pe bhi `tokens_in: 4`, jabki
+   `ok` pe `12`. Din 3 agar `trickle` ka body result me store kare to token rule toot-ta hai.
+4. **`hang` bounded hai: `asyncio.sleep(30.0)`, phir poora `200`** `[MEASURED]` source. Contract (`≥ 2 × 5 s`) pass. Par
+   `timeout > 30 s` wala caller `hang` se ek success paayega `[INFERRED]`. Aur non-streaming handler client ke jaane pe
+   cancel nahi hota (KEY trap 5, reviewer throwaway pe measured) — user ke provider pe *not measured*: koi completion
+   line nahi hai.
+
+Concurrency: `ledger["calls"] += 1` ke beech koi `await` nahi → ek event loop pe lost update nahi (KEY trap 12
+`[MEASURED-R 2026-10-02]` throwaway pe). `import sys` unused.
+
+---
+
+### 🧠 Prediction review — `0.00 / 5.0`, das me das `idk`, chaar reading gaps
+
+Frozen text `docs/daily/week_06/DIN_02_PREDICTIONS_FROZEN.md` se **quote**; hash verify hua. Scoring KEY ke note se:
+outcome + mechanism = full · sirf outcome = aadha · `idk` = `0` · `[padh ke]` ka `idk` bina *"kya padha"* = `0` + reading gap.
+
+| Q | Sub-part · tag | Frozen text (verbatim) | Score | Before measurement | After measurement (`ANSWERS`, Beat 4) |
+|---|---|---|---|---|---|
+| **Q1** | (a) `[padh ke]` | *"idk (padha: src/main.py:1-30, /health, /healthz, /db-ping dekha)"* | `0.00 / 0.34` | not answered — **honest `idk`, kya padha likha** (is file me pehli baar). Par jo padha usi me jawab ka aadha tha: `/db-ping` `:27` pe module-level, aur file me `ENABLE_TEST_ROUTES` kahin nahi → `db_ping=200`, `flag_lines=0`. `/slow-hold` `:33` pe hai — range `27–37` maangi gayi thi, padhi `1–30` | Step 1 Observed: *"all 6 arms had slow_hold_get=200, db_ping=200, openapi_slow_hold=1"*. `slow_hold_post=405`, `flag_lines=0`, *"koi gate nahi"* — nahi. **Partial outcome, mechanism nahi** |
+| | (b) `[padh ke]` | *"[padh ke: src/main.py:5 · src/database.py:1–4 · …dotenv/main.py:105 aur :383–387] idk"* | `0.00 / 0.33` | not answered — **reading gap** (tag dohraya) | `.env`, `override`, import order — `ANSWERS` me kahin nahi. **Not explained** |
+| | (c) `[chala ke]` | *"[chala ke] idk"* | `0.00 / 0.33` | not answered — honest `idk` | *"route is omitted at registration time (returning 404 and excluded from openapi.json)"* — registration-time sahi; **POST `404` vs galat gate ka `405` aur router ka path-then-method — nahi**. **Partial** |
+| **Q2** | (a) `[padh ke]` | *"[padh ke: src/dispatcher.py:60–99] idk"* | `0.00 / 0.5` | not answered — **reading gap** | *"All failure injection paths return their expected status and headers cleanly"* — `exc=none` aur *kyun* (`raise_for_status()` opt-in; `dispatcher.py:71` ka `status_code == 200` branch isi wajah se hai) nahi. **Not explained** |
+| | (b) `[chala ke]` | *"[chala ke] idk"* | `0.00 / 0.5` | not answered — honest `idk` | *"429 returns an integer seconds Retry-After header"* — Python type `str` aur HTTP-date pe `int()` → `ValueError` nahi. **Not explained** |
+| **Q3** | (a) `[padh ke]` | *"[padh ke: docs/PROBLEMS.md P-55 (~3080) · docs/logs/WEEK_06.md (~146)] idk"* | `0.00 / 0.5` | not answered — **reading gap**. Apne hi Din 1 ka measurement tha: `error=ReadTimeout:  attempts=1`, `5.035–5.050 s`. **Aur seal ke ~2 min baad (Step 0.5) user ne apne own-words me likha:** *"`httpx.ReadTimeout` ka `str(exc)` empty hota hai"* — jawab ka aadha, seal se pehle uski apni yaad me | Step 4b (1): *"dono me status=-, exc=ReadTimeout, elapsed=~5.01s … Caller cannot tell"* — outcome aur *"alag nahi bata sakta"* sahi. Read phase ka first-byte wait aur `str=''` ka source nahi. **Partial** |
+| | (b) `[chala ke]` | *"[chala ke] idk"* | `0.00 / 0.5` | not answered — honest `idk` | Step 4b (3): *"timeout=5.0 poore request-response lifecycle ka ceiling nahi hai, balki har individual network I/O read … ka maximum gap"* + `8.46 s`, gap `1.2 s`. **Mechanism ke saath — aaj ka sabse achha Beat 4.** `httpx.Timeout` ke chaar phase timeouts aur *"total deadline hai hi nahi"* — nahi |
+| **Q4** | (a) `[padh ke]` | *"[padh ke: docs/DECISIONS.md:650] idk"* | `0.00 / 0.5` | not answered — **reading gap**. Week 1 ka `loc: ["body", 306274]` mechanism. **Aur Step 2 line 3 (run se pehle, seal ke baad) me user ne khud likha:** *"malformed requests (422) rejected before handler are not counted"* | Step 4a: `malformed returns 422 with ledger_delta=0`. Middleware half kahin nahi. **Partial** |
+| | (b) `[chala ke]` | *"[chala ke] idk"* | `0.00 / 0.5` | not answered — honest `idk` | Step 4b (2): `ledger_delta=1`, caller `ReadTimeout` — sahi. *"Provider ledger shows request processed"* — **galat noun**: handler line 1 *entry* ginta hai; `hang` me kuch process nahi hua tha jab caller gaya. **Partial, ek imprecision ke saath** |
+| **Q5** | (a) `[chala ke]` | *"[chala ke] idk"* | `0.00 / 1.0` | not answered — honest `idk` | Table: `slow_above`/`hang` *"No (absent)"*, `trickle` *"Yes"*; census `12`. Stream `hang` ka missing line aur *kyun* (response start pe likhi jaati hai, disconnected pe skip) — nahi. **Partial outcome, mechanism nahi** |
+
+**Total `0.00 / 5.0`.** Week 6 frozen running total: **`0.00 / 10.0`**. KEY ke mutabik **`2.17` points padhne se derivable
+the** (`Q1(a)`, `Q1(b)`, `Q2(a)`, `Q3(a)`, `Q4(a)`). Ye **lagatar saatwa din** hai bina ek bhi prediction attempt ke.
+
+**Provenance — strict:**
+
+| Category | Sub-parts |
+|---|---|
+| Derived before measurement | **`0`** |
+| `[padh ke]` idk with *"kya padha"* | `1` — `Q1(a)` (pehli baar; par padhi range maangi range se chhoti) |
+| `[padh ke]` idk, reading gap | `4` — `Q1(b)`, `Q2(a)`, `Q3(a)`, `Q4(a)` |
+| `[chala ke]` honest idk | `5` |
+| Explained after measurement, mechanism ke saath | `1` — `Q3(b)` |
+| Explained after measurement, partial | `6` — `Q1(a)`, `Q1(c)`, `Q3(a)`, `Q4(a)`, `Q4(b)`, `Q5(a)` |
+| Not explained even after measurement | `3` — `Q1(b)`, `Q2(a)`, `Q2(b)` |
+| *"KEY se pehle"* ka order | **per-step trail se aaj pehli baar verify hua** — sirf 4a/4b ek saath likhe gaye. KEY kab khula, ye trail nahi batata, aur file access times bharose ke nahi |
+
+**Ek line jo earned hai:** jo chahiye tha wo kal se ek kadam aage gaya — `Q1(a)` me *kya padha* likha, aur `Q3(b)` ka Beat 4
+mechanism ke saath hai.
+
+**Sabse mehenga pattern, aaj do jagah measured:** jawab user ke paas *tha*, seal pe nahi aaya. `Q3(a)` ka aadha uske
+own-words me seal ke do minute baad; `Q4(a)` ka aadha uski Step 2 design line me. **Knowledge gap nahi, retrieval-at-seal
+gap.** Seal pe `[padh ke]` file kholna hi wo step hai jo chhoot raha hai.
+
+---
+
+### 🤖 Reviewer ki apni galat predictions aur defects — record ke liye
+
+1. **BRIEF Step 3 contract ki *"Startup"* row ka Part C me koi check nahi tha.** Hardcoded literal pass ho gaya kyunki kisi
+   check ne provider ko doosre port pe nahi chalaya. Check decorative nahi tha — tha hi nahi.
+2. **BRIEF/C3 ne unknown mode ka koi arm nahi rakha.** Fail-open fallthrough review pe mila, run pe nahi.
+3. **KEY trap 13** ne throwaway pe *"connections paanch the"* likha; user ke run pe chaar (teen timeouts). Number server
+   pe depend karta hai — KEY ko *"must be measured"* likhna chahiye tha. Mechanism sahi.
+4. **KEY `Q1(b)` ka `.env` arm user ke code pe kisi ne nahi chalaya.** User ne flag `:18` pe padha (database import ke
+   baad); KEY ka mechanism throwaway pe measured tha, user ke `main.py` pe nahi. Reviewer ne `.env` nahi chhui (secrets),
+   to ye `[INFERRED]` hi rahega. BRIEF ko is arm ke liye ek alag dotenv file wala instrument dena chahiye tha.
+
+**KEY ne jo theek kaha, aaj user ke code pe measured:** `Q1(a)` chaaron values · `Q1(c)` `404` (v1 shape) · `Q2(a)` chaaron
+`exc=none` · `Q2(b)` `retry_after='2'` `str` · `Q3(a)` `ReadTimeout`, `str=''`, `5.007`/`5.010 s` · `Q3(b)` `200`, `> 5 s` ·
+`Q4(a)` handler `0` · `Q4(b)` `1` · `Q5(a)` `12`, missing `slow_above` + `hang` ×2.
+
+---
+
+### 💡 What the session established — **draft, user ko ye apne shabdon me dobara likhna hai** (Week 6 Din 3, Step 0.5)
+
+> Ye section reviewer ne likha hai. **Ye user ki samajh nahi hai.** Protocol ke hisaab se Din 3 Step 0.5 pe iske upar
+> `### 💡 What I understood — own words, <date>` aur ek `Gaps vs reviewer:` line aayegi — bina ye section dobara padhe.
+
+1. **Gate register-time pe ho to route app me hai hi nahi**, aur ye `405` vs `404` se dikhta hai: path ka route nahi →
+   `404` har method pe; route hai par method nahi → `405`. Ek `GET` akela sahi aur galat gate ko alag nahi karta.
+2. **Flag ek baar, import pe padha jaata hai.** Chalte process me env badlo, kuch nahi badalta; `.env` sirf tab lagta hai
+   jab flag `load_dotenv()` ke baad padha jaaye, aur shell ki value `.env` se jeet-ti hai.
+3. **httpx `4xx`/`5xx` pe raise nahi karta.** Caller jab tak status khud na dekhe, `500` ek success hai.
+4. **`timeout=5.0` chaar phase timeouts hain, deadline nahi.** Har byte `< 5 s` me aaye to request `8.462 s` (ya kitni
+   bhi) chal sakti hai, aur `200` milta hai. Jahan ye call ek row lock ke andar hai, wahan lock bhi utni der (`P-59`).
+5. **`slow_above` aur `hang` caller ko ek jaise dikhte hain** — class, `str=''`, `~5.0 s`. Farak sirf provider ki taraf hai.
+6. **Provider ki teen ginti teen sawaal hain** — posts `15`, ledger `14` (handler tak aayi), access `12` (response client
+   ke rehte start hua). Dono direction me alag; koi ek doosre ka substitute nahi.
+7. **Test lab ka default bhi fail-closed hona chahiye.** Unknown mode jo `200` de, wo experiment ko chupchaap pass karata hai.
+
+---
+
+### ⚠️ Closeout corrections
+
+| # | Jaise report / record hua | Jo measured hai | Provenance |
+|---|---|---|---|
+| 1 | Step 5: *"All close bench criteria met … 8 trail entries logged"* | C5 `trail_distinct_sha = trail_lines` **fail**: `7 ≠ 8`. 4a/4b same hash, `50 ms` apart | `[MEASURED]` user ki apni bench file |
+| 2 | Review request: *"8 cryptographic trail hashes sealed"* | Trail ab `9` lines, `8` distinct; bench ne `8`/`7` gine | `[MEASURED-R]` |
+| 3 | Review request: *"P-44: mark as resolved"* | **Narrowed.** Decided shape implemented aur measured; production me flag off rakhna koi enforce nahi karta, flag on pe `seconds` unbounded — BRIEF C6 ne *"P-44 closed"* exactly isi wajah se mana kiya | `[MEASURED]` / `[INFERRED]` |
+| 4 | Step 4b (3): *"keep-alive connection dropped on the two timeout events"* | **Teen** `ReadTimeout` (`slow_above`, `hang`, stream `hang`), **chaar** connections; census `3` kyunki port `65387` pe sirf `GET` lines hain | `[MEASURED-R]` user ka provider log |
+| 5 | Step 4b (2): *"Provider ledger shows request processed"* | Ledger handler entry ginta hai. `hang` ka handler us waqt `asyncio.sleep(30)` me tha | `[MEASURED]` source |
+| 6 | Step 1: *"Option (i) fail-closed pick chosen"* | BRIEF ne *"pick + ek line cost"* maangi thi. Cost (typo chupchaap off) nahi likhi | `[MEASURED]` `ANSWERS` |
+| 7 | `ANSWERS` me owed lines | `labs/w5d4_pool_probe.py` ab flag ke bina `404` paayega · README rows `525`, `526`, `563` purani (`/db-ping`, `/slow-hold`) — dono lines nahi likhi | `[MEASURED-R]` grep |
+| 8 | Step 4a explanation: *"Pass 1 and Pass 2 systematically demonstrate caller vs provider perspectives …"* | Koi mechanism nahi, koi number nahi — BRIEF ke framing ka paraphrase | `[MEASURED]` `ANSWERS` |
+| 9 | Step 1: *"/db-ping permanently deleted to remove duplicate DB-ping attack surface"* | Drop ka recorded reason `D-28` amendment row 3: `/healthz` ka duplicate (`3.0658` vs `3.0674 s`). Surface ek kam hua; `/healthz` wahi `SELECT 1` unauthenticated karta hai → surface **narrowed**, gaya nahi | `[MEASURED]` `D-28` |
+| 10 | Week 6 Din 1 own-words point 1: *"… ko eliminate kiya gaya"* | Usi block ka point 2 *"Narrowed, not eliminated"*; Din 1 correction #3 `narrows` | `[MEASURED]` file |
+| 11 | Provider startup line `listening=127.0.0.1:8002` | Literal — port `8099` pe bhi yahi | `[MEASURED-R]` |
+| 12 | Step 3a: *"strictly binding to 127.0.0.1:8002"* | Bind command line ka `--host 127.0.0.1` karta hai, file nahi. `listen=127.0.0.1` sahi measured; file me koi bind code nahi | `[MEASURED]` source + bind file |
+
+---
+
+### 🚧 Unresolved / carried
+
+1. **`P-44` — `narrowed`.** Baaki: flag off rakhna koi enforce nahi karta · flag on pe `seconds` unbounded (note (b), cap
+   chuna nahi gaya) · `D-28` ka *"three-arm with `ENABLE_TEST_ROUTES=1`"* re-run nahi hua (aaj `one` arm sirf `seconds=0`).
+   Owner: cap user ka faisla; re-run jab koi pool experiment `/slow-hold` chahe.
+2. **`P-59` (naya)** — dispatcher ka row lock `timeout=5.0` ke andar; trickling receiver pe koi upar ki seema nahi.
+   Owner: user ka faisla; candidates Week 7 (`P-35` ke saath) ya `D-22` Month 3.
+3. **Fake provider ke teen notes** — unknown mode fail-open · startup literal · `trickle` tokens. Din 3 se pehle user ka
+   faisla; Din 4 ka retry experiment pehle ko seedha chhoota hai.
+4. **`hang` handler client ke jaane ke baad chalta hai ya nahi** — user ke provider pe not measured.
+5. **README** rows `525`, `526`, `563` — Din 6 Step 3 (Part D).
+6. **`ANSWERS` me teen owed lines** (Step 1b cost, pool probe, README) aur `fake_provider.py` kaise bani, ek line.
+7. **Is entry ka `💡`** — Din 3 Step 0.5.
+
+---
+
+### ❓ Next thought
+
+Aaj provider ne `14` gine, uvicorn ne `12`, caller ne `15` bheje — aur `hang` pe caller ke paas ek khaali `ReadTimeout`
+tha jabki provider ne call gin li. Din 3 pe Relay pehli baar ye call apne worker se karega, aur `job_executions` ek chautha
+record banega.
+
+**Jab provider ka ledger `+1` kahe aur Relay ki `job_executions` row `ReadTimeout` kahe, Relay ka kaunsa column bata sakta
+hai ki provider ne bill kiya — aur agar koi nahi, to retry karne ka faisla kis information pe hoga?**
+
+---
+
+*Din 2 BRIEF:* [`../daily/week_06/DIN_02_BRIEF.md`](../daily/week_06/DIN_02_BRIEF.md) ·
+*Seal:* [`../daily/week_06/DIN_02_PREDICTIONS_FROZEN.md`](../daily/week_06/DIN_02_PREDICTIONS_FROZEN.md) ·
+*Commits:* `d1d0ea9` (seal) · `bb90c15` (feature)

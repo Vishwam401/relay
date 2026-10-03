@@ -3264,3 +3264,110 @@ measured, and it becomes relevant the first time `jobs` gains a constraint that 
 
 **Owner: the user's call.** The Din 1 KEY suggests Month 4, with `D-20`'s reaper coordination. Not Week 6: no Week 6
 experiment depends on it.
+
+---
+
+## P-44 — amendment (Week 6 Din 2): the decided shape is implemented at registration time and measured with a six-arm differential; `/db-ping` is gone; `narrowed`, not closed
+
+**Status: NARROWED on Week 6 Din 2 (`2026-10-03`), commit `bb90c15` (`src/main.py` `+11/−10`, `d55e3b8a → 7241c055`).**
+User's control and fixed censuses `logs/w6d2_gate_control_20261003_134000_644071_census.txt` and
+`logs/w6d2_gate_fixed_20261003_134124_494029_census.txt` (combined in `logs/w6d2_step1_both.txt`, per-arm API logs
+retained beside them); reviewer import-time probes `[MEASURED-R 2026-10-03]`.
+
+**The edit.** `src/main.py:18` reads `ENABLE_TEST_ROUTES` once, at import, after `from src.database import get_db` (`:7`);
+`:19` prints `test_routes=<repr>` with `flush=True`; `:33` `if ENABLE_TEST_ROUTES == "1":` wraps the `/slow-hold`
+decorator, so the route is registered only when the value is exactly `"1"`. `/db-ping` is deleted. `/health`, `/healthz`,
+middleware, `/jobs` unchanged. Handler body unchanged. **Pick (i): exact `"1"` on, everything else off** — fail-closed on
+parsing; its cost (a typo such as `ture` silently leaves test routes off) is not written in the day's `ANSWERS`.
+
+**The differential, six arms, one fresh API process each:**
+
+| Arm | control (no gate) `get/post/db_ping/openapi` | fixed `get/post/db_ping/openapi` | fixed flag line |
+|---|---|---|---|
+| unset · `''` · `'0'` · `'true'` · `'banana'` | `200/405/200/1` all five | `404/404/404/0` all five | `None` · `''` · `'0'` · `'true'` · `'banana'` |
+| `'1'` | `200/405/200/1` | `200/405/404/1` | `'1'` |
+
+`[MEASURED]`; `health=200 healthz=200` every arm; `relay_python_after=0`; `dotenv_mentions_flag=0`. **The column that
+proves registration time is `POST /slow-hold`:** `404` with the route absent, against `405` from a gate that keeps the
+route and refuses inside the handler (KEY variant v2, `[MEASURED-R 2026-10-02]` on a temp copy). A lone `GET → 404` is
+the same under both. `openapi.json` is the second witness.
+
+**Reviewer probes, the user's `main.py`, import-time `[MEASURED-R]`:** `' 1'`, `'1 '`, `'TRUE'`, unset → no test route;
+`'1'` → `['/slow-hold']` (positive control). Setting `os.environ["ENABLE_TEST_ROUTES"] = "1"` **after** import adds
+nothing — the flag is a start-up premise, not a runtime switch.
+
+**Access-log emission on caller disconnect — the Week 5 Din 4 observation, now with its mechanism.** Din 4 found no access
+line for a `/slow-hold` whose `curl -m 3` had left. Din 2 measured the same thing on the fake provider: `15` POSTs, `12`
+access lines, the three missing being exactly the requests whose response would have started after the client's
+`ReadTimeout` (`logs/w6d2_step4_census.txt`). Source, uvicorn `0.52.1` h11 path `[MEASURED-R]`:
+`uvicorn/protocols/http/h11_impl.py:464` `if self.disconnected: return` before the response starts, and the access line
+is written at `:481–482` on response start. **So an access log counts responses that started while the client was
+still connected; it is not a request count, and it is blind to exactly the requests that hold a connection longest.**
+For `/slow-hold` with the flag on, that is the request this card is about.
+
+**What stays, and why `narrowed`:**
+- **Nothing enforces the flag being off in production.** The protection lasts as long as the environment is right. The
+  start-up line makes the value observable (note (a)) — it does not make it correct.
+- **`.env` is a second path to on.** Every Relay process imports `src.database`, which runs `load_dotenv()`; a
+  developer who adds `ENABLE_TEST_ROUTES=1` to `.env` for convenience turns the route on for every API start on that
+  machine `[INFERRED from source]`. Shell values win (`override=False`). Today `.env` mentions the flag `0` times.
+- **With the flag on, `seconds` is still unbounded** (note (b); cap neither chosen nor rejected).
+- **`/healthz` still runs an unauthenticated `SELECT 1` on the shared pool.** Dropping `/db-ping` removed a duplicate; the
+  shape it duplicated remains, by `D-28`'s decision.
+- **`D-28`'s revisit line asked for the three-arm saturation re-run with the flag on.** Not done — today's `one` arm hit
+  `/slow-hold?seconds=0` once.
+- `labs/w5d4_pool_probe.py` calls `/slow-hold?seconds=8` and now gets `404` unless the API is started with the flag;
+  README rows for `/db-ping` and `/slow-hold` (`README.md:525`, `:526`, `:563`) are stale — owner Week 6 Din 6 Step 3.
+
+**Owner:** the cap is the user's call; the saturation re-run belongs to whichever experiment next needs `/slow-hold`.
+
+---
+
+## P-59 — The dispatcher holds an outbox row lock across an HTTP call whose `timeout=5.0` is four per-phase timeouts and no deadline, so a receiver that trickles bytes holds the lock, the transaction and a pooled connection for as long as it keeps trickling
+
+**Status: MEASURED for the client half on Week 6 Din 2 (`2026-10-03`); the dispatcher half is source-read and
+`[NOT TESTED]`.** Found at review by joining Din 2's caller measurement to `src/dispatcher.py` (`920d0d4a…`).
+
+**The measured half.** The Din 2 probe uses `httpx.AsyncClient(timeout=5.0)`, the same construction as
+`src/dispatcher.py:34`. Against the fake provider's `trickle` mode (status and headers at `t ≈ 0`, then one chunk every
+`1.2 s`, eight chunks): `label=trickle status=200 exc=none elapsed=8.462`, stream pass `headers_at=0.014 chunks=8
+max_gap=1.217 total=8.470` (`logs/w6d2_step4_probe.txt`) `[MEASURED]`. No exception, and the elapsed is above the
+timeout. `httpx.Timeout(5.0)` sets connect, read, write and pool to `5.0 s` each; the read timeout bounds a single wait
+for data, so a peer that sends something every `< 5 s` is never timed out (Din 2 KEY, source read `[MEASURED-R 2026-10-02]`).
+The reviewer's throwaway earlier gave `8.109`–`8.125 s` with `1.0 s` gaps. **The upper bound is set by the peer, not by
+Relay.**
+
+**The dispatcher half, from source `[INFERRED]`.** `src/dispatcher.py:41` opens `session.begin()`; `:42–50` select one
+outbox row `FOR UPDATE SKIP LOCKED` (`:47`); `:70` `await client.post(SINK_URL, json=…)` runs **inside** that
+transaction; `COMMIT` happens when the block exits. So for the duration of the POST:
+- the outbox row's `FOR UPDATE` lock is held (other dispatchers would skip it; Relay runs one, which is then busy);
+- the transaction is open and the session is `idle in transaction` from Postgres's side (no statement executing);
+- one connection of the dispatcher's pool is checked out.
+
+**Nothing below the peer bounds it.** `relay-db-1` `[MEASURED-R 2026-10-03]`: `idle_in_transaction_session_timeout=0ms`,
+`statement_timeout=0ms`, `lock_timeout=0ms`, all `source=default` (disabled); grep of `src/`, `docker-compose.yml`,
+`alembic/env.py` for either timeout → `0`. The co-dependency is explicit: the dispatcher's lock duration today depends on
+the receiver's behaviour **and** on these three settings being off.
+
+**Connection to `P-55`.** `P-55` made the failure line name its class. A trickle produces **no exception**, so no
+`[dispatch_error]` line is written at all; if the final status is `200`, the dispatcher prints `[dispatch] … status=dispatched`
+after however long it took. The dispatcher's own print lines carry no timestamp (`src/dispatcher.py:64–66`, `:87–99`);
+the duration survives only in `echo=True`'s timestamped `BEGIN` / `COMMIT` lines around them (the format seen in
+`logs/w6d2_gate_fixed_…_one_api.log`) — **and with `echo=False` it would survive nowhere**, `P-44` note (c)'s shape
+`[INFERRED]`.
+
+**Why it matters for Week 6.** Din 3 puts the same `httpx` client shape between a worker and a provider. A worker's call
+is not inside a `FOR UPDATE` today, but it is inside a lease: a provider that trickles past the lease lets the reaper
+reclaim a job whose handler is still receiving bytes (`D-22`, Din 5's *provider hang vs lease*). Same mechanism, a
+different resource held.
+
+**Fix directions, each narrows, none chosen:**
+- **An overall deadline around the call** (`asyncio.timeout(...)` or equivalent) — bounds the hold; adds a new failure
+  class (cancelled mid-body) whose outcome on the receiver is unknown to the caller (AGENTS rule 29).
+- **`idle_in_transaction_session_timeout` on the dispatcher's role/session** — a server-side bound that kills the session
+  and rolls back; `attempts` is not incremented, so the bound on retries moves (same shape as `P-51`'s cost).
+- **Move the HTTP call out of the row lock** (claim → commit → call → record) — removes the lock hold; changes the
+  delivery semantics `D-27` chose. `P-35` / Week 7 territory.
+
+**Owner: the user's call.** Candidates: Week 7 with `P-35`; the handler-side deadline is `D-22` / Month 3, with Din 5's
+numbers as input. Not Din 3 — Din 3 should only know the shape exists.
